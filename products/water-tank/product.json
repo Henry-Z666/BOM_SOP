@@ -4,5 +4,6 @@
   "bom_file": "BOM.xlsx",
   "models_dir": "零件图",
   "sop_template": "SOP示例.xlsx",
-  "final_assembly": "jb9918900337.asm.2"
+  "final_assembly": "jb9918900337.asm.2",
+  "bom_sheet": "水箱BOM"
 }

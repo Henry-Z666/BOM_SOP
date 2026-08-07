@@ -6,13 +6,13 @@ import subprocess
 from pathlib import Path
 
 from .io import read_json
-from .paths import ROOT
+from .product import Product
 
 
-def discover(assembly_file: str, output: Path) -> Path:
+def discover(product: Product, output: Path, assembly_file: str | None = None) -> Path:
     command = os.getenv("CREO_DISCOVERY_COMMAND")
     if not command: raise RuntimeError("未配置 CREO_DISCOVERY_COMMAND（必须为 Creo OTK/J-Link 原生抽取器）。")
-    source = ROOT / assembly_file
+    source = product.models_dir / (assembly_file or product.final_assembly)
     if not source.exists(): raise FileNotFoundError(source)
     output.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run([command, str(source), str(output)], check=True, shell=False)

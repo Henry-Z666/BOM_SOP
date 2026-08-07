@@ -12,7 +12,8 @@ import subprocess
 from pathlib import Path
 
 from .io import read_json, write_json
-from .paths import ROOT, RUNS
+from .paths import RUNS
+from .product import Product
 from .validation import validate_contract, validate_render
 
 
@@ -20,7 +21,7 @@ class CreoExecutionError(RuntimeError):
     pass
 
 
-def execute(contract_path: Path) -> dict:
+def execute(contract_path: Path, product: Product) -> dict:
     contract = read_json(contract_path)
     errors = validate_contract(contract)
     if errors:
@@ -33,10 +34,10 @@ def execute(contract_path: Path) -> dict:
     if run_dir.exists():
         shutil.rmtree(run_dir)
     run_dir.mkdir(parents=True)
-    assembly = ROOT / contract["assembly"]["file"]
+    assembly = product.models_dir / contract["assembly"]["file"]
     if not assembly.exists():
         raise CreoExecutionError(f"找不到权威 ASM：{assembly}")
-    source_models = ROOT / "零件图"
+    source_models = product.models_dir
     staged_models = run_dir / "models"
     # Creo may write trail/configuration files when opening an ASM. Stage the
     # complete model set so dependency resolution and any transient write stay

@@ -43,14 +43,25 @@ def _cell_value(cell: ET.Element, shared: list[str]) -> str:
     return shared[int(text)] if cell.get("t") == "s" else text
 
 
-def read_bom(path: Path) -> list[BomItem]:
+def read_bom(path: Path, sheet_name: str | None = None) -> list[BomItem]:
     with zipfile.ZipFile(path) as book:
         shared: list[str] = []
         if "xl/sharedStrings.xml" in book.namelist():
             root = ET.fromstring(book.read("xl/sharedStrings.xml"))
             shared = ["".join(node.itertext()) for node in root.findall(f"{NS}si")]
         workbook = ET.fromstring(book.read("xl/workbook.xml"))
-        sheet = next(s for s in workbook.findall(f"{NS}sheets/{NS}sheet") if s.get("name") == "水箱BOM")
+        sheets = workbook.findall(f"{NS}sheets/{NS}sheet")
+        if sheet_name:
+            try:
+                sheet = next(s for s in sheets if s.get("name") == sheet_name)
+            except StopIteration as error:
+                available = ", ".join(s.get("name", "") for s in sheets)
+                raise ValueError(f"BOM 工作表 {sheet_name!r} 不存在；可用工作表：{available}") from error
+        elif len(sheets) == 1:
+            sheet = sheets[0]
+        else:
+            available = ", ".join(s.get("name", "") for s in sheets)
+            raise ValueError(f"BOM 有多个工作表，请在产品配置中指定 bom_sheet；可用工作表：{available}")
         rid = sheet.get(f"{REL_NS}id")
         rels = ET.fromstring(book.read("xl/_rels/workbook.xml.rels"))
         target = next(r.get("Target") for r in rels if r.get("Id") == rid)

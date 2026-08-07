@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 RUNS = ROOT / "data" / "runs"
 OUT = RUNS / "corrected-v2-camera-contracts"
 

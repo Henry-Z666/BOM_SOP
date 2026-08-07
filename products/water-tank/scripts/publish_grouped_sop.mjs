@@ -2,7 +2,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { FileBlob, SpreadsheetFile } from "@oai/artifact-tool";
 
-const root = path.resolve(import.meta.dirname, "..");
+// This is a water-tank publication adapter.  It lives in the product package
+// but writes transient runs and published workbooks at the checkout root.
+const root = path.resolve(import.meta.dirname, "../../..");
 const referencePath = process.env.SOP_REFERENCE_PATH;
 if (!referencePath) {
   throw new Error("Set SOP_REFERENCE_PATH to the one-main-process-per-sheet Excel template before publishing.");

@@ -33,16 +33,41 @@ def resolve_latest(models_dir: Path, requested: str) -> Path:
     return max(candidates, key=lambda item: item[0])[1]
 
 
+def load_product_paths(config_path: Path) -> tuple[Path, str]:
+    """Read the portable product package without importing project code."""
+    config_path = config_path.resolve()
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    if data.get("schema_version") != "assembly-sop-product/v1":
+        raise ValueError("不支持的产品配置版本")
+    root = next((parent for parent in config_path.parents if (parent / "pyproject.toml").is_file()), config_path.parent)
+    models_dir = Path(data["models_dir"])
+    if not models_dir.is_absolute():
+        models_dir = root / models_dir
+    assembly = data.get("final_assembly")
+    if not isinstance(assembly, str) or not assembly:
+        raise ValueError("产品配置缺少 final_assembly")
+    return models_dir, assembly
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--models-dir", type=Path, required=True)
-    parser.add_argument("--assembly", required=True, help="总装文件名或不带版本的 basename")
+    parser.add_argument("--product-config", type=Path, help="products/<product>/product.json")
+    parser.add_argument("--models-dir", type=Path, help="模型目录（未使用产品包时必填）")
+    parser.add_argument("--assembly", help="总装文件名或不带版本的 basename（未使用产品包时必填）")
     parser.add_argument("--camera-basis", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
-    models_dir = args.models_dir.resolve()
-    selected = resolve_latest(models_dir, args.assembly)
+    if args.product_config:
+        if args.models_dir or args.assembly:
+            parser.error("--product-config 不能与 --models-dir 或 --assembly 同时使用")
+        models_dir, assembly = load_product_paths(args.product_config)
+    elif args.models_dir and args.assembly:
+        models_dir, assembly = args.models_dir, args.assembly
+    else:
+        parser.error("请提供 --product-config，或同时提供 --models-dir 与 --assembly")
+    models_dir = models_dir.resolve()
+    selected = resolve_latest(models_dir, assembly)
     basis = json.loads(args.camera_basis.read_text(encoding="utf-8"))
     selected_hash = sha256(selected)
     if Path(basis.get("assembly_file", "")).name.lower() != selected.name.lower():

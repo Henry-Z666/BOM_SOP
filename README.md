@@ -1,6 +1,6 @@
 # Creo 装配 SOP 生成流水线
 
-从 `BOM.xlsx` 和 Creo 最终总装出发，生成经过校验的安装步骤图，并将合格图片写入 SOP Excel 模板。
+从产品包指定的 BOM、Creo 最终总装和 SOP 模板出发，生成经过校验的安装步骤图，并将合格图片写入 SOP Excel 模板。
 
 当前仓库面向后续开发者：先保证步骤图正确，再进行 SOP 出版。正式 CAD 自动化只使用 Creo 异步 J-Link Java API；不使用屏幕坐标或 computer use。
 
@@ -8,9 +8,9 @@
 
 | 输入 | 用途 |
 | --- | --- |
-| `BOM.xlsx` | 工序层级、物料、数量、工艺文字、控制要点和工装 |
-| `零件图/` | Creo `.asm/.prt` 模型；其中版本最高的最终总装用于正式出图 |
-| `SOP示例.xlsx` | 固定发布版式；不参与步骤规划 |
+| `products/<产品>/product.json` | BOM、模型目录、SOP 模板、最终总装与可选 BOM 工作表 |
+| 产品包所指向的 BOM | 工序层级、物料、数量、工艺文字、控制要点和工装 |
+| 产品包所指向的模型目录 | Creo `.asm/.prt` 模型；其中最终总装用于正式出图 |
 
 | 产物 | 位置 |
 | --- | --- |
@@ -24,7 +24,7 @@
 
 ```mermaid
 flowchart LR
-    A["BOM.xlsx\n零件图 / 最终总装"] --> B["锁定总装版本、SHA-256\n校准 fixed_123 / fixed_456"]
+    A["product.json\nBOM / 模型 / SOP 模板"] --> B["锁定总装版本、SHA-256\n校准 fixed_123 / fixed_456"]
     B --> C["J-Link 递归扫描\noccurrence、变换、约束"]
     C --> D["生成并校验\ncreo-render-jobs/v3"]
     D --> E["J-Link 阶段出图\n前序件 + 活动件 + 接收件"]
@@ -71,8 +71,7 @@ $product = './products/water-tank/product.json'
   -OutputJson ./data/runs/jb9918900337-camera-basis-v3.json
 
 python ./scripts/create_authoritative_assembly_manifest.py `
-  --models-dir ./零件图 `
-  --assembly jb9918900337.asm.2 `
+  --product-config $product `
   --camera-basis ./data/runs/jb9918900337-camera-basis-v3.json `
   --output ./data/runs/jb9918900337-authoritative-assembly.json
 ```
@@ -94,8 +93,8 @@ python ./scripts/create_authoritative_assembly_manifest.py `
 当前水箱批次采用已校正的规划脚本：
 
 ```powershell
-python ./scripts/create_corrected_bom_render_jobs.py
-python ./scripts/validate_corrected_bom_render_jobs.py
+python ./products/water-tank/scripts/create_render_jobs.py
+python ./products/water-tank/scripts/validate_render_jobs.py
 ```
 
 输出：`data/runs/corrected-v2-render-jobs.json` 及对应相机合同。静态校验必须确认数量、前序可见集、接收件、接收面法向爆炸方向、双视角和安装顺序。
@@ -129,8 +128,8 @@ python ./scripts/validate_corrected_bom_render_jobs.py
 python ./scripts/validate_corrected_render_outputs.py
 
 $env:SOP_REFERENCE_PATH = 'D:\path\to\one-process-per-sheet-template.xlsx'
-node ./scripts/build_grouped_published_sop.mjs
-python ./scripts/validate_published_sop.py
+node ./products/water-tank/scripts/publish_grouped_sop.mjs
+python ./products/water-tank/scripts/validate_published_sop.py
 ```
 
 输出：`outputs/published_sop/JB9918900337_水箱部件装配SOP_出版版.xlsx`。发布脚本按模板的“一主工序一工作表”结构写入合格图片与 BOM 来源文字。
@@ -141,11 +140,11 @@ python ./scripts/validate_published_sop.py
 | --- | --- |
 | `creo_java/` | J-Link Java 源码、构建脚本、Creo runner 和 V3 箭头合成入口 |
 | `src/sop_pipeline/` | BOM、CAD 图谱、规划、校验、像素箭头和出版逻辑 |
-| `scripts/` | 总装锁定、任务生成、批次和出版校验工具 |
+| `scripts/` | 与产品无关的总装锁定、图片校验和通用工具 |
 | `data/runs/` | 批次合同、扫描结果、相机基准和临时会话记录 |
 | `outputs/` | 安装图片和出版 Excel；不作为源码提交 |
 | `docs/` | 正式渲染与箭头规则 |
-| `products/` | 可移植的产品包配置；不包含 CAD、运行时路径或许可证 |
+| `products/` | 可移植的产品包配置与产品适配脚本；不包含 CAD、运行时路径或许可证 |
 | `tests/` | 规划、相机和 V3 箭头的确定性测试 |
 
 ## 开发约束

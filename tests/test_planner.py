@@ -1,32 +1,68 @@
 from pathlib import Path
 import unittest
 import tempfile
+import zipfile
 
 from sop_pipeline.io import read_json
 from sop_pipeline.auto_planner import plan
 from sop_pipeline.cad_graph import CadGraph
 from sop_pipeline.planner import create_pilots
+from sop_pipeline.product import Product
 from sop_pipeline.validation import validate_contract, validate_render
 
 
 class PlannerTests(unittest.TestCase):
+    @staticmethod
+    def _product(root: Path) -> Product:
+        bom = root / "BOM.xlsx"
+        sheet_rows = [
+            ("1", "BOM", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""),
+            ("2", "30", "MAT-ROOT", "", "DRAW-ROOT", "根装配", "ROOT-ASM", "", "", "1", "套", "", "", "", "", "", "", ""),
+            ("3", "30.1", "MAT-SUB", "", "DRAW-SUB", "子装配", "SUB-ASM", "", "", "1", "件", "", "", "", "", "", "", ""),
+            ("4", "30.1.1", "MAT-PART", "", "DRAW-PART", "零件", "PART", "", "", "3", "件", "", "", "", "", "", "", ""),
+        ]
+        def row(values: tuple[str, ...]) -> str:
+            cells = "".join(f'<c r="{chr(65 + index)}{values[0]}" t="inlineStr"><is><t>{value}</t></is></c>'
+                            for index, value in enumerate(values[1:], 1) if value)
+            return f'<row r="{values[0]}">{cells}</row>'
+        workbook = ('<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="BOM" sheetId="1" r:id="rId1"/></sheets></workbook>')
+        rels = ('<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>')
+        sheet = ('<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+                 + "".join(row(values) for values in sheet_rows) + "</sheetData></worksheet>")
+        with zipfile.ZipFile(bom, "w") as archive:
+            archive.writestr("xl/workbook.xml", workbook)
+            archive.writestr("xl/_rels/workbook.xml.rels", rels)
+            archive.writestr("xl/worksheets/sheet1.xml", sheet)
+        models = root / "models"
+        models.mkdir()
+        final = models / "final.asm.1"
+        final.write_bytes(b"asm")
+        template = root / "template.xlsx"
+        template.write_bytes(b"template")
+        return Product(root / "product.json", "test-product", bom, models, template, final.name, "BOM")
+
     def test_pilots_await_automatic_cad_discovery(self):
         with tempfile.TemporaryDirectory() as folder:
-            paths = create_pilots(contracts_dir=Path(folder))
+            root = Path(folder)
+            paths = create_pilots(self._product(root), contracts_dir=root / "contracts")
         self.assertEqual(len(paths), 2)
         # The files remain valid outside the temporary context only in memory;
         # verify category behaviour from the generated paths before cleanup.
         with tempfile.TemporaryDirectory() as folder:
-            contracts = [read_json(path) for path in create_pilots(contracts_dir=Path(folder))]
+            root = Path(folder)
+            contracts = [read_json(path) for path in create_pilots(self._product(root), contracts_dir=root / "contracts")]
             self.assertEqual({item["scope"] for item in contracts}, {"build_subassembly", "attach_to_parent"})
             self.assertTrue(all(item["automation"]["phase"] == "awaiting_cad_discovery" for item in contracts))
             self.assertTrue(all(validate_contract(item) for item in contracts))
 
     def test_auto_planner_uses_constraint_graph(self):
         with tempfile.TemporaryDirectory() as folder:
-            contract = read_json(create_pilots(contracts_dir=Path(folder))[1])
+            root = Path(folder)
+            contract = read_json(create_pilots(self._product(root), contracts_dir=root / "contracts")[1])
         graph = CadGraph.from_json({"schema_version": "creo-cad-graph/v1", "assembly_file": contract["assembly"]["file"],
-                                    "root_occurrence": "ROOT", "occurrences": [{"id": "WATER_TANK", "part_no": "JH9919000534"}, {"id": "ROOT", "part_no": "JB9918900337"}],
+                                    "root_occurrence": "ROOT", "occurrences": [{"id": "WATER_TANK", "part_no": "DRAW-SUB"}, {"id": "ROOT", "part_no": "DRAW-ROOT"}],
                                     "constraints": [{"id": "mate-01", "occurrences": ["WATER_TANK", "ROOT"], "assembly_axis": [0, 0, 1], "display_distance": 100}]})
         result = plan(contract, graph)
         self.assertEqual(result["automation"]["phase"], "planned")

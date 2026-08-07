@@ -2,7 +2,7 @@
 from pathlib import Path
 from openpyxl import load_workbook
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 OUTPUT = ROOT / "outputs" / "published_sop" / "JB9918900337_水箱部件装配SOP_出版版.xlsx"
 
 EXPECTED = {

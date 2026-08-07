@@ -4,5 +4,6 @@
   "bom_file": "input/BOM.xlsx",
   "models_dir": "input/models",
   "sop_template": "input/SOP-template.xlsx",
-  "final_assembly": "final-assembly.asm.1"
+  "final_assembly": "final-assembly.asm.1",
+  "bom_sheet": "BOM"
 }
