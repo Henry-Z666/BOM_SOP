@@ -1,0 +1,130 @@
+{
+  "schema_version": "creo-stage-camera-contract/v3",
+  "bom_level": "30.20.2",
+  "basis_file": "data/runs/jb9918900337-camera-basis-v3.json",
+  "coordinate_system": "root_asm",
+  "receiver_face": {
+    "face_id": 1,
+    "axis": "X",
+    "sign": -1,
+    "axis_label": "-X",
+    "normal_root": [
+      -1.0,
+      0.0,
+      0.0
+    ],
+    "occurrences": [
+      "457/6"
+    ],
+    "point_root": [
+      -738.4645045913903,
+      1035.8120871567983,
+      -362.8593003805297
+    ],
+    "evidence": "user correction + receiver-face-normal/reference-image evidence"
+  },
+  "candidates": [
+    {
+      "id": "fixed_123",
+      "position_direction_root": [
+        -0.76038857474928,
+        0.279155689678311,
+        -0.5864139462111941
+      ],
+      "up_reference_root": [
+        0.22586211504336412,
+        0.9602160149754485,
+        0.16423005076053357
+      ],
+      "view_matrix": [
+        [
+          -0.6089298156429005,
+          0.22586211504336412,
+          -0.76038857474928,
+          0.0
+        ],
+        [
+          0.007570039953381834,
+          0.9602160149754485,
+          0.279155689678311,
+          0.0
+        ],
+        [
+          0.7931879815757469,
+          0.16423005076053357,
+          -0.5864139462111941,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      ]
+    }
+  ],
+  "view_policy": {
+    "id": "fixed_two_view/v1",
+    "view_group": "123",
+    "allowed_camera_ids": [
+      "fixed_123",
+      "fixed_456"
+    ],
+    "selection_rule": "camera chosen independently for moving+receiver visibility"
+  },
+  "selection": {
+    "status": "user_correction_selected",
+    "reason": "moving and receiving geometry must both remain readable"
+  },
+  "selected": {
+    "id": "fixed_123",
+    "position_direction_root": [
+      -0.76038857474928,
+      0.279155689678311,
+      -0.5864139462111941
+    ],
+    "up_reference_root": [
+      0.22586211504336412,
+      0.9602160149754485,
+      0.16423005076053357
+    ],
+    "view_matrix": [
+      [
+        -0.6089298156429005,
+        0.22586211504336412,
+        -0.76038857474928,
+        0.0
+      ],
+      [
+        0.007570039953381834,
+        0.9602160149754485,
+        0.279155689678311,
+        0.0
+      ],
+      [
+        0.7931879815757469,
+        0.16423005076053357,
+        -0.5864139462111941,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ]
+  },
+  "framing": {
+    "frame": "square",
+    "zoom": 1.2,
+    "center": true,
+    "pan": [
+      0.0,
+      0.0
+    ],
+    "look_at_stage": true,
+    "pan_evidence": "corrected-v2 native closeup framing; fixed_123; calibrated native ScreenTransform"
+  }
+}

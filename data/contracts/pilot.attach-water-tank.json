@@ -1,0 +1,59 @@
+{
+  "schema_version": "step-contract/v1",
+  "step_id": "pilot.attach-water-tank",
+  "title": "水箱焊件：整体安装至水箱部件",
+  "scope": "attach_to_parent",
+  "assembly": {
+    "file": "零件图/jb9918900337.asm.2",
+    "bom_level": "30",
+    "source_of_truth": "Creo native ASM"
+  },
+  "expected_bom_items": [
+    {
+      "bom_row": 3,
+      "level": "30.1",
+      "part_no": "JH9919000534",
+      "name": "水箱焊件",
+      "quantity": 1,
+      "unit": "件"
+    }
+  ],
+  "moving_occurrences": [],
+  "receiver_occurrences": [],
+  "retained_occurrences": [],
+  "translation": {
+    "type": "translation_only",
+    "vectors": [],
+    "evidence": null
+  },
+  "camera": {
+    "candidates": [
+      "front",
+      "back",
+      "bottom",
+      "left",
+      "right",
+      "oblique"
+    ],
+    "selected": null
+  },
+  "method": {
+    "text": "第9步：目视化检查各器件是否安装完好，线体是否有划痕损伤",
+    "source": "BOM 组装步骤"
+  },
+  "control_points": "1.佩戴洁净手套安装，防止补液箱表面留下手印。",
+  "tools": "1.洁净手套",
+  "review": {
+    "status": "needs_review",
+    "reviewer": null,
+    "reviewed_at": null,
+    "notes": "待审核"
+  },
+  "render": null,
+  "provenance": {
+    "planner": "bom-hierarchy/v1",
+    "source_bom_rows": [
+      3
+    ]
+  }
+}

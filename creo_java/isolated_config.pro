@@ -1,0 +1,9 @@
+display_planes no
+display_plane_tags no
+display_axes no
+display_axis_tags no
+display_points no
+display_point_tags no
+display_coord_sys no
+display_coord_sys_tags no
+display_annotations no

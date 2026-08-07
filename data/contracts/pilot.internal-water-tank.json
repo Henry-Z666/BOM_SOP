@@ -1,0 +1,158 @@
+{
+  "schema_version": "step-contract/v1",
+  "step_id": "pilot.internal-water-tank",
+  "title": "水箱焊件：直属子项内部构建",
+  "scope": "build_subassembly",
+  "assembly": {
+    "file": "零件图/jh9919000534.asm.1",
+    "bom_level": "30.1",
+    "source_of_truth": "Creo native ASM"
+  },
+  "expected_bom_items": [
+    {
+      "bom_row": 4,
+      "level": "30.1.1",
+      "part_no": "JL9915841893",
+      "name": "隔板合件",
+      "quantity": 1,
+      "unit": "件"
+    },
+    {
+      "bom_row": 7,
+      "level": "30.1.2",
+      "part_no": "JL9915841894",
+      "name": "隔板合件",
+      "quantity": 1,
+      "unit": "件"
+    },
+    {
+      "bom_row": 10,
+      "level": "30.1.3",
+      "part_no": "BT0906006471",
+      "name": "不锈钢转接头",
+      "quantity": 1,
+      "unit": "个"
+    },
+    {
+      "bom_row": 11,
+      "level": "30.1.4",
+      "part_no": "BT0906006425",
+      "name": "不锈钢转接头",
+      "quantity": 2,
+      "unit": "个"
+    },
+    {
+      "bom_row": 12,
+      "level": "30.1.5",
+      "part_no": "BT0906007487",
+      "name": "焊接接头",
+      "quantity": 2,
+      "unit": "个"
+    },
+    {
+      "bom_row": 13,
+      "level": "30.1.6",
+      "part_no": "JL9906991352",
+      "name": "固定件",
+      "quantity": 2,
+      "unit": "件"
+    },
+    {
+      "bom_row": 15,
+      "level": "30.1.7",
+      "part_no": "BT0906405263",
+      "name": "宝塔接头",
+      "quantity": 2,
+      "unit": "个"
+    },
+    {
+      "bom_row": 16,
+      "level": "30.1.8",
+      "part_no": "JL9906603254",
+      "name": "隔板",
+      "quantity": 1,
+      "unit": "件"
+    },
+    {
+      "bom_row": 18,
+      "level": "30.1.9",
+      "part_no": "JL0000408371",
+      "name": "直管",
+      "quantity": 1,
+      "unit": "件"
+    },
+    {
+      "bom_row": 19,
+      "level": "30.1.10",
+      "part_no": "BT0905906161",
+      "name": "不锈钢焊接弯头",
+      "quantity": 1,
+      "unit": "个"
+    },
+    {
+      "bom_row": 20,
+      "level": "30.1.11",
+      "part_no": "BT0906006856",
+      "name": "不锈钢活接头",
+      "quantity": 1,
+      "unit": "个"
+    },
+    {
+      "bom_row": 23,
+      "level": "30.1.12",
+      "part_no": "JL9915840872",
+      "name": "固定件合件",
+      "quantity": 1,
+      "unit": "件"
+    }
+  ],
+  "moving_occurrences": [],
+  "receiver_occurrences": [],
+  "retained_occurrences": [],
+  "translation": {
+    "type": "translation_only",
+    "vectors": [],
+    "evidence": null
+  },
+  "camera": {
+    "candidates": [
+      "front",
+      "back",
+      "bottom",
+      "left",
+      "right",
+      "oblique"
+    ],
+    "selected": null
+  },
+  "method": {
+    "text": "第1步：将水箱焊件用固定工装固定在工作台上。",
+    "source": "BOM 组装步骤"
+  },
+  "control_points": "1.佩戴洁净手套安装，防止补液箱表面留下手印。",
+  "tools": "1.固定工装",
+  "review": {
+    "status": "needs_review",
+    "reviewer": null,
+    "reviewed_at": null,
+    "notes": "待审核"
+  },
+  "render": null,
+  "provenance": {
+    "planner": "bom-hierarchy/v1",
+    "source_bom_rows": [
+      4,
+      7,
+      10,
+      11,
+      12,
+      13,
+      15,
+      16,
+      18,
+      19,
+      20,
+      23
+    ]
+  }
+}

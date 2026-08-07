@@ -1,0 +1,13 @@
+{
+  "schema_version": "render-errata/v1",
+  "removed_old_images": [
+    "02"
+  ],
+  "structural_changes": [
+    "top-plate closeup added",
+    "four seals moved before top-plate install",
+    "gasket before end-cap before clamp",
+    "outflow rigid-parent install added"
+  ],
+  "job_count": 42
+}

@@ -1,0 +1,11 @@
+name             AIAssemblyImage
+startup          otk_java
+toolkit          object
+creo_type        parametric
+java_app_class   EmbeddedFirstImage
+java_app_classpath C:\Users\10602\Desktop\AI_assembly\creo_java\build
+java_app_start   start
+java_app_stop    stop
+allow_stop       true
+delay_start      false
+end
