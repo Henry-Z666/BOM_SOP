@@ -1,15 +1,22 @@
-param([Parameter(Mandatory=$true)][string]$AssemblyFile, [Parameter(Mandatory=$true)][string]$OutputJson)
+param(
+  [Parameter(Mandatory=$true)][string]$ProductConfig,
+  [string]$AssemblyFile = '',
+  [Parameter(Mandatory=$true)][string]$OutputJson
+)
 $here = $PSScriptRoot
 $projectRoot = Split-Path -Parent $here
 . (Join-Path $here 'RuntimeConfig.ps1')
+. (Join-Path $here 'ProductConfig.ps1')
 $runtime = Get-CreoRuntime -ProjectRoot $projectRoot
+$product = Get-AssemblySopProduct -ProjectRoot $projectRoot -ProductConfig $ProductConfig
 $common = $runtime.CommonFiles
 $nativeLib = $runtime.NativeLibrary
 $java = $runtime.JavaCommand
 if (-not (Test-Path (Join-Path $here 'build\AutoCadDiscovery.class'))) { & (Join-Path $here 'build.ps1'); if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
-$sourceModels = Join-Path $projectRoot '零件图'
+$sourceModels = $product.ModelsRoot
+if (-not $AssemblyFile) { $AssemblyFile = $product.FinalAssemblyPath }
 $requested = Resolve-Path -LiteralPath $AssemblyFile
-if (-not $requested.Path.StartsWith($sourceModels, [System.StringComparison]::OrdinalIgnoreCase)) { throw 'AssemblyFile 必须位于项目的零件图目录。' }
+if (-not $requested.Path.StartsWith($sourceModels, [System.StringComparison]::OrdinalIgnoreCase)) { throw 'AssemblyFile 必须位于产品 models_dir 目录。' }
 $runRoot = Join-Path $projectRoot ('data\runs\discovery-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
 $stagedModels = Join-Path $runRoot 'models'
 New-Item -ItemType Directory -Force -Path $runRoot | Out-Null

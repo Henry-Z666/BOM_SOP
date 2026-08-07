@@ -1,4 +1,5 @@
 param(
+  [Parameter(Mandatory=$true)][string]$ProductConfig,
   [Parameter(Mandatory=$true)][string]$JobsJson,
   [Parameter(Mandatory=$true)][string]$OutputFolder,
   [Parameter(Mandatory=$true)][int]$JobIndex
@@ -6,12 +7,14 @@ param(
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'RuntimeConfig.ps1')
+. (Join-Path $PSScriptRoot 'ProductConfig.ps1')
 $runtime = Get-CreoRuntime -ProjectRoot $root
+$product = Get-AssemblySopProduct -ProjectRoot $root -ProductConfig $ProductConfig
 $jobsPath=[IO.Path]::GetFullPath($JobsJson);$jobsRoot=Split-Path -Parent $jobsPath;$document=Get-Content -Raw $jobsPath|ConvertFrom-Json
 if($document.schema_version -ne 'creo-render-jobs/v3'){throw 'Pixel V3 requires formal v3 jobs.'};$job=@($document.jobs)[$JobIndex];if($null -eq $job){throw "No job at index $JobIndex"}
-$manifest=Get-Content -Raw (Join-Path $jobsRoot $document.authoritative_assembly_manifest)|ConvertFrom-Json;$source=Join-Path $root ('零件图\'+$manifest.assembly_file);$hash=(Get-FileHash $source -Algorithm SHA256).Hash.ToLowerInvariant();if($hash -ne $manifest.assembly_sha256.ToLowerInvariant()){throw 'Authoritative assembly hash mismatch.'}
+$manifest=Get-Content -Raw (Join-Path $jobsRoot $document.authoritative_assembly_manifest)|ConvertFrom-Json;if([string]$manifest.assembly_file -ne $product.FinalAssembly){throw 'Product configuration final_assembly does not match authoritative manifest.'};$source=Join-Path $product.ModelsRoot $manifest.assembly_file;$hash=(Get-FileHash $source -Algorithm SHA256).Hash.ToLowerInvariant();if($hash -ne $manifest.assembly_sha256.ToLowerInvariant()){throw 'Authoritative assembly hash mismatch.'}
 $out=[IO.Path]::GetFullPath($OutputFolder);if(Test-Path $out){throw "Output exists: $out"};New-Item -ItemType Directory $out|Out-Null;& (Join-Path $PSScriptRoot 'test_license_binding.ps1') -LicenseFile $runtime.LicenseFile -CreoLoadpoint $runtime.CreoLoadpoint
-$stage=Join-Path $out 'models';Copy-Item (Join-Path $root '零件图') $stage -Recurse;Copy-Item (Join-Path $PSScriptRoot 'isolated_config.pro') (Join-Path $stage 'config.pro') -Force;$assembly=Join-Path $stage $manifest.assembly_file
+$stage=Join-Path $out 'models';Copy-Item $product.ModelsRoot $stage -Recurse;Copy-Item (Join-Path $PSScriptRoot 'isolated_config.pro') (Join-Path $stage 'config.pro') -Force;$assembly=Join-Path $stage $manifest.assembly_file
 $camera=Get-Content -Raw (Join-Path $jobsRoot $job.camera_contract_file)|ConvertFrom-Json;if($camera.selected.id -notin @('fixed_123','fixed_456')){throw 'Invalid fixed camera'};$fmt={param($v)(@($v|%{([double]$_).ToString('G17',[cultureinfo]::InvariantCulture)})-join ':')};$spec='ABS:'+(& $fmt $camera.selected.position_direction_root)+',UP:'+(& $fmt $camera.selected.up_reference_root)+',ZOOM:'+([double]$camera.framing.zoom).ToString('G17',[cultureinfo]::InvariantCulture)+',CENTER,PAN:'+([double]$camera.framing.pan[0]).ToString('G17',[cultureinfo]::InvariantCulture)+':'+([double]$camera.framing.pan[1]).ToString('G17',[cultureinfo]::InvariantCulture)
 $expected=@($job.stage_visibility.completed_occurrences)+@($job.moving_occurrences)+@($job.receiver_occurrences)+@($job.stage_visibility.required_context_occurrences)|?{$_}|Sort-Object -Unique;if((@($job.visible_occurrences|Sort-Object -Unique)-join ';') -ne ($expected-join ';')){throw 'Forward visibility contract mismatch'}
 $base=Join-Path $out ($job.job_id+'.base.jpg');$cal=Join-Path $out ($job.job_id+'.calibration.jpg');$audit=Join-Path $out ($job.job_id+'.arrow.json');$v=@($job.translation.vector)

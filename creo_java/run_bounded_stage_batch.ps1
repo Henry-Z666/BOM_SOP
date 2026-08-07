@@ -1,4 +1,5 @@
 param(
+  [Parameter(Mandatory=$true)][string]$ProductConfig,
   [Parameter(Mandatory=$true)][string]$JobsJson,
   [Parameter(Mandatory=$true)][string]$OutputFolder,
   [int]$StartIndex = 0,
@@ -25,7 +26,7 @@ for ($index=$start; $index -lt $stop; $index++) {
   $log = Join-Path $OutputFolder ($job.job_id + '.launcher.log')
   Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
   Write-Output ("[BOUNDED] {0}/{1} {2} {3}" -f ($index+1),$jobs.Count,$job.bom_level,$job.title)
-  $arg = '-NoProfile -ExecutionPolicy Bypass -File "' + (Join-Path $PSScriptRoot 'run_stage_batch.ps1') + '" -JobsJson "' + [System.IO.Path]::GetFullPath($JobsJson) + '" -OutputFolder "' + [System.IO.Path]::GetFullPath($OutputFolder) + '" -StartIndex ' + $index + ' -Count 1'
+  $arg = '-NoProfile -ExecutionPolicy Bypass -File "' + (Join-Path $PSScriptRoot 'run_stage_batch.ps1') + '" -ProductConfig "' + [System.IO.Path]::GetFullPath($ProductConfig) + '" -JobsJson "' + [System.IO.Path]::GetFullPath($JobsJson) + '" -OutputFolder "' + [System.IO.Path]::GetFullPath($OutputFolder) + '" -StartIndex ' + $index + ' -Count 1'
   $process = Start-Process -FilePath 'pwsh.exe' -ArgumentList $arg -PassThru -RedirectStandardOutput $log -RedirectStandardError ($log + '.err') -WindowStyle Hidden
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   $ready = $false

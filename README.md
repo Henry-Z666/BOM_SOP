@@ -51,21 +51,23 @@ flowchart LR
 ```powershell
 Copy-Item ./config/creo-runtime.example.json ./config/creo-runtime.json
 # 编辑 ./config/creo-runtime.json，填写 Creo 安装目录、许可证文件及 Java/Python 命令。
+$product = './products/water-tank/product.json'
 
 ./skills/generate-creo-assembly-sop/scripts/preflight.ps1 `
   -ProjectRoot . `
-  -JobContract ./data/runs/corrected-v2-render-jobs.json
+  -JobContract ./data/runs/corrected-v2-render-jobs.json `
+  -ProductConfig $product
 ```
 
 确认输入 BOM、Creo 模型目录、J-Link 环境和输出目录可用。预检失败时先修复环境，不开始批量出图。
 
 ### 2. 锁定最终总装与标准双视角
 
-以水箱的 `jb9918900337.asm.2` 为例：
+`$product` 指向一个产品包，包含 BOM、模型目录、SOP 模板和最终总装名。水箱配置位于 `products/water-tank/product.json`；新产品从 `products/product.example.json` 复制并填写。
 
 ```powershell
 ./creo_java/run_camera_calibration.ps1 `
-  -AssemblyFile ./零件图/jb9918900337.asm.2 `
+  -ProductConfig $product `
   -OutputJson ./data/runs/jb9918900337-camera-basis-v3.json
 
 python ./scripts/create_authoritative_assembly_manifest.py `
@@ -81,7 +83,7 @@ python ./scripts/create_authoritative_assembly_manifest.py `
 
 ```powershell
 ./creo_java/run_discovery.ps1 `
-  -AssemblyFile ./零件图/jb9918900337.asm.2 `
+  -ProductConfig $product `
   -OutputJson ./data/runs/jb9918900337-final-recursive-discovery.json
 ```
 
@@ -104,6 +106,7 @@ python ./scripts/validate_corrected_bom_render_jobs.py
 
 ```powershell
 ./creo_java/run_pixel_arrow_trial_v3.ps1 `
+  -ProductConfig $product `
   -JobsJson ./data/runs/corrected-v2-render-jobs.json `
   -OutputFolder ./outputs/images/v3-trial-01 `
   -JobIndex 0
@@ -142,6 +145,7 @@ python ./scripts/validate_published_sop.py
 | `data/runs/` | 批次合同、扫描结果、相机基准和临时会话记录 |
 | `outputs/` | 安装图片和出版 Excel；不作为源码提交 |
 | `docs/` | 正式渲染与箭头规则 |
+| `products/` | 可移植的产品包配置；不包含 CAD、运行时路径或许可证 |
 | `tests/` | 规划、相机和 V3 箭头的确定性测试 |
 
 ## 开发约束

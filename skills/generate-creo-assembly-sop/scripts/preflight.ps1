@@ -1,6 +1,7 @@
 param(
   [Parameter(Mandatory=$true)][string]$ProjectRoot,
   [string]$JobContract = '',
+  [string]$ProductConfig = '',
   [string]$OutputJson = ''
 )
 
@@ -24,6 +25,7 @@ if (-not (Test-Path -LiteralPath $root -PathType Container)) {
 
 $required = @(
   'creo_java\RuntimeConfig.ps1',
+  'creo_java\ProductConfig.ps1',
   'creo_java\run_discovery.ps1',
   'creo_java\run_camera_calibration.ps1',
   'creo_java\run_pixel_arrow_trial_v3.ps1',
@@ -59,6 +61,24 @@ if ($JobContract) {
 }
 else {
   $warnings.Add('no JobContract provided; runtime preflight completed without product-contract validation')
+}
+
+if ($ProductConfig) {
+  try {
+    . (Join-Path $root 'creo_java\ProductConfig.ps1')
+    $product = Get-AssemblySopProduct -ProjectRoot $root -ProductConfig $ProductConfig
+    $details.product_config = $product.ConfigPath
+    $details.product_id = $product.ProductId
+    $details.models_root = $product.ModelsRoot
+    if (-not (Test-Path -LiteralPath $product.BomFile -PathType Leaf)) { $errors.Add("product BOM missing: $($product.BomFile)") }
+    if (-not (Test-Path -LiteralPath $product.SopTemplate -PathType Leaf)) { $warnings.Add("product SOP template missing: $($product.SopTemplate)") }
+    if (-not (Test-Path -LiteralPath $product.FinalAssemblyPath -PathType Leaf)) { $errors.Add("product final assembly missing: $($product.FinalAssemblyPath)") }
+  } catch {
+    $errors.Add("invalid product config: $($_.Exception.Message)")
+  }
+}
+else {
+  $warnings.Add('no ProductConfig provided; product-input validation skipped')
 }
 if ($contractPath -and (Test-Path -LiteralPath $contractPath -PathType Leaf)) {
   try {

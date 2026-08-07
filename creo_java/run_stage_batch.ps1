@@ -1,4 +1,5 @@
 param(
+  [Parameter(Mandatory=$true)][string]$ProductConfig,
   [Parameter(Mandatory=$true)][string]$JobsJson,
   [Parameter(Mandatory=$true)][string]$OutputFolder,
   [int]$StartIndex = 0,
@@ -11,12 +12,15 @@ if ($schema -ne 'creo-render-jobs/v3') { throw '正式总装批次只接受 creo
 $jobs = $document.jobs
 $jobsRoot = Split-Path -Parent ([System.IO.Path]::GetFullPath($JobsJson))
 $root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'ProductConfig.ps1')
+$product = Get-AssemblySopProduct -ProjectRoot $root -ProductConfig $ProductConfig
 $manifestPath = [string]$document.authoritative_assembly_manifest
 if (-not $manifestPath) { throw 'v3 批次缺少 authoritative_assembly_manifest。' }
 if (-not [System.IO.Path]::IsPathRooted($manifestPath)) { $manifestPath = Join-Path $jobsRoot $manifestPath }
 $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
 if ([string]$manifest.schema_version -ne 'authoritative-assembly/v1') { throw '不支持的权威总装清单。' }
-$authoritativeAssembly = Join-Path $root ('零件图\' + [string]$manifest.assembly_file)
+$authoritativeAssembly = Join-Path $product.ModelsRoot ([string]$manifest.assembly_file)
+if ([string]$manifest.assembly_file -ne $product.FinalAssembly) { throw '产品配置 final_assembly 与权威总装清单不一致。' }
 if (-not (Test-Path -LiteralPath $authoritativeAssembly)) { throw ('权威总装不存在: ' + $authoritativeAssembly) }
 $manifestHash = [string]$manifest.assembly_sha256
 if (-not $manifestHash) { throw '权威总装清单缺少 SHA-256。' }
@@ -37,7 +41,7 @@ else {
   $batchRunRoot = Join-Path $root ('data\runs\batch-render-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))
   $batchStagedModels = Join-Path $batchRunRoot 'models'
   New-Item -ItemType Directory -Force -Path $batchRunRoot | Out-Null
-  Copy-Item -LiteralPath (Join-Path $root '零件图') -Destination $batchStagedModels -Recurse
+  Copy-Item -LiteralPath $product.ModelsRoot -Destination $batchStagedModels -Recurse
   Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'isolated_config.pro') -Destination (Join-Path $batchStagedModels 'config.pro') -Force
 }
 Write-Output ("[BATCH] prepared_isolated_models {0}" -f $batchStagedModels)
@@ -66,6 +70,7 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   }
   Write-Output ("[BATCH] {0}/{1} {2} {3}" -f ($index + 1), $jobs.Count, $job.bom_level, $job.title)
   $renderArgs = @{
+    ModelsRoot = $product.ModelsRoot
     AssemblyFile = $authoritativeAssembly
     OutputJpeg = $target
     ExplodeOccurrencePaths = $moving

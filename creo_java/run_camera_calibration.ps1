@@ -1,13 +1,17 @@
 param(
-  [Parameter(Mandatory=$true)][string]$AssemblyFile,
+  [Parameter(Mandatory=$true)][string]$ProductConfig,
+  [string]$AssemblyFile = '',
   [Parameter(Mandatory=$true)][string]$OutputJson
 )
 $here = $PSScriptRoot; $projectRoot = Split-Path -Parent $here
 . (Join-Path $here 'RuntimeConfig.ps1')
+. (Join-Path $here 'ProductConfig.ps1')
 $runtime = Get-CreoRuntime -ProjectRoot $projectRoot
-$common = $runtime.CommonFiles; $nativeLib = $runtime.NativeLibrary; $sourceModels = Join-Path $projectRoot '零件图'
+$product = Get-AssemblySopProduct -ProjectRoot $projectRoot -ProductConfig $ProductConfig
+$common = $runtime.CommonFiles; $nativeLib = $runtime.NativeLibrary; $sourceModels = $product.ModelsRoot
+if (-not $AssemblyFile) { $AssemblyFile = $product.FinalAssemblyPath }
 $requested = Resolve-Path -LiteralPath $AssemblyFile
-if (-not $requested.Path.StartsWith($sourceModels, [System.StringComparison]::OrdinalIgnoreCase)) { throw 'AssemblyFile 必须位于项目的零件图目录。' }
+if (-not $requested.Path.StartsWith($sourceModels, [System.StringComparison]::OrdinalIgnoreCase)) { throw 'AssemblyFile 必须位于产品 models_dir 目录。' }
 $basisClass = Join-Path $here 'build\CameraBasisDiscovery.class'; $basisSource = Join-Path $here 'src\CameraBasisDiscovery.java'
 if (-not (Test-Path $basisClass) -or (Get-Item $basisSource).LastWriteTimeUtc -gt (Get-Item $basisClass).LastWriteTimeUtc) { & (Join-Path $here 'build.ps1'); if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
 $runRoot = Join-Path $projectRoot ('data\runs\camera-calibration-' + (Get-Date -Format 'yyyyMMdd-HHmmss')); $stagedModels = Join-Path $runRoot 'models'

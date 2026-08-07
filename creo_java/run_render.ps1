@@ -1,12 +1,12 @@
-param([Parameter(Mandatory=$true)][string]$AssemblyFile, [Parameter(Mandatory=$true)][string]$OutputJpeg, [string]$ExplodeComponentIds = '', [string]$ExplodeOccurrencePaths = '', [double[]]$Translation = @(0,0,0), [string]$VisibleComponentIds = '', [string]$VisibleOccurrencePaths = '', [string]$ExpectedAssemblySha256 = '', [string]$CameraRotate = '', [string]$SecondOutputJpeg = '', [string]$SecondCameraRotate = '', [ValidateSet('portrait','square')][string]$Frame = 'portrait', [string]$CameraSpec = '', [switch]$DrawInstallArrows, [string]$ArrowAuditJson = '', [string]$PreparedModelsRoot = '')
+param([Parameter(Mandatory=$true)][string]$ModelsRoot, [Parameter(Mandatory=$true)][string]$AssemblyFile, [Parameter(Mandatory=$true)][string]$OutputJpeg, [string]$ExplodeComponentIds = '', [string]$ExplodeOccurrencePaths = '', [double[]]$Translation = @(0,0,0), [string]$VisibleComponentIds = '', [string]$VisibleOccurrencePaths = '', [string]$ExpectedAssemblySha256 = '', [string]$CameraRotate = '', [string]$SecondOutputJpeg = '', [string]$SecondCameraRotate = '', [ValidateSet('portrait','square')][string]$Frame = 'portrait', [string]$CameraSpec = '', [switch]$DrawInstallArrows, [string]$ArrowAuditJson = '', [string]$PreparedModelsRoot = '')
 $here = $PSScriptRoot; $projectRoot = Split-Path -Parent $here
 . (Join-Path $here 'RuntimeConfig.ps1')
 $runtime = Get-CreoRuntime -ProjectRoot $projectRoot
 $ptc = $runtime.CreoLoadpoint; $common = $runtime.CommonFiles; $nativeLib = $runtime.NativeLibrary
 $renderClass = Join-Path $here 'build\RenderAssemblyImage.class'; $renderSource = Join-Path $here 'src\RenderAssemblyImage.java'; $arrowSource = Join-Path $here 'src\ArrowProjection.java'
 if (-not (Test-Path $renderClass) -or (Get-Item $renderSource).LastWriteTimeUtc -gt (Get-Item $renderClass).LastWriteTimeUtc -or (Get-Item $arrowSource).LastWriteTimeUtc -gt (Get-Item $renderClass).LastWriteTimeUtc) { & (Join-Path $here 'build.ps1'); if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
-$sourceModels = Join-Path $projectRoot '零件图'; $requested = Resolve-Path -LiteralPath $AssemblyFile
-if (-not $requested.Path.StartsWith($sourceModels, [System.StringComparison]::OrdinalIgnoreCase)) { throw 'AssemblyFile 必须位于项目的零件图目录。' }
+$sourceModels = (Resolve-Path -LiteralPath $ModelsRoot).Path; $requested = Resolve-Path -LiteralPath $AssemblyFile
+if (-not $requested.Path.StartsWith($sourceModels, [System.StringComparison]::OrdinalIgnoreCase)) { throw 'AssemblyFile 必须位于指定的 ModelsRoot 目录。' }
 if ($ExplodeComponentIds -and $ExplodeOccurrencePaths) { throw '不能同时使用旧版特征号和 occurrence 路径。' }
 if ($VisibleComponentIds -and $VisibleOccurrencePaths) { throw '不能同时使用旧版特征号和 occurrence 路径。' }
 if (-not $ExplodeOccurrencePaths) { $ExplodeOccurrencePaths = $ExplodeComponentIds }
