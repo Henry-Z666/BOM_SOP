@@ -1,6 +1,6 @@
 param(
   [Parameter(Mandatory=$true)][string]$ProjectRoot,
-  [string]$JobContract = 'data\runs\corrected-v2-render-jobs.json',
+  [string]$JobContract = '',
   [string]$OutputJson = ''
 )
 
@@ -23,16 +23,44 @@ if (-not (Test-Path -LiteralPath $root -PathType Container)) {
 }
 
 $required = @(
-  'creo_java\run_stage_batch.ps1',
-  'creo_java\run_render.ps1',
-  'creo_java\src\RenderAssemblyImage.java',
+  'creo_java\RuntimeConfig.ps1',
+  'creo_java\run_discovery.ps1',
+  'creo_java\run_camera_calibration.ps1',
+  'creo_java\run_pixel_arrow_trial_v3.ps1',
+  'creo_java\compose_pixel_arrows_v3_runner.ps1',
+  'creo_java\src\PixelArrowBaseBatchV3.java',
   'creo_java\src\ArrowProjection.java',
-  'scripts\fit_creo_image.ps1'
+  'scripts\create_authoritative_assembly_manifest.py'
 )
 foreach ($path in $required) { [void](Require-File $path) }
 
-$contractPath = Require-File $JobContract
-if (Test-Path -LiteralPath $contractPath -PathType Leaf) {
+$runtimeConfig = Join-Path $root 'config\creo-runtime.json'
+if (-not (Test-Path -LiteralPath $runtimeConfig -PathType Leaf)) {
+  $errors.Add('missing runtime config: config\\creo-runtime.json (copy config\\creo-runtime.example.json and fill local paths)')
+}
+else {
+  try {
+    . (Join-Path $root 'creo_java\RuntimeConfig.ps1')
+    $runtime = Get-CreoRuntime -ProjectRoot $root
+    $details.runtime_config = $runtime.ConfigPath
+    $details.creo_loadpoint = $runtime.CreoLoadpoint
+    $details.java_command = $runtime.JavaCommand
+    $details.python_command = $runtime.PythonCommand
+    & $runtime.PythonCommand -c 'import PIL, numpy' 2>$null
+    if ($LASTEXITCODE -ne 0) { $errors.Add('configured Python lacks Pillow or NumPy; install project dependencies or set python_command to a suitable interpreter') }
+  } catch {
+    $errors.Add("invalid runtime config: $($_.Exception.Message)")
+  }
+}
+
+$contractPath = ''
+if ($JobContract) {
+  $contractPath = Require-File $JobContract
+}
+else {
+  $warnings.Add('no JobContract provided; runtime preflight completed without product-contract validation')
+}
+if ($contractPath -and (Test-Path -LiteralPath $contractPath -PathType Leaf)) {
   try {
     $contract = Get-Content -LiteralPath $contractPath -Raw -Encoding UTF8 | ConvertFrom-Json
     $schema = if ($contract.schema_version) { [string]$contract.schema_version } else { [string]$contract.schema }
@@ -89,11 +117,8 @@ if (Test-Path -LiteralPath $contractPath -PathType Leaf) {
   }
 }
 
-$java = Get-Command java -ErrorAction SilentlyContinue
-if ($null -eq $java) { $warnings.Add('java is not on PATH; run_render.ps1 may still use the bundled Creo JRE') }
 $details.project_root = $root
 $details.contract = $contractPath
-$details.java_on_path = ($null -ne $java)
 
 $result = [ordered]@{
   schema = 'creo-assembly-sop-preflight/v1'

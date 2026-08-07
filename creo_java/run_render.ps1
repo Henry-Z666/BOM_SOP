@@ -1,6 +1,8 @@
 param([Parameter(Mandatory=$true)][string]$AssemblyFile, [Parameter(Mandatory=$true)][string]$OutputJpeg, [string]$ExplodeComponentIds = '', [string]$ExplodeOccurrencePaths = '', [double[]]$Translation = @(0,0,0), [string]$VisibleComponentIds = '', [string]$VisibleOccurrencePaths = '', [string]$ExpectedAssemblySha256 = '', [string]$CameraRotate = '', [string]$SecondOutputJpeg = '', [string]$SecondCameraRotate = '', [ValidateSet('portrait','square')][string]$Frame = 'portrait', [string]$CameraSpec = '', [switch]$DrawInstallArrows, [string]$ArrowAuditJson = '', [string]$PreparedModelsRoot = '')
-$ptc = 'C:\Program Files\PTC\Creo 13.4.0.0'; $common = Join-Path $ptc 'Common Files'; $nativeLib = Join-Path $common 'x86e_win64\lib'
 $here = $PSScriptRoot; $projectRoot = Split-Path -Parent $here
+. (Join-Path $here 'RuntimeConfig.ps1')
+$runtime = Get-CreoRuntime -ProjectRoot $projectRoot
+$ptc = $runtime.CreoLoadpoint; $common = $runtime.CommonFiles; $nativeLib = $runtime.NativeLibrary
 $renderClass = Join-Path $here 'build\RenderAssemblyImage.class'; $renderSource = Join-Path $here 'src\RenderAssemblyImage.java'; $arrowSource = Join-Path $here 'src\ArrowProjection.java'
 if (-not (Test-Path $renderClass) -or (Get-Item $renderSource).LastWriteTimeUtc -gt (Get-Item $renderClass).LastWriteTimeUtc -or (Get-Item $arrowSource).LastWriteTimeUtc -gt (Get-Item $renderClass).LastWriteTimeUtc) { & (Join-Path $here 'build.ps1'); if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }
 $sourceModels = Join-Path $projectRoot '零件图'; $requested = Resolve-Path -LiteralPath $AssemblyFile
@@ -20,6 +22,8 @@ if ($CameraRotate) {
   Write-Warning 'legacy_relative_camera: CameraRotate 仅用于旧任务；新任务必须使用 ABS/UP CameraSpec。'
   $effectiveCamera = $CameraRotate
 }
+$licenseFile = $runtime.LicenseFile
+& (Join-Path $here 'test_license_binding.ps1') -LicenseFile $licenseFile -CreoLoadpoint $runtime.CreoLoadpoint
 $runRoot = Join-Path $projectRoot ('data\runs\render-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
 if ($PreparedModelsRoot) {
   $stagedModels = [System.IO.Path]::GetFullPath($PreparedModelsRoot)
@@ -49,11 +53,9 @@ if ($SecondOutputJpeg) {
   if ($ExplodeOccurrencePaths -or $VisibleOccurrencePaths -or $effectiveCamera) { throw '双视图预览不能与爆炸/可见集参数混用。' }
   $secondOutputFull = [System.IO.Path]::GetFullPath($SecondOutputJpeg); New-Item -ItemType Directory -Force -Path (Split-Path -Parent $secondOutputFull) | Out-Null
 }
-$env:PATH = $nativeLib + ';' + (Join-Path $ptc 'Parametric\bin') + ';' + $env:PATH; $env:PRO_DIRECTORY = Join-Path $ptc 'Parametric'; $env:CREO_COMMON_FILES = $common
-$env:PRO_COMM_MSG_EXE = Join-Path $common 'x86e_win64\obj\pro_comm_msg.exe'; $env:PTC_D_LICENSE_FILE = 'C:\ProgramData\PTC\Licensing\BK130602EDUNIVERSITYED_license.dat'
-$env:CREO_APP = 'PMA'; $env:CREOPMA_FEATURE_NAME = 'CREOPMA_StudentP6 ()'
+Set-CreoRuntimeEnvironment -Runtime $runtime
 $classpath = (Join-Path $here 'build') + ';' + (Join-Path $common 'text\java\pfcasync.jar') + ';' + (Join-Path $common 'text\java\otk.jar')
-$java = (Get-Command java -ErrorAction Stop).Source; $creoCommand = '"' + (Join-Path $ptc 'Parametric\bin\parametric.bat') + '"'
+$java = $runtime.JavaCommand; $creoCommand = $runtime.CreoCommand
 Push-Location $stagedModels
 try {
   $renderArgs = @('--enable-native-access=ALL-UNNAMED', ('-Djava.library.path=' + $nativeLib), '-cp', $classpath, 'RenderAssemblyImage', $creoCommand, $stagedAssembly, $outputFull)

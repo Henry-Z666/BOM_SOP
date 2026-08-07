@@ -1,10 +1,11 @@
 param(
-  [string]$LicenseFile = 'C:\ProgramData\PTC\Licensing\BK130602EDUNIVERSITYED_license.dat'
+  [Parameter(Mandatory=$true)][string]$LicenseFile,
+  [Parameter(Mandatory=$true)][string]$CreoLoadpoint
 )
 
 $ErrorActionPreference = 'Stop'
 if (-not (Test-Path -LiteralPath $LicenseFile -PathType Leaf)) { throw ('PTC 授权文件不存在: ' + $LicenseFile) }
-$ptcHostId = 'C:\Program Files\PTC\Creo 13.4.0.0\Parametric\bin\ptchostid.bat'
+$ptcHostId = Join-Path $CreoLoadpoint 'Parametric\bin\ptchostid.bat'
 if (-not (Test-Path -LiteralPath $ptcHostId -PathType Leaf)) { throw ('找不到 PTC Host ID 工具: ' + $ptcHostId) }
 
 $licenseText = Get-Content -LiteralPath $LicenseFile -Raw -Encoding UTF8

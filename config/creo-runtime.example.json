@@ -1,0 +1,10 @@
+{
+  "schema_version": "creo-runtime/v1",
+  "creo_loadpoint": "C:\\Program Files\\PTC\\Creo 13.4.0.0",
+  "license_file": "C:\\ProgramData\\PTC\\Licensing\\your-creo-license.dat",
+  "creo_app": "PMA",
+  "creo_feature_name": "",
+  "java_command": "java",
+  "javac_command": "javac",
+  "python_command": "python"
+}

@@ -1,104 +1,164 @@
-# Creo 原生装配 SOP（首版）
+# Creo 装配 SOP 生成流水线
 
-这是一个**自动规划驱动**的安装图生成闭环：BOM 给出层级，Creo 原生装配抽取器提供 occurrence、变换与约束事实，AI 据此自动规划并批量生成安装图。
+从 `BOM.xlsx` 和 Creo 最终总装出发，生成经过校验的安装步骤图，并将合格图片写入 SOP Excel 模板。
 
-正式出图以最终总装为唯一几何源，采用产品级固定 123/456 双视角、正向阶段可见性、纯平移爆炸和同 CAD 点箭头。中间 ASM 仅用于结构与约束核对。
+当前仓库面向后续开发者：先保证步骤图正确，再进行 SOP 出版。正式 CAD 自动化只使用 Creo 异步 J-Link Java API；不使用屏幕坐标或 computer use。
 
-## Codex Skill
+## 输入与产物
 
-仓库内置可复用 Skill：`skills/generate-creo-assembly-sop`。它封装了 BOM 规划、权威总装锁定、批量 Creo 渲染、箭头审计、硬校验及 SOP 发布流程。
+| 输入 | 用途 |
+| --- | --- |
+| `BOM.xlsx` | 工序层级、物料、数量、工艺文字、控制要点和工装 |
+| `零件图/` | Creo `.asm/.prt` 模型；其中版本最高的最终总装用于正式出图 |
+| `SOP示例.xlsx` | 固定发布版式；不参与步骤规划 |
 
-在当前仓运行预检：
+| 产物 | 位置 |
+| --- | --- |
+| 锁定的总装、哈希和双视角 | `data/runs/*authoritative-assembly*.json`、`*camera-basis*.json` |
+| 递归 occurrence 图 | `data/runs/*final-recursive-discovery*.json` |
+| 安装步骤任务与相机合同 | `data/runs/*render-jobs*.json`、`data/runs/*camera-contracts/` |
+| 安装图片与箭头审计 | `outputs/images/` |
+| 可出版 SOP | `outputs/published_sop/` |
+
+## 当前水箱批次流程
+
+```mermaid
+flowchart LR
+    A["BOM.xlsx\n零件图 / 最终总装"] --> B["锁定总装版本、SHA-256\n校准 fixed_123 / fixed_456"]
+    B --> C["J-Link 递归扫描\noccurrence、变换、约束"]
+    C --> D["生成并校验\ncreo-render-jobs/v3"]
+    D --> E["J-Link 阶段出图\n前序件 + 活动件 + 接收件"]
+    E --> F["V3 同 CAD 点箭头\n校准图 + 纯零件底图"]
+    F --> G["静态、图片、箭头审计"]
+    G --> H["SOP Excel 出版"]
+```
+
+步骤含义：
+
+1. 总装只在批次开始时锁定一次；最终总装是正式几何、位置、坐标和相机来源。
+2. discovery 将每个零件映射为从根总装开始的完整 occurrence 路径。
+3. 每个步骤只显示此前已完成件、本步活动件、接收件和有证据的必要上下文；后续件必须隐藏。
+4. 爆炸只允许沿接收面法向纯平移；已完成子装配以后续步骤中的刚性整体处理。
+5. 相机只能在产品级 `fixed_123`、`fixed_456` 中选择其一。
+6. V3 箭头从活动件同一 CAD 锚点的爆炸态指向完整态；只有通过审计的图片才能出版。
+
+## 从零开始跑一个产品
+
+以下命令在 PowerShell、仓库根目录执行。先把运行时示例复制为本机配置；许可证文件本身不进入仓库。
+
+### 1. 预检
 
 ```powershell
-./skills/generate-creo-assembly-sop/scripts/preflight.ps1 -ProjectRoot .
+Copy-Item ./config/creo-runtime.example.json ./config/creo-runtime.json
+# 编辑 ./config/creo-runtime.json，填写 Creo 安装目录、许可证文件及 Java/Python 命令。
+
+./skills/generate-creo-assembly-sop/scripts/preflight.ps1 `
+  -ProjectRoot . `
+  -JobContract ./data/runs/corrected-v2-render-jobs.json
 ```
 
-安装为个人 Skill 后可用 `$generate-creo-assembly-sop` 触发。
+确认输入 BOM、Creo 模型目录、J-Link 环境和输出目录可用。预检失败时先修复环境，不开始批量出图。
 
-## 快速开始
+### 2. 锁定最终总装与标准双视角
 
-```powershell
-$env:PYTHONPATH = (Join-Path $PWD 'src')
-python -m sop_pipeline.cli plan
-python -m sop_pipeline.cli discover "零件图/jh9919000534.asm.1" data/cad_graphs/jh9919000534.json
-python -m sop_pipeline.cli auto-plan data/contracts/pilot.internal-water-tank.json data/cad_graphs/jh9919000534.json
-```
-
-不需要人工审核；首版默认生成两个 pilot：
-
-- `pilot.internal-water-tank`：子装配内部构建；
-- `pilot.attach-water-tank`：子装配整体安装至父装配。
-
-它们会先处于 `awaiting_cad_discovery`：这是自动抽取尚未执行，不是待人填写。系统不会伪造 Creo 图片。
-
-## 工作流
-
-1. `plan`：从 `BOM.xlsx` 解析层级，生成 `data/contracts/*.json`。
-2. `discover`：Creo 原生抽取器自动输出 assembly graph（occurrence、变换、约束与接触面）。
-3. `auto-plan`：AI 结合 BOM 和图谱自动确定活动件、接收件、平移向量与相机。
-4. `validate`：执行渲染前的合同与图谱审计校验。
-5. `render`：只对自动规划完成的合同调用 Creo 原生执行器；源 CAD 不会被修改。
-5. `annotate`：对执行器输出的同相机完整/爆炸图叠加箭头与气泡。
-6. `publish`：只对通过所有校验的步骤调用 Excel 发布器。
-
-## Creo 执行器接口
-
-设置 `CREO_RUNNER_COMMAND` 后，`render` 会在隔离工作目录写入请求 JSON 并调用该命令。命令必须接受请求文件路径作为第一个参数，并写出由请求指定的 `result_manifest`：
-
-```json
-{
-  "step_id": "...",
-  "assembly_file": "...",
-  "complete_image": "absolute/or/workdir-relative.png",
-  "exploded_image": "absolute/or/workdir-relative.png",
-  "camera": {"name": "oblique", "matrix": [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]]},
-  "occurrences": [{
-    "id": "...",
-    "role": "moving|receiver|retained",
-    "complete_matrix": [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]],
-    "exploded_matrix": [[1,0,0,20],[0,1,0,0],[0,0,1,0],[0,0,0,1]]
-  }],
-  "projection": {"moving_point_exploded": [120,80], "moving_point_complete": [220,160]}
-}
-```
-
-渲染器必须是 Creo 原生 API/内嵌脚本实现（例如 J-Link 或 Creo Toolkit），不得使用屏幕坐标点击。
-
-## 固定 123/456 两视角相机
-
-正式渲染不再使用 `Y:180`、`X:-90` 等相对旋转，也不生成俯仰或相邻八分体候选。先从权威 ASM 的默认打开视图保存完整规范方向。Creo 视图 right/up/back 位于矩阵前三列；固定 123 重放该矩阵，固定 456 保持 up 不变并把 right/back 取反：
+以水箱的 `jb9918900337.asm.2` 为例：
 
 ```powershell
 ./creo_java/run_camera_calibration.ps1 `
-  -AssemblyFile ./零件图/jh9919000534.asm.1 `
-  -OutputJson ./data/camera-bases/jh9919000534.camera-basis.json
+  -AssemblyFile ./零件图/jb9918900337.asm.2 `
+  -OutputJson ./data/runs/jb9918900337-camera-basis-v3.json
+
+python ./scripts/create_authoritative_assembly_manifest.py `
+  --models-dir ./零件图 `
+  --assembly jb9918900337.asm.2 `
+  --camera-basis ./data/runs/jb9918900337-camera-basis-v3.json `
+  --output ./data/runs/jb9918900337-authoritative-assembly.json
 ```
 
-随后由接收面法向和爆炸向量创建结构化相机合同：
+输出：相机基准和权威总装清单。之后若总装哈希变化，已有批次不得继续使用。
+
+### 3. 递归扫描最终总装
 
 ```powershell
-$env:PYTHONPATH = (Join-Path $PWD 'src')
-python scripts/plan_absolute_camera.py `
-  --basis data/camera-bases/jh9919000534.camera-basis.json `
-  --output data/runs/example.camera.json --bom-level 30.1.4 `
-  --receiver-occurrence C_47 --receiver-normal 1 0 0 `
-  --normal-evidence "Creo planar receiver face" --explosion-vector 158.244 7.536 -22.406
+./creo_java/run_discovery.ps1 `
+  -AssemblyFile ./零件图/jb9918900337.asm.2 `
+  -OutputJson ./data/runs/jb9918900337-final-recursive-discovery.json
 ```
 
-J-Link 接收的方向语义为 `ABS:px:py:pz,UP:ux:uy:uz,ZOOM:n,CENTER`。每一步只能在 `fixed_123` 与 `fixed_456` 中二选一，以活动件和接收位置同时清晰可见为硬条件；不得生成第三视角。`ABS` 是根 ASM 中从模型中心指向相机的绝对方向；同一合同从任意初始 Creo 视图执行都会得到同一矩阵。旧 v2/`CameraRotate` 仅保留兼容并标记 legacy。
+输出：递归 occurrence 图。它用于 BOM 到完整 occurrence 路径的匹配、接收件定位和后续步骤规划。
 
-456 构图校准使用 `scripts/refine_absolute_camera_framing.ps1`：首次调用从 `ZOOM=1` 预览计算目标缩放并返回两个探针 PAN，目标缩放下两张探针完成后才更新合同。123 不运行 PAN 标定，只记录主体 ZOOM。全程保留 Creo 原生像素，不做二次动态裁切。
+### 4. 生成并检查步骤任务
 
-## Excel 发布
-
-`scripts/build_grouped_published_sop.mjs` 使用 `@oai/artifact-tool` 导入“一主工序一工作表”的 Excel 模板，将当前 42 张已验收安装图按 8 个 BOM 主工序分组嵌入。发布器只处理已通过合同、渲染和标注校验的步骤；模板永远不是步骤真值。
-
-模板是项目输入，不随仓库提交。发布前指定它的路径：
+当前水箱批次采用已校正的规划脚本：
 
 ```powershell
-$env:SOP_REFERENCE_PATH = 'D:\\path\\to\\one-process-per-sheet-template.xlsx'
-node scripts/build_grouped_published_sop.mjs
+python ./scripts/create_corrected_bom_render_jobs.py
+python ./scripts/validate_corrected_bom_render_jobs.py
 ```
 
-最终 Excel、图片、CAD 文件、Creo 隔离会话和本地构建缓存均由 `.gitignore` 排除。
+输出：`data/runs/corrected-v2-render-jobs.json` 及对应相机合同。静态校验必须确认数量、前序可见集、接收件、接收面法向爆炸方向、双视角和安装顺序。
+
+### 5. V3 单步骤试跑
+
+先对一个任务生成一张正式箭头图；`JobIndex` 从 `0` 开始。
+
+```powershell
+./creo_java/run_pixel_arrow_trial_v3.ps1 `
+  -JobsJson ./data/runs/corrected-v2-render-jobs.json `
+  -OutputFolder ./outputs/images/v3-trial-01 `
+  -JobIndex 0
+```
+
+输出目录内会包含：
+
+- `*.base.jpg`：没有箭头的纯零件底图；
+- `*.calibration.jpg`：只用于读取原生投影端点，不发布；
+- `*.arrow.json`：同点、方向、覆盖 occurrence 的审计；
+- `*.jpg`：最终绿色箭头安装图。
+
+如出现总装哈希不符、可见集不符、箭头数量不符或图片不可读，runner 应阻断该图；不要用后续零件补画面，也不要改用第三视角。
+
+### 6. 校验与出版
+
+完整水箱图片在 `outputs/images/jlink/corrected-v3/` 时，运行：
+
+```powershell
+python ./scripts/validate_corrected_render_outputs.py
+
+$env:SOP_REFERENCE_PATH = 'D:\path\to\one-process-per-sheet-template.xlsx'
+node ./scripts/build_grouped_published_sop.mjs
+python ./scripts/validate_published_sop.py
+```
+
+输出：`outputs/published_sop/JB9918900337_水箱部件装配SOP_出版版.xlsx`。发布脚本按模板的“一主工序一工作表”结构写入合格图片与 BOM 来源文字。
+
+## 目录导航
+
+| 目录 | 内容 |
+| --- | --- |
+| `creo_java/` | J-Link Java 源码、构建脚本、Creo runner 和 V3 箭头合成入口 |
+| `src/sop_pipeline/` | BOM、CAD 图谱、规划、校验、像素箭头和出版逻辑 |
+| `scripts/` | 总装锁定、任务生成、批次和出版校验工具 |
+| `data/runs/` | 批次合同、扫描结果、相机基准和临时会话记录 |
+| `outputs/` | 安装图片和出版 Excel；不作为源码提交 |
+| `docs/` | 正式渲染与箭头规则 |
+| `tests/` | 规划、相机和 V3 箭头的确定性测试 |
+
+## 开发约束
+
+- 正式出图只使用最终总装；中间 ASM 可用于诊断，但不能成为正式图片来源。
+- 总装 occurrence 必须使用完整根路径，例如 `51/5025/79`，不能使用裸特征号。
+- 源 CAD 保持只读；所有会话在隔离副本中运行且不保存。
+- 正式箭头只使用 V3 校准图 + 纯零件底图流程；不使用旧图片覆盖箭头脚本。
+- 不使用相对 `X/Y/Z` 旋转、第三视角、动态几何裁切或按颜色隐藏焊接标识。
+- `data/runs/`、`outputs/`、Creo 模型和本地构建缓存均为运行产物，不提交到仓库。
+
+后续的大型装配将增加递归 `BuildNode` 与可重建的派生 ASM 缓存：它们用于缩小 BOM 理解与渲染范围，但最终总装仍保持唯一几何来源。
+
+## 规则与实现细节
+
+- [安装图规划规则](docs/render-planning-rules.md)：阶段可见性、固定双视角、爆炸、构图和 BOM/CAD 匹配。
+- [Pixel Arrow V3 规则](docs/pixel-arrow-v3-rules.md)：同点锚定、端点识别、像素阈值和发布条件。
+- [降本增效路线](docs/reduce-script-roadmap.md)：会话复用和后续开发方向。
+
+旧 runner、相对相机和中间 ASM 出图路径只可用于诊断或迁移对照，不能用于新的正式批次。

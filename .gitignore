@@ -5,6 +5,9 @@ creo_java/build/
 __pycache__/
 *.pyc
 
+# Per-computer Creo installation, license and runtime commands
+config/creo-runtime.json
+
 # Source CAD and generated deliverables are kept locally, not in the workflow repository.
 零件图/
 outputs/

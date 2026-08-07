@@ -10,9 +10,10 @@ Use the BOM as the process hierarchy and the final Creo assembly as the only geo
 ## Start with a preflight
 
 1. Locate the pipeline workspace. Prefer the current repository; otherwise ask for or locate the `BOM_SOP` checkout.
-2. Run `scripts/preflight.ps1 -ProjectRoot <path>` from this skill before changing or executing a formal batch.
-3. Read `references/render-rules.md` and `references/contracts.md` before editing a contract, render runner, or publication step.
-4. Report the current phase, completed major BOM section, failures, and retry action while a long Creo batch is running. Do not silently wait through a long batch.
+2. Copy `config/creo-runtime.example.json` to the ignored `config/creo-runtime.json`; configure Creo loadpoint, the local license file, and Java/Python commands. Never put a license file or a user home path in the skill or repository.
+3. Run `scripts/preflight.ps1 -ProjectRoot <path>` from this skill before changing or executing a formal batch.
+4. Read `references/render-rules.md` and `references/contracts.md` before editing a contract, render runner, or publication step.
+5. Report the current phase, completed major BOM section, failures, and retry action while a long Creo batch is running. Do not silently wait through a long batch.
 
 Treat a failed preflight or validation as a repair task. Fix in-scope deterministic defects, rerun the failed bounded step, and continue. Do not publish a failed image.
 
@@ -68,7 +69,6 @@ Automatically inspect each exported image after validation. If moving parts or r
 
 ## Reuse and migration
 
-For a new product, calibrate the final assembly and its two fixed cameras once, then rebuild occurrence mapping and step contracts. Reuse the workflow and schemas, not product-specific occurrence IDs, translations, PAN, ZOOM, or BOM wording.
+For a new product, calibrate the final assembly and its two fixed cameras once, then rebuild occurrence mapping and step contracts. Reuse the workflow and schemas, not product-specific occurrence IDs, translations, PAN, ZOOM, BOM wording, Creo installation paths, or license settings.
 
 Legacy intermediate-assembly or relative-camera contracts may be read for diagnosis but must not produce a new formal batch.
-
