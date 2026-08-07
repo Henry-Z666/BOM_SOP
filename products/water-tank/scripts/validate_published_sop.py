@@ -1,9 +1,9 @@
 """Validate the grouped, publishable eight-process SOP workbook."""
+import argparse
 from pathlib import Path
 from openpyxl import load_workbook
 
 ROOT = Path(__file__).resolve().parents[3]
-OUTPUT = ROOT / "outputs" / "published_sop" / "JB9918900337_水箱部件装配SOP_出版版.xlsx"
 
 EXPECTED = {
     "第1步-固定水箱焊件": 13,
@@ -16,10 +16,19 @@ EXPECTED = {
     "第8步-安装进水管焊件": 7,
 }
 
-if not OUTPUT.exists():
-    raise SystemExit(f"missing workbook: {OUTPUT}")
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--workbook",
+    type=Path,
+    default=ROOT / "outputs" / "published_sop" / "JB9918900337_水箱部件装配SOP_出版版.xlsx",
+)
+args = parser.parse_args()
+output = args.workbook.resolve()
 
-wb = load_workbook(OUTPUT, data_only=False)
+if not output.exists():
+    raise SystemExit(f"missing workbook: {output}")
+
+wb = load_workbook(output, data_only=False)
 errors: list[str] = []
 if wb.sheetnames != list(EXPECTED):
     errors.append(f"sheet order mismatch: {wb.sheetnames}")
@@ -53,7 +62,7 @@ if errors:
     raise SystemExit(1)
 
 print("PUBLISHED SOP VALIDATION PASSED")
-print(f"workbook={OUTPUT}")
+print(f"workbook={output}")
 print(f"sheets={len(wb.sheetnames)} images={total_images}")
 for name, count in EXPECTED.items():
     print(f"  {name}: {count}")

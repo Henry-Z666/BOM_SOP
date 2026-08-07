@@ -128,7 +128,7 @@ python ./products/water-tank/scripts/validate_render_jobs.py
 python ./scripts/validate_corrected_render_outputs.py
 
 $env:SOP_REFERENCE_PATH = 'D:\path\to\one-process-per-sheet-template.xlsx'
-node ./products/water-tank/scripts/publish_grouped_sop.mjs
+node ./products/water-tank/scripts/publish_sop_spreadsheets.mjs
 python ./products/water-tank/scripts/validate_published_sop.py
 ```
 
@@ -162,6 +162,7 @@ python ./products/water-tank/scripts/validate_published_sop.py
 
 - [安装图规划规则](docs/render-planning-rules.md)：阶段可见性、固定双视角、爆炸、构图和 BOM/CAD 匹配。
 - [Pixel Arrow V3 规则](docs/pixel-arrow-v3-rules.md)：同点锚定、端点识别、像素阈值和发布条件。
+- [Spreadsheet SOP 出版](docs/spreadsheet-sop-publication.md)：模板、图片和出版校验。
 - [降本增效路线](docs/reduce-script-roadmap.md)：会话复用和后续开发方向。
 
 旧 runner、相对相机和中间 ASM 出图路径只可用于诊断或迁移对照，不能用于新的正式批次。
