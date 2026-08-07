@@ -1,0 +1,4 @@
+interface:
+  display_name: "Creo Assembly SOP Generator"
+  short_description: "Generate validated Creo installation images and SOP workbooks"
+  default_prompt: "Use $generate-creo-assembly-sop to generate validated installation images and an SOP from a BOM and a final Creo assembly."

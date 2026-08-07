@@ -2,6 +2,20 @@
 
 这是一个**自动规划驱动**的安装图生成闭环：BOM 给出层级，Creo 原生装配抽取器提供 occurrence、变换与约束事实，AI 据此自动规划并批量生成安装图。
 
+正式出图以最终总装为唯一几何源，采用产品级固定 123/456 双视角、正向阶段可见性、纯平移爆炸和同 CAD 点箭头。中间 ASM 仅用于结构与约束核对。
+
+## Codex Skill
+
+仓库内置可复用 Skill：`skills/generate-creo-assembly-sop`。它封装了 BOM 规划、权威总装锁定、批量 Creo 渲染、箭头审计、硬校验及 SOP 发布流程。
+
+在当前仓运行预检：
+
+```powershell
+./skills/generate-creo-assembly-sop/scripts/preflight.ps1 -ProjectRoot .
+```
+
+安装为个人 Skill 后可用 `$generate-creo-assembly-sop` 触发。
+
 ## 快速开始
 
 ```powershell
@@ -72,7 +86,7 @@ python scripts/plan_absolute_camera.py `
   --normal-evidence "Creo planar receiver face" --explosion-vector 158.244 7.536 -22.406
 ```
 
-J-Link 接收的方向语义为 `ABS:px:py:pz,UP:ux:uy:uz,ZOOM:n,CENTER`。接收面 1–3 只允许 `fixed_123` 且合同 PAN 必须为零；接收面 4–6 只允许 `fixed_456`，并在合同记录显式 `PAN:x:y`。`ABS` 是根 ASM 中从模型中心指向相机的绝对方向；同一合同从任意初始 Creo 视图执行都会得到同一矩阵。旧 v2/`CameraRotate` 仅保留兼容并标记 legacy。
+J-Link 接收的方向语义为 `ABS:px:py:pz,UP:ux:uy:uz,ZOOM:n,CENTER`。每一步只能在 `fixed_123` 与 `fixed_456` 中二选一，以活动件和接收位置同时清晰可见为硬条件；不得生成第三视角。`ABS` 是根 ASM 中从模型中心指向相机的绝对方向；同一合同从任意初始 Creo 视图执行都会得到同一矩阵。旧 v2/`CameraRotate` 仅保留兼容并标记 legacy。
 
 456 构图校准使用 `scripts/refine_absolute_camera_framing.ps1`：首次调用从 `ZOOM=1` 预览计算目标缩放并返回两个探针 PAN，目标缩放下两张探针完成后才更新合同。123 不运行 PAN 标定，只记录主体 ZOOM。全程保留 Creo 原生像素，不做二次动态裁切。
 
