@@ -19,6 +19,9 @@ data/runs/**/*.log
 data/runs/**/*.stderr
 data/runs/**/*.stdout
 data/camera-bases/*.log
+data/runs/arrow-*/
+data/runs/persistent-*/
+data/runs/pixel-*/
 
 # Local app and operating-system artifacts
 .DS_Store

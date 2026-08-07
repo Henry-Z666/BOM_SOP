@@ -441,6 +441,97 @@ public final class RenderAssemblyImage {
     }
   }
 
+  /**
+   * Renders one formal stage inside an already-started Creo session. The model
+   * lifecycle stays deliberately per-job: close its window and erase all
+   * undisplayed models in the finally block so a later job cannot inherit a
+   * temporary simplified representation, dynamic transform, camera, or arrow.
+   */
+  static void renderInSession(Session session, String assemblyFile, String outputJpeg,
+      String occurrencePaths, double dx, double dy, double dz, String visiblePaths,
+      String cameraSpec, String arrowAuditJson) throws Throwable {
+    renderInSession(session, assemblyFile, outputJpeg, occurrencePaths, dx, dy, dz, visiblePaths, cameraSpec, arrowAuditJson, true);
+  }
+  /** V3 may retain the exact same geometric audit while exporting an unannotated base raster. */
+  static void renderInSession(Session session, String assemblyFile, String outputJpeg,
+      String occurrencePaths, double dx, double dy, double dz, String visiblePaths,
+      String cameraSpec, String arrowAuditJson, boolean drawNativeArrow) throws Throwable {
+    Window window = null;
+    DisplayList3D arrowDisplay = null;
+    try {
+      ModelDescriptor descriptor = assemblyDescriptor(assemblyFile);
+      window = session.OpenFile(descriptor);
+      window.Activate();
+      Model model = window.GetModel();
+      String requestedBase = new File(assemblyFile).getName().replaceFirst("\\.[0-9]+$", "");
+      if (!model.GetFileName().equalsIgnoreCase(requestedBase)) {
+        throw new IllegalStateException("Opened unexpected assembly: requested=" + requestedBase + " actual=" + model.GetFileName());
+      }
+      Integer requestedVersion = descriptor.GetFileVersion(), actualVersion = model.GetDescr().GetFileVersion();
+      if (requestedVersion != null && !requestedVersion.equals(actualVersion)) {
+        throw new IllegalStateException("Opened unexpected assembly version: requested=" + requestedVersion + " actual=" + actualVersion);
+      }
+      System.err.println("[PERSISTENT] authoritative_assembly=" + model.GetFileName() + "." + actualVersion);
+      int hiddenAuxiliaryFeatures = hideAuxiliaryFeatures(session, model, new java.util.HashSet<String>());
+      System.err.println("[PERSISTENT] native_auxiliary_features_hidden=" + hiddenAuxiliaryFeatures);
+
+      java.util.List<intseq> requestedOccurrences = parseOccurrencePaths(occurrencePaths);
+      if (requestedOccurrences.isEmpty()) throw new IllegalArgumentException("No moving occurrence paths supplied");
+      java.util.Set<String> desired = new java.util.HashSet<String>();
+      for (String rawPath : visiblePaths.split(";")) if (!rawPath.trim().startsWith("!")) desired.add(rawPath.trim());
+      java.util.List<intseq> visibleOccurrencePaths = parseOccurrencePaths(String.join(";", desired));
+      if (visibleOccurrencePaths.isEmpty()) throw new IllegalArgumentException("No visible occurrence paths supplied");
+
+      Assembly assembly = (Assembly)model;
+      CreateNewSimpRepInstructions stage = pfcSimpRep.CreateNewSimpRepInstructions_Create("AI_SOP_STAGE");
+      stage.SetIsTemporary(true); stage.SetDefaultAction(SimpRepActionType.SIMPREP_INCLUDE);
+      SimpRepItems items = SimpRepItems.create(); addStageExclusions(session, assembly, "", desired, items);
+      // The temporary stage is only meaningful when its recursively generated
+      // exclusion list is attached to the creation instructions.  Omitting
+      // this call silently keeps the complete total assembly visible, which
+      // invalidates the forward-stage contract and the calibrated framing.
+      stage.SetItems(items);
+      assembly.ActivateSimpRep(assembly.CreateSimpRep(stage));
+      System.err.println("[PERSISTENT] visible occurrences=" + visiblePaths + " stage_exclusions=" + items.getarraysize());
+
+      if (!assembly.GetDynamicPositioning()) assembly.SetDynamicPositioning(true);
+      if (!assembly.GetDynamicPositioning()) throw new IllegalStateException("Creo DynamicPositioning was not enabled");
+      boolean useStageLookAt = cameraSpec.toUpperCase(java.util.Locale.ROOT).contains("LOOKAT_STAGE");
+      if (useStageLookAt) {
+        double[] stageCenter = stageOccurrenceCenter(session, assembly, visibleOccurrencePaths);
+        for (intseq ids : minimalOccurrenceRoots(visibleOccurrencePaths))
+          translateResolved(session, assembly, ids, -stageCenter[0], -stageCenter[1], -stageCenter[2]);
+        System.err.println("[PERSISTENT] framing_stage_translation=" + java.util.Arrays.toString(new double[] {-stageCenter[0], -stageCenter[1], -stageCenter[2]}));
+      }
+
+      java.util.List<ArrowProjection.MovingOccurrence> arrowMoving = new java.util.ArrayList<ArrowProjection.MovingOccurrence>();
+      for (intseq ids : requestedOccurrences) arrowMoving.add(ArrowProjection.prepare(session, assembly, ids));
+      for (intseq ids : requestedOccurrences) translateResolved(session, assembly, ids, dx, dy, dz);
+      double[] arrowTranslation = new double[] { dx, dy, dz };
+      System.err.println("[PERSISTENT] translated occurrences=" + occurrencePaths + " vector=" + java.util.Arrays.toString(arrowTranslation));
+
+      applyCamera(assembly, session, cameraSpec);
+      session.RunMacro("~ Command `ProCmdViewRefit`");
+      window.Repaint(); session.FlushCurrentWindow(); applyZoom(window, cameraSpec);
+      ArrowProjection.Result arrowResult = ArrowProjection.layout(assembly, arrowMoving, arrowTranslation);
+      ArrowProjection.writeAudit(arrowResult, arrowAuditJson);
+      if (drawNativeArrow) arrowDisplay = ArrowProjection.display(session, arrowResult);
+      session.UIClearMessage(); window.Repaint(); session.FlushCurrentWindow();
+      JPEGImageExportInstructions instructions = pfcWindow.JPEGImageExportInstructions_Create(9.0, 12.0);
+      instructions.SetDotsPerInch(DotsPerInch.RASTERDPI_200);
+      instructions.SetImageDepth(RasterDepth.RASTERDEPTH_24);
+      window.ExportRasterImage(outputJpeg, instructions);
+      System.err.println("[PERSISTENT] wrote=" + outputJpeg + " audit=" + arrowAuditJson);
+    }
+    finally {
+      if (arrowDisplay != null) try { arrowDisplay.Delete(); } catch (Throwable ignored) {}
+      if (window != null) try { window.Close(); } catch (Throwable ignored) {}
+      // This is the state-isolation boundary for the persistent application.
+      // The next job reopens the authoritative assembly from the isolated copy.
+      try { session.EraseUndisplayedModels(); } catch (Throwable ignored) {}
+    }
+  }
+
   public static void main(String[] args) {
     if (args.length != 3 && args.length != 5 && args.length != 7 && args.length != 8 && args.length != 9 && args.length != 10) {
       System.err.println("Usage: RenderAssemblyImage <creo-start-command> <assembly-file> <output.jpg> [second-output.jpg camera] | [occurrence-paths dx dy dz [visible-paths [camera [arrow-audit.json]]]]");
@@ -504,7 +595,7 @@ public final class RenderAssemblyImage {
           System.err.println("[RENDER] framing_stage_translation=" + java.util.Arrays.toString(new double[] {-stageCenter[0], -stageCenter[1], -stageCenter[2]}));
         }
         if (args.length == 10) for (intseq ids : requestedOccurrences)
-          arrowMoving.add(ArrowProjection.prepare((Assembly)model, ids));
+          arrowMoving.add(ArrowProjection.prepare(session, (Assembly)model, ids));
         for (intseq ids : requestedOccurrences) translateResolved(session, (Assembly)model, ids, arrowTranslation[0], arrowTranslation[1], arrowTranslation[2]);
         System.err.println("[RENDER] translated occurrences=" + args[3] + " vector=" + java.util.Arrays.toString(arrowTranslation));
       }
