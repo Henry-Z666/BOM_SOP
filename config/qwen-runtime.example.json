@@ -1,0 +1,10 @@
+{
+  "schema_version": "qwen-runtime/v1",
+  "api_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "model_name": "qwen-max",
+  "api_key_env": "DASHSCOPE_API_KEY",
+  "max_tokens": 8192,
+  "temperature": 0.1,
+  "tool_choice": "auto",
+  "system_prompt_file": "skills/generate-creo-assembly-sop/references/qwen-skill-prompt.md"
+}
