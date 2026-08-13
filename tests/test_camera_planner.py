@@ -111,6 +111,21 @@ class CameraPlannerTests(unittest.TestCase):
         contract["camera_rotate"] = "Y:180"
         self.assertIn("新相机合同禁止相对旋转 camera_rotate", validate_camera_contract(contract))
 
+    def test_focus_contract_requires_simplified_stage_and_locked_direction(self):
+        face = classify_receiver_face([1, 0, 0], self.basis)
+        face["evidence"] = "Creo planar receiver face"
+        selected = generate_camera_candidates(self.basis, face, [0, 160, 0])[0]
+        contract = {"schema_version": "creo-stage-camera-contract/v3", "coordinate_system": "root_asm",
+                    "receiver_face": face, "candidates": [selected], "selected": selected,
+                    "view_policy": {"id": "fixed_two_view/v1", "view_group": "123"},
+                    "framing": {"zoom": 1.0, "pan": [0, 0], "look_at_stage": True,
+                                "focus_context": {"policy": "stage_visible_bbox/v1",
+                                                  "occlusion_policy": "temporary_simplified_rep/v1",
+                                                  "section_fallback": "receiver_normal_only/v1"}}}
+        self.assertEqual(validate_camera_contract(contract), [])
+        contract["framing"]["look_at_stage"] = False
+        self.assertIn("特写焦点必须启用阶段中心化", validate_camera_contract(contract))
+
 
 if __name__ == "__main__":
     unittest.main()

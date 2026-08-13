@@ -45,26 +45,12 @@ def framing_for(pool_name: str, camera_id: str) -> dict[str, Any]:
     PAN is allowed to push later stages into the lower-left corner.
     """
     closeup = pool_name in {"partition", "fixed_sub", "top", "outflow", "sensor"}
-    if pool_name == "partition":
-        pan = [-0.90, -1.12] if camera_id == "fixed_123" else [-0.71, -1.12]
-    elif pool_name == "fixed_sub":
-        # Refit of this three-occurrence nested subset is stable but overly
-        # conservative in the authoritative final ASM.  The calibrated
-        # product-level screen transform leaves it low in the square frame;
-        # move it upward without changing either locked camera direction.
-        pan = [0.01, 0.10]
-    elif pool_name == "outflow":
-        # The fixed-part close-up is tiny compared with the authoritative root
-        # assembly. Keep the product-level calibrated ScreenTransform centre;
-        # a literal PAN=0 is not Creo's native Refit centre and moves this
-        # nested subset outside the graphics window.
-        pan = [0.0, 0.0]
-    elif pool_name == "sensor":
-        pan = [0.0, 0.0]
-    elif pool_name == "body":
-        pan = [-0.55, -0.78] if camera_id == "fixed_123" else [-0.42, -0.78]
-    else:
-        pan = [-0.90, -1.12] if camera_id == "fixed_123" else [-0.71, -1.12]
+    # Stage-centre translation is now applied for every contract.  Historical
+    # product-level PAN values were measured before that translation and will
+    # deterministically push a centred stage into a corner.  Start every
+    # fixed direction at native zero PAN; any future non-zero 456 correction
+    # must be re-measured with stage centring already enabled.
+    pan = [0.0, 0.0]
     framing = {
         "frame": "square",
         # Closeups tolerate 2.4x; complete product stages use the largest
@@ -79,7 +65,16 @@ def framing_for(pool_name: str, camera_id: str) -> dict[str, Any]:
         ),
         "center": True,
         "pan": pan,
-        "look_at_stage": pool_name in {"fixed_sub", "outflow", "sensor"},
+        # Direction remains strictly fixed_123/fixed_456.  Every render is
+        # centred on its temporary simplified representation instead of the
+        # complete product, preventing large late-stage views from drifting to
+        # a corner.  Close-up pools simply have a smaller representation.
+        "look_at_stage": True,
+        "focus_context": {
+            "policy": "stage_visible_bbox/v1",
+            "occlusion_policy": "temporary_simplified_rep/v1",
+            "section_fallback": "receiver_normal_only/v1",
+        },
         "pan_evidence": (
             f"corrected-v2 native {'closeup' if closeup else 'product-stage'} framing; "
             f"{camera_id}; calibrated native ScreenTransform"

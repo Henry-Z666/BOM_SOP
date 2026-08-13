@@ -121,10 +121,15 @@
     "zoom": 3.0,
     "center": true,
     "pan": [
-      0.01,
-      0.1
+      0.0,
+      0.0
     ],
     "look_at_stage": true,
+    "focus_context": {
+      "policy": "stage_visible_bbox/v1",
+      "occlusion_policy": "temporary_simplified_rep/v1",
+      "section_fallback": "receiver_normal_only/v1"
+    },
     "pan_evidence": "corrected-v2 native closeup framing; fixed_456; calibrated native ScreenTransform"
   }
 }

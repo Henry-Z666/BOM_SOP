@@ -50,6 +50,11 @@ def main() -> int:
         pan = camera["framing"].get("pan")
         if not isinstance(pan, list) or len(pan) != 2:
             errors.append(f"{label}: calibrated staged pan is missing")
+        focus = camera["framing"].get("focus_context")
+        if not isinstance(focus, dict) or focus.get("policy") != "stage_visible_bbox/v1":
+            errors.append(f"{label}: missing stage-bbox focus contract")
+        if not camera["framing"].get("look_at_stage"):
+            errors.append(f"{label}: stage focus was not enabled")
 
     levels = [job["bom_level"] for job in jobs]
     ordering = [
