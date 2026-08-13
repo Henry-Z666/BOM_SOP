@@ -128,7 +128,16 @@ public final class ArrowProjection {
     candidates.sort(Comparator.comparingInt(c->c.surfaceId));
     List<Candidate> unique=new ArrayList<>();
     for(Candidate candidate:candidates){boolean duplicate=false;for(Candidate prior:unique)if(norm(sub(candidate.local,prior.local))<1e-5){duplicate=true;break;}if(!duplicate)unique.add(candidate);}
-    if(unique.isEmpty()) throw new IllegalStateException("arrow_anchor_failed occurrence="+pathId(ids)+" surface_probe_failures="+probeFailures[0]);
+    if(unique.isEmpty()) {
+      // Some lightweight/sealed vendor parts expose no evaluable surfaces
+      // through asynchronous J-Link.  Keep the arrow auditable and avoid
+      // guessing a screen pixel: the occurrence origin is a deterministic
+      // local CAD coordinate and is transformed through the exact same
+      // ComponentPath before and after the pure translation.  The audit makes
+      // this lower-confidence fallback explicit for later review.
+      unique.add(new Candidate(-1,"occurrence_origin_fallback",new double[]{0.0,0.0,0.0},ids));
+      System.err.println("[RENDER] arrow_anchor_fallback occurrence="+pathId(ids)+" source=occurrence_origin");
+    }
     System.err.println("[RENDER] arrow_anchor_candidates occurrence="+pathId(ids)+" count="+unique.size()+" surface_probe_failures="+probeFailures[0]);
     for(Candidate candidate:unique) candidate.completeRoot=transform(pfcAssembly.CreateComponentPath(root,candidate.anchorPath).GetTransform(true),candidate.local);
     return new MovingOccurrence(pathId(ids),ids,complete,unique);

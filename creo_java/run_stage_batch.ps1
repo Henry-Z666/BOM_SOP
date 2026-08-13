@@ -79,7 +79,10 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
     ExpectedAssemblySha256 = $manifestHash
     PreparedModelsRoot = $batchStagedModels
   }
-  $camera = $job.camera
+  # v3 jobs normally carry camera_contract_file only.  Read the retired inline
+  # camera field defensively so PowerShell 7 does not treat its absence as a
+  # property error before the formal camera contract is loaded.
+  $camera = if ($job.PSObject.Properties['camera']) { $job.camera } else { $null }
   if ($camera -is [string] -and $camera -in @('fixed_123','fixed_456')) {
     $cameraId = [string]$camera
     $camera = [PSCustomObject]@{
@@ -117,11 +120,19 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
       if ($panValues.Count -ne 0 -and $panValues.Count -ne 2) {
         throw ("PAN 必须包含两个原生构图分量: " + $cameraPath)
       }
+      $focus = $camera.framing.focus_context
+      if ($focus) {
+        if ([string]$focus.policy -ne 'stage_visible_bbox/v1') { throw ("不支持的特写焦点策略: " + $cameraPath) }
+        if ([string]$focus.occlusion_policy -ne 'temporary_simplified_rep/v1') { throw ("正式特写必须使用临时简化表示: " + $cameraPath) }
+        if ([string]$focus.section_fallback -ne 'receiver_normal_only/v1') { throw ("剖切回退必须受接收面法向约束: " + $cameraPath) }
+        if (-not $camera.framing.look_at_stage) { throw ("特写焦点必须启用 LOOKAT_STAGE: " + $cameraPath) }
+      }
     }
     Write-Output ("[BATCH] camera_contract {0}" -f $cameraPath)
   }
   if ($camera -and $camera.selected -and $camera.selected.position_direction_root) {
-    if ($job.camera_rotate) { throw ("新相机合同不能包含 camera_rotate: " + $job.job_id) }
+    $legacyCameraRotate = if ($job.PSObject.Properties['camera_rotate']) { $job.camera_rotate } else { $null }
+    if ($legacyCameraRotate) { throw ("新相机合同不能包含 camera_rotate: " + $job.job_id) }
     $culture = [System.Globalization.CultureInfo]::InvariantCulture
     $formatVector = { param($values) (($values | ForEach-Object { [double]$_ }) | ForEach-Object { $_.ToString('G17', $culture) }) -join ':' }
     $position = & $formatVector $camera.selected.position_direction_root

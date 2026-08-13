@@ -76,6 +76,16 @@ def validate_camera_contract(contract: dict[str, Any]) -> list[str]:
         pan = framing.get("pan")
         if pan is not None and len(pan) != 2:
             errors.append("原生构图 PAN 必须包含两个分量")
+        focus = framing.get("focus_context")
+        if focus is not None:
+            if focus.get("policy") != "stage_visible_bbox/v1":
+                errors.append("特写焦点必须使用 stage_visible_bbox/v1")
+            if focus.get("occlusion_policy") != "temporary_simplified_rep/v1":
+                errors.append("特写必须使用临时简化表示屏蔽遮挡件")
+            if focus.get("section_fallback") != "receiver_normal_only/v1":
+                errors.append("剖切回退只能沿接收面法向")
+            if not framing.get("look_at_stage"):
+                errors.append("特写焦点必须启用阶段中心化")
     return errors
 
 
