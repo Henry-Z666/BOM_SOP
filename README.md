@@ -22,6 +22,10 @@ Creo 安装目录、许可证文件、普通版 Excel 和 DashScope Key；正式
 仓库自有的 12 个 Agent Skill 位于 `skills/`，正式接口和状态机实现位于
 `src/sop_pipeline/agent/`，桌面入口位于 `src/sop_pipeline/desktop/`。
 
+`pywin32` 是 Windows API/COM 绑定的项目名，不表示只能运行在 32 位系统。安装包使用
+64 位 Python 时会安装 64 位扩展，可在 64 位 Windows 上驱动普通版 Excel；构建机、
+目标机 Python 和 Excel 的位数仍应保持一致。
+
 发布包必须通过统一入口构建，先编译 J-Link 类再调用 PyInstaller，避免构建目录残留
 改变安装包能力。`PythonCommand` 应指向与目标 Excel/系统一致的 64 位 Python：
 
@@ -40,8 +44,15 @@ Creo 安装目录、许可证文件、普通版 Excel 和 DashScope Key；正式
 
 | 产物 | 位置 |
 | --- | --- |
-| 锁定总装、BOM/CAD 映射、图谱、日志和校验报告 | Agent 内部运行目录；不进入用户交付目录 |
+| 锁定总装、BOM/CAD 映射、图谱、正式渲染计划、日志和校验报告 | Agent 内部运行目录；不进入用户交付目录 |
 | SOP 与步骤图片 | 用户选择的 `交付结果/`；只能包含工作簿和 `步骤图片/` |
+
+真实 Creo 图谱会先编译为 `formal-render-plan/v1`。生成前确认的每个答案与 Qwen 的
+受限推荐共同锁定一个版本化 `PlanRevision` 和 `locked-render-plan`；生成阶段只消费该
+不可变计划，不再次向 Qwen 询问或重新猜测步骤。Qwen 只推荐“展开子装配”或“整体安装”
+这类工艺语义，occurrence、接收几何、平移方向、相机和依赖图仍由确定性代码决定。
+相同模型版本与最小语义请求的成功推荐按指纹保存在 Agent 内部，因此确认页仍会显示，
+但重复运行相同输入不会因再次调用模型而改变默认方案。
 
 ## 旧水箱批次诊断流程
 

@@ -82,6 +82,43 @@ class QwenAdvisorTests(unittest.TestCase):
         self.assertIn("安装阀门", prompt)
         self.assertNotIn("CAD", prompt.upper())
 
+    def test_plan_recommendation_sends_only_minimized_bom_semantics(self) -> None:
+        transport = FakeTransport(
+            '{"decisions":[{"decision_id":"scope-1","recommended":"whole",'
+            '"reason":"该总成为外购成品"}]}'
+        )
+        recommendations = QwenAdvisor(transport).recommend_plan_choices(
+            [
+                {
+                    "decision_id": "scope-1",
+                    "assembly_name": "阀体合件",
+                    "assembly_text": "安装阀体",
+                    "process_text": "整体装入",
+                    "child_items": [
+                        {"name": "阀芯", "drawing_no": "A-1", "quantity": 1}
+                    ],
+                    "occurrence_paths": ["51/123"],
+                    "local_path": "C:/secret",
+                }
+            ]
+        )
+
+        self.assertEqual(recommendations[0].recommended, "whole")
+        sent = transport.text_calls[0][0][1]["content"]
+        self.assertIn("阀体合件", sent)
+        self.assertNotIn("51/123", sent)
+        self.assertNotIn("C:/secret", sent)
+
+    def test_plan_recommendation_rejects_unknown_or_missing_decisions(self) -> None:
+        transport = FakeTransport(
+            '{"decisions":[{"decision_id":"wrong","recommended":"expand",'
+            '"reason":"x"}]}'
+        )
+        with self.assertRaisesRegex(ValueError, "valid subassembly"):
+            QwenAdvisor(transport, max_schema_attempts=1).recommend_plan_choices(
+                [{"decision_id": "scope-1", "assembly_name": "合件"}]
+            )
+
     def test_invalid_vision_schema_is_retried_without_adding_more_input_data(self) -> None:
         class RetryVisionTransport(FakeTransport):
             def __init__(self):

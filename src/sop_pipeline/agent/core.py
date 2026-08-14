@@ -8,6 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 from .artifacts import ArtifactStore
+from .formal_render_planner import formal_render_plan_from_dict, lock_formal_render_plan
 from .models import (
     AnalysisResult,
     ClarificationItem,
@@ -159,6 +160,27 @@ class AgentCore:
             fingerprint="sha256:" + digest,
             created_at=self._now(),
         )
+        formal_plan_path = run.workspace / "analysis" / "formal-render-plan.json"
+        locked_render_plan = None
+        if formal_plan_path.is_file():
+            formal_plan = formal_render_plan_from_dict(
+                self._artifacts.read_json(run.workspace, "analysis/formal-render-plan.json")
+            )
+            recommendation_path = run.workspace / "analysis" / "plan-recommendations.json"
+            recommendations: dict[str, str] = {}
+            if recommendation_path.is_file():
+                recommendation_data = self._artifacts.read_json(
+                    run.workspace, "analysis/plan-recommendations.json"
+                )
+                recommendations = {
+                    str(item["decision_id"]): str(item["recommended"])
+                    for item in recommendation_data.get("items", [])
+                }
+            locked_render_plan = lock_formal_render_plan(
+                formal_plan,
+                plan.answers,
+                recommendations,
+            )
         self._artifacts.write_json(
             run_id=run_id,
             run_workspace=run.workspace,
@@ -166,6 +188,14 @@ class AgentCore:
             relative_path=f"plans/plan-revision-{revision:04d}.json",
             value=plan,
         )
+        if locked_render_plan is not None:
+            self._artifacts.write_json(
+                run_id=run_id,
+                run_workspace=run.workspace,
+                kind="locked-render-plan",
+                relative_path=f"plans/locked-render-plan-{revision:04d}.json",
+                value=locked_render_plan,
+            )
         self._store.transition(
             run_id,
             expected={RunStatus.AWAITING_CONFIRMATION},

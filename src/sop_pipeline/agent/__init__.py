@@ -2,6 +2,14 @@ from .core import AgentCore
 from .creo_worker import PowerShellCreoWorker
 from .desktop_workflow import DesktopWorkflow
 from .excel_verifier import ExcelComVerifier
+from .formal_render_planner import (
+    FormalRenderPlan,
+    FormalRenderStep,
+    PlanningDiagnostic,
+    compile_formal_render_plan,
+    formal_render_plan_from_dict,
+    lock_formal_render_plan,
+)
 from .models import RunRecord, RunStatus, SkillStatus, StepStatus
 from .models import (
     AnalysisResult,
@@ -16,7 +24,12 @@ from .models import (
     StepResult,
 )
 from .ports import WorkflowPort
-from .qwen_adapter import DashScopeTransport, QwenAdvisor, SemanticReview
+from .qwen_adapter import (
+    DashScopeTransport,
+    PlanChoiceRecommendation,
+    QwenAdvisor,
+    SemanticReview,
+)
 from .repair_candidates import BoundedRepairPlanner, RepairCandidate
 from .render_job_compiler import compile_creo_render_jobs
 from .render_validation import (
@@ -64,16 +77,23 @@ __all__ = [
     "ClarificationItem",
     "ClarificationPacket",
     "compile_creo_render_jobs",
+    "compile_formal_render_plan",
+    "formal_render_plan_from_dict",
     "Diagnostic",
     "DeterministicRenderValidator",
     "DesktopWorkflow",
     "DashScopeTransport",
     "FileCheckpointStore",
     "ExcelComVerifier",
+    "FormalRenderPlan",
+    "FormalRenderStep",
     "GenerationResult",
     "MemoryCheckpointStore",
     "OpenpyxlWorkbookVerifier",
     "PlanRevision",
+    "PlanChoiceRecommendation",
+    "PlanningDiagnostic",
+    "lock_formal_render_plan",
     "PowerShellCreoWorker",
     "ProducedArtifact",
     "QwenAdvisor",

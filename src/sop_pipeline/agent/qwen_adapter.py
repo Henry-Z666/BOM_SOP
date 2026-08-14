@@ -81,6 +81,13 @@ class SemanticReview:
     issues: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class PlanChoiceRecommendation:
+    decision_id: str
+    recommended: str
+    reason: str
+
+
 class QwenAdvisor:
     """Small Qwen surface: wording, semantic review, and constrained revisions."""
 
@@ -165,6 +172,107 @@ class QwenAdvisor:
                     ]
                 )
         raise ValueError("Qwen did not return a valid StepRevision") from last_error
+
+    def recommend_plan_choices(
+        self,
+        items: list[dict[str, Any]],
+    ) -> tuple[PlanChoiceRecommendation, ...]:
+        """Recommend semantic scope only; never return or alter CAD geometry."""
+
+        minimized = [
+            {
+                "decision_id": str(item["decision_id"]),
+                "assembly_name": str(item.get("assembly_name", "")),
+                "assembly_text": str(item.get("assembly_text", "")),
+                "process_text": str(item.get("process_text", "")),
+                "child_items": [
+                    {
+                        "name": str(child.get("name", "")),
+                        "drawing_no": str(child.get("drawing_no", "")),
+                        "quantity": child.get("quantity"),
+                    }
+                    for child in item.get("child_items", [])
+                ],
+            }
+            for item in items
+        ]
+        expected_ids = {item["decision_id"] for item in minimized}
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Decide only whether each listed subassembly should be built from its "
+                    "BOM children at this workstation (expand) or treated as an already "
+                    "completed rigid unit (whole). Return JSON only as "
+                    '{"decisions":[{"decision_id":"...","recommended":"expand|whole",'
+                    '"reason":"简短的简体中文依据"}]}. Return every decision_id '
+                    "exactly once. Do not return CAD paths, geometry, directions, cameras, "
+                    "output paths, markdown, or extra fields. Every reason must be concise "
+                    "Simplified Chinese."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "schema_version": "subassembly-scope-request/v1",
+                        "items": minimized,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            },
+        ]
+        last_error: Exception | None = None
+        for attempt in range(1, self.max_schema_attempts + 1):
+            response = self.transport.call_text(messages, seed=self.seed)
+            try:
+                payload = _parse_json_object(response)
+                if set(payload) != {"decisions"} or not isinstance(
+                    payload["decisions"], list
+                ):
+                    raise ValueError("response requires exactly a decisions array")
+                decisions: list[PlanChoiceRecommendation] = []
+                for item in payload["decisions"]:
+                    if not isinstance(item, dict) or set(item) != {
+                        "decision_id",
+                        "recommended",
+                        "reason",
+                    }:
+                        raise ValueError("each decision has invalid fields")
+                    decision_id = str(item["decision_id"])
+                    recommended = str(item["recommended"])
+                    reason = str(item["reason"]).strip()
+                    if (
+                        recommended not in {"expand", "whole"}
+                        or not reason
+                        or len(reason) > 120
+                    ):
+                        raise ValueError("decision recommendation is invalid")
+                    decisions.append(
+                        PlanChoiceRecommendation(decision_id, recommended, reason)
+                    )
+                actual_ids = [item.decision_id for item in decisions]
+                if len(actual_ids) != len(set(actual_ids)) or set(actual_ids) != expected_ids:
+                    raise ValueError("decision IDs must match the request exactly")
+                return tuple(sorted(decisions, key=lambda item: item.decision_id))
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+                last_error = error
+                if attempt == self.max_schema_attempts:
+                    break
+                messages.extend(
+                    [
+                        {"role": "assistant", "content": response},
+                        {
+                            "role": "user",
+                            "content": (
+                                "SCHEMA_VALIDATION_FAILED. Return every requested decision_id "
+                                "once with only decision_id, recommended, and reason."
+                            ),
+                        },
+                    ]
+                )
+        raise ValueError("Qwen did not return valid subassembly recommendations") from last_error
 
     def review_render(
         self,

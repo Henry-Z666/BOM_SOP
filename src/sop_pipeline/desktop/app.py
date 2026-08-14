@@ -217,13 +217,18 @@ class MainWindow(QMainWindow):
         if not creo_path or not license_path:
             self._show_error("首次使用请填写 Creo 安装目录和许可证文件。")
             return
+        dashscope_key = self.dashscope_key.text().strip() or os.environ.get(
+            "DASHSCOPE_API_KEY", ""
+        ).strip()
+        if not dashscope_key:
+            self._show_error("首次使用请填写 DashScope Key，用于 Qwen 工艺理解和图片复核。")
+            return
         self.settings.setValue("creo_path", self.creo_path.text().strip())
         self.settings.setValue("license_path", self.license_path.text().strip())
         self.settings.setValue("excel_path", self.excel_path.text().strip())
         os.environ["QWEN_CREO_LOADPOINT"] = creo_path
         os.environ["QWEN_CREO_LICENSE_FILE"] = license_path
-        if self.dashscope_key.text().strip():
-            os.environ["DASHSCOPE_API_KEY"] = self.dashscope_key.text().strip()
+        os.environ["DASHSCOPE_API_KEY"] = dashscope_key
         self.progress_title.setText("正在理解 BOM 与 CAD")
         self.pages.setCurrentWidget(self.progress_page)
         self.bridge.succeeded.connect(self._analysis_ready, Qt.SingleShotConnection)
