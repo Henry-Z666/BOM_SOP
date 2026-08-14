@@ -1,16 +1,101 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import tempfile
 import unittest
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from sop_pipeline.agent.render_validation import (
     ArrowEvidence,
+    DeterministicNativeRenderValidator,
     DeterministicRenderValidator,
     RenderEvidence,
 )
+
+
+def _native_payload(**changes) -> dict:
+    payload = {
+        "moving_occurrences": ["1/2"],
+        "receiver_normal_root": [1.0, 0.0, 0.0],
+        "translation_vector_root": [0.0, 0.0, 10.0],
+        "camera_catalog": {
+            "fixed_123": {
+                "position_direction_root": [1.0, 0.0, 0.0],
+                "up_reference_root": [0.0, 1.0, 0.0],
+            }
+        },
+        "presentation": {
+            "schema_version": "fixed-frame-presentation/v1",
+            "focus_context": "stage_visible_bbox/v1",
+            "framing_priority": "installation_activity/v1",
+            "zoom_anchor": "installation_activity_center/v1",
+            "centering": {
+                "schema_version": "adaptive-screen-center/v1",
+                "activity_bbox": "subject_plus_native_arrow/v1",
+                "initial_estimate": "cad_activity_origin/v1",
+                "focus_center": "midpoint_subject_arrow/v1",
+                "probe_policy": "on_gate_failure/v1",
+                "response_cache_scope": "camera_zoom_frame_environment/v1",
+                "max_probe_rounds": 2,
+                "target_pixel": [800, 800],
+                "probe_delta": 0.1,
+                "max_abs_pan": 1.0,
+                "max_activity_center_offset_pixels": 120,
+                "max_arrow_center_offset_pixels": 120,
+            },
+            "variants": [
+                {"variant_id": "base", "camera_id": "fixed_123", "zoom": 1.0, "pan": [0.0, 0.0]}
+            ],
+            "frame_gate": {
+                "schema_version": "raster-composition-gate/v2",
+                "foreground_delta": 30,
+                "min_component_pixels": 32,
+                "component_downsample": 4,
+                "min_subject_span": 0.54,
+                "max_subject_span": 1.0,
+                "max_clipped_edges": 2,
+                "arrow_green_delta": 20,
+                "min_arrow_pixels": 120,
+                "min_arrow_span_pixels": 24,
+                "min_arrow_border_margin_pixels": 40,
+                "ignored_regions": [[0, 1250, 500, 1600]],
+            },
+        },
+    }
+    payload.update(changes)
+    return payload
+
+
+def _write_native_files(folder: Path, bbox: tuple[int, int, int, int] | None) -> tuple[Path, Path]:
+    image_file = folder / "native.jpg"
+    image = Image.new("RGB", (1600, 1600), "white")
+    if bbox is not None:
+        draw = ImageDraw.Draw(image)
+        draw.rectangle(bbox, fill=(80, 100, 120))
+        draw.line((675, 800, 925, 800), fill=(0, 150, 0), width=8)
+    image.save(image_file)
+    audit_file = folder / "native.arrow.json"
+    audit_file.write_text(
+        json.dumps(
+            {
+                "schema_version": "arrow-projection/v1",
+                "policy": "same_cad_point/v1",
+                "status": "passed",
+                "arrows": [
+                    {
+                        "covered_occurrences": ["1/2"],
+                        "anchor_source": "model_surface",
+                        "complete_root": [0.0, 0.0, 0.0],
+                        "exploded_root": [0.0, 0.0, 10.0],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return image_file, audit_file
 
 
 def _evidence(image: Path, **changes) -> RenderEvidence:
@@ -90,6 +175,86 @@ class RenderValidationTests(unittest.TestCase):
 
         self.assertIn("ARROW_COVERAGE_MISMATCH", report.failures)
         self.assertIn("ARROW_VECTOR_MISMATCH", report.failures)
+
+    def test_native_gate_accepts_valid_frame_camera_and_creo_arrow_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            image, audit = _write_native_files(Path(folder), (250, 300, 1200, 1150))
+            report = DeterministicNativeRenderValidator().validate(
+                image, audit, _native_payload()
+            )
+
+        self.assertTrue(report.passed)
+        self.assertIsNotNone(report.composition)
+        self.assertGreater(report.composition.max_span_fraction, 0.54)
+        self.assertGreater(report.arrow_raster.pixels, 120)
+
+    def test_native_gate_distinguishes_missing_and_small_subjects(self) -> None:
+        validator = DeterministicNativeRenderValidator()
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            blank_image, audit = _write_native_files(root, None)
+            blank = validator.validate(blank_image, audit, _native_payload())
+            small_image, audit = _write_native_files(root, (740, 740, 840, 840))
+            small = validator.validate(small_image, audit, _native_payload())
+
+        self.assertIn("SUBJECT_NOT_DETECTED", blank.failures)
+        self.assertIn("SUBJECT_TOO_SMALL", small.failures)
+
+    def test_native_gate_rejects_receiver_silhouette_even_when_image_is_valid(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            image, audit = _write_native_files(Path(folder), (250, 300, 1200, 1150))
+            payload = _native_payload()
+            payload["camera_catalog"]["fixed_123"]["position_direction_root"] = [0.0, 1.0, 0.0]
+            report = DeterministicNativeRenderValidator().validate(image, audit, payload)
+
+        self.assertIn("CAMERA_RECEIVER_SILHOUETTE", report.failures)
+
+    def test_malformed_presentation_and_arrow_numbers_fail_without_crashing(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            image, audit = _write_native_files(root, (250, 300, 1200, 1150))
+            payload = _native_payload()
+            payload["presentation"]["frame_gate"]["min_subject_span"] = "bad"
+            broken_presentation = DeterministicNativeRenderValidator().validate(
+                image, audit, payload
+            )
+            payload = _native_payload()
+            audit_payload = json.loads(audit.read_text(encoding="utf-8"))
+            audit_payload["arrows"][0]["exploded_root"][2] = "bad"
+            audit.write_text(json.dumps(audit_payload), encoding="utf-8")
+            broken_audit = DeterministicNativeRenderValidator().validate(
+                image, audit, payload
+            )
+
+        self.assertIn("PRESENTATION_CONTRACT_INVALID", broken_presentation.failures)
+        self.assertIn("TRANSLATION_AUDIT_INVALID", broken_audit.failures)
+
+    def test_noncritical_context_may_clip_one_edge_when_arrow_stays_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            image, audit = _write_native_files(Path(folder), (0, 300, 1500, 1200))
+            report = DeterministicNativeRenderValidator().validate(
+                image, audit, _native_payload()
+            )
+
+        self.assertTrue(report.passed)
+        self.assertEqual(report.composition.clipped_edges, ("left",))
+
+    def test_large_but_off_center_activity_and_arrow_fail_hard_gates(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            image, audit = _write_native_files(root, None)
+            frame = Image.new("RGB", (1600, 1600), "white")
+            draw = ImageDraw.Draw(frame)
+            draw.rectangle((850, 350, 1599, 1250), fill=(80, 100, 120))
+            draw.line((1200, 800, 1500, 800), fill=(0, 150, 0), width=8)
+            frame.save(image)
+            report = DeterministicNativeRenderValidator().validate(
+                image, audit, _native_payload()
+            )
+
+        self.assertFalse(report.passed)
+        self.assertIn("ACTIVITY_NOT_CENTERED", report.failures)
+        self.assertIn("ARROW_NOT_CENTERED", report.failures)
 
 
 if __name__ == "__main__":

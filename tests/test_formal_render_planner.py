@@ -170,6 +170,14 @@ class FormalRenderPlannerTests(unittest.TestCase):
         self.assertTrue(
             any(item.code == "SUBASSEMBLY_SCOPE_UNCONFIRMED" for item in plan.diagnostics)
         )
+        self.assertEqual(plan.camera_basis["schema_version"], "assembly-camera-basis/v4")
+        self.assertEqual(
+            plan.camera_basis["calibration"]["fallback"],
+            "equal_octant_completion/v1",
+        )
+        self.assertTrue(
+            any(item.code == "CAMERA_BASIS_AUTO_COMPLETED" for item in plan.diagnostics)
+        )
 
     def test_later_fixed_root_item_is_questioned_not_silently_made_foundation(self) -> None:
         bom, draft, mapping, graph = fixture()
@@ -315,6 +323,31 @@ class FormalRenderPlannerTests(unittest.TestCase):
         )
         self.assertEqual(task.payload["arrow_renderer"], "creo_display_list/v1")
         self.assertIn(task.payload["camera"]["id"], {"fixed_123", "fixed_456"})
+        self.assertEqual(set(task.payload["camera_catalog"]), {"fixed_123", "fixed_456"})
+        self.assertEqual(
+            [item["variant_id"] for item in task.payload["presentation"]["variants"]],
+            ["base", "zoom-in-50", "zoom-in-110", "zoom-out-15"],
+        )
+        self.assertEqual(
+            task.payload["presentation"]["frame_gate"]["schema_version"],
+            "raster-composition-gate/v2",
+        )
+        self.assertEqual(
+            task.payload["presentation"]["focus_context"],
+            "stage_visible_bbox/v1",
+        )
+        self.assertEqual(
+            task.payload["presentation"]["framing_priority"],
+            "installation_activity/v1",
+        )
+        self.assertEqual(
+            task.payload["presentation"]["zoom_anchor"],
+            "installation_activity_center/v1",
+        )
+        self.assertEqual(
+            task.payload["presentation"]["centering"]["schema_version"],
+            "adaptive-screen-center/v1",
+        )
         self.assertNotIn("output_path", str(task.payload))
 
     def test_unconfirmed_plan_cannot_compile_worker_tasks(self) -> None:

@@ -22,6 +22,15 @@ class BoundedRepairPlanner:
         "BOM_QUANTITY_MISMATCH",
         "VISIBLE_SET_MISMATCH",
         "ROTATION_CHANGED",
+        "CAMERA_NOT_FIXED",
+        "CAMERA_GEOMETRY_INVALID",
+        "CAMERA_RECEIVER_SILHOUETTE",
+        "EXPLOSION_NOT_VISIBLE_IN_CAMERA",
+        "PRESENTATION_CONTRACT_INVALID",
+        "ARROW_AUDIT_INVALID",
+        "ARROW_COVERAGE_INVALID",
+        "ARROW_SURFACE_ANCHOR_UNAVAILABLE",
+        "TRANSLATION_AUDIT_INVALID",
     }
 
     def propose(
@@ -31,6 +40,7 @@ class BoundedRepairPlanner:
         failure_codes: tuple[str, ...],
         current: dict[str, Any],
     ) -> tuple[RepairCandidate, ...]:
+        del current
         failures = set(failure_codes)
         if failures & self.STRUCTURAL_FAILURES:
             return ()
@@ -50,11 +60,24 @@ class BoundedRepairPlanner:
                     {"arrow_layout": "audited_merge"},
                 ),
             )
-        if "CAMERA_NOT_FIXED" in failures:
+        if failures & {"SUBJECT_TOO_SMALL", "ARROW_TOO_SMALL"}:
             return self._group(
                 step_id,
-                "camera_id",
-                ({"camera_id": "fixed_123"}, {"camera_id": "fixed_456"}),
+                "zoom",
+                ({"zoom": 1.5}, {"zoom": 2.1}),
+            )
+        if failures & {
+            "SUBJECT_NOT_DETECTED",
+            "SUBJECT_TOO_LARGE",
+            "SUBJECT_CLIPPED",
+            "EXCESSIVE_CONTEXT_CLIPPING",
+            "ARROW_NOT_VISIBLE",
+            "ARROW_CLIPPED",
+        }:
+            return self._group(
+                step_id,
+                "zoom",
+                ({"zoom": 0.85}, {"zoom": 0.8}),
             )
         if failures & {"IMAGE_DIMENSIONS_MISMATCH", "IMAGE_INVALID"}:
             return self._group(
@@ -62,13 +85,7 @@ class BoundedRepairPlanner:
                 "framing",
                 ({"framing": "center"}, {"framing": "fit_square"}),
             )
-        camera = current.get("camera_id", "fixed_123")
-        alternate = "fixed_456" if camera == "fixed_123" else "fixed_123"
-        return self._group(
-            step_id,
-            "camera_id",
-            ({"camera_id": camera}, {"camera_id": alternate}),
-        )
+        return ()
 
     @staticmethod
     def _group(

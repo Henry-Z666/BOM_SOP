@@ -18,6 +18,13 @@ public final class CameraBasisDiscovery {
     if (length < 1.0e-10) throw new IllegalArgumentException("Default camera direction is zero");
     return new double[] { value[0] / length, value[1] / length, value[2] / length };
   }
+  private static double[] cross(double[] left, double[] right) {
+    return new double[] {
+      left[1] * right[2] - left[2] * right[1],
+      left[2] * right[0] - left[0] * right[2],
+      left[0] * right[1] - left[1] * right[0]
+    };
+  }
   private static int sign(double value) { return value >= 0.0 ? 1 : -1; }
   private static String vector(double[] value) { return "[" + value[0] + "," + value[1] + "," + value[2] + "]"; }
   private static String matrix(Matrix3D value) throws jxthrowable {
@@ -67,28 +74,44 @@ public final class CameraBasisDiscovery {
       Transform3D rigid = pfcBase.MakeMatrixOrthonormal(model.GetCurrentViewTransform(), 1.0e-8);
       Matrix3D view = rigid.GetMatrix();
       // Creo stores view right/up/back in columns (row-vector convention).
-      double[] savedRight = normalize(new double[] { view.get(0, 0), view.get(1, 0), view.get(2, 0) });
       double[] savedUp = normalize(new double[] { view.get(0, 1), view.get(1, 1), view.get(2, 1) });
       double[] savedDirection = normalize(new double[] { view.get(0, 2), view.get(1, 2), view.get(2, 2) });
       int sx = sign(savedDirection[0]), sy = sign(savedDirection[1]), sz = sign(savedDirection[2]);
       boolean trihedral = Math.abs(savedDirection[0]) >= 0.15 && Math.abs(savedDirection[1]) >= 0.15 && Math.abs(savedDirection[2]) >= 0.15;
-      double[] direction = savedDirection;
+      StringBuilder weakAxes = new StringBuilder("[");
+      String[] axisNames = new String[] { "X", "Y", "Z" };
+      for (int axisIndex = 0; axisIndex < 3; axisIndex++) {
+        if (Math.abs(savedDirection[axisIndex]) < 0.15) {
+          if (weakAxes.length() > 1) weakAxes.append(',');
+          weakAxes.append('"').append(axisNames[axisIndex]).append('"');
+        }
+      }
+      weakAxes.append(']');
+      double[] direction = trihedral
+        ? savedDirection
+        : normalize(new double[] { (double)sx, (double)sy, (double)sz });
+      double[] cameraRight = normalize(cross(savedUp, direction));
+      double[] cameraUp = normalize(cross(direction, cameraRight));
       double[] opposite = new double[] { -direction[0], -direction[1], -direction[2] };
-      double[] oppositeRight = new double[] { -savedRight[0], -savedRight[1], -savedRight[2] };
+      double[] oppositeRight = new double[] { -cameraRight[0], -cameraRight[1], -cameraRight[2] };
       String faces = face(1, "X", 0, sx) + "," + face(2, "Y", 1, sy) + "," + face(3, "Z", 2, sz) + ","
         + face(4, "X", 0, -sx) + "," + face(5, "Y", 1, -sy) + "," + face(6, "Z", 2, -sz);
-      String json = "{\"schema_version\":\"assembly-camera-basis/v3\",\"assembly_file\":\"" + esc(new File(args[1]).getName())
+      String json = "{\"schema_version\":\"assembly-camera-basis/v4\",\"assembly_file\":\"" + esc(new File(args[1]).getName())
         + "\",\"assembly_sha256\":\"" + sha256(args[1]) + "\",\"coordinate_system\":\"root_asm\",\"default_view_matrix\":"
         + matrix(view) + ",\"saved_default_position_direction_root\":" + vector(savedDirection)
         + ",\"default_position_direction_root\":" + vector(direction)
         + ",\"opposite_position_direction_root\":" + vector(opposite)
         + ",\"fixed_123_position_direction_root\":" + vector(direction)
         + ",\"fixed_456_position_direction_root\":" + vector(opposite)
-        + ",\"fixed_123_view_matrix\":" + rotationMatrix(savedRight, savedUp, direction)
-        + ",\"fixed_456_view_matrix\":" + rotationMatrix(oppositeRight, savedUp, opposite)
+        + ",\"fixed_123_view_matrix\":" + rotationMatrix(cameraRight, cameraUp, direction)
+        + ",\"fixed_456_view_matrix\":" + rotationMatrix(oppositeRight, cameraUp, opposite)
         + ",\"default_octant_signs\":[" + sx + "," + sy + "," + sz
         + "],\"up_reference_root\":" + vector(savedUp) + ",\"faces\":{" + faces + "},\"calibration\":{\"source\":\"Creo GetCurrentViewTransform immediately after OpenFile\",\"trihedral\":"
-        + trihedral + ",\"formal_view_policy\":\"fixed_saved_default_and_centre_opposite\",\"fallback\":null}}";
+        + true + ",\"source_trihedral\":" + trihedral
+        + ",\"weak_axes\":" + weakAxes
+        + ",\"formal_view_policy\":\"" + (trihedral ? "fixed_saved_default_and_centre_opposite" : "fixed_equal_octant_and_centre_opposite")
+        + "\",\"fallback\":" + (trihedral ? "null" : "\"equal_octant_completion/v1\"")
+        + ",\"preview_required\":true}}";
       Files.writeString(Paths.get(args[2]), json + System.lineSeparator(), java.nio.charset.StandardCharsets.UTF_8);
       System.err.println("[CAMERA-BASIS] fixed_123_back=" + vector(direction) + " fixed_up=" + vector(savedUp)
         + " fixed_456_back=" + vector(opposite) + " trihedral=" + trihedral);

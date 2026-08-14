@@ -64,6 +64,8 @@ def compile_locked_render_jobs(plan: FormalRenderPlan) -> RenderPlan:
             "camera_id": step.camera_id,
             "allowed_camera_ids": list(step.allowed_camera_ids),
             "camera": _compile_camera(plan, step),
+            "camera_catalog": _compile_camera_catalog(plan),
+            "presentation": _compile_presentation(step),
             "arrow_anchors": _compile_arrow_anchors(step),
             "arrow_renderer": "creo_display_list/v1",
             "diagnostics": list(step.diagnostics),
@@ -71,7 +73,7 @@ def compile_locked_render_jobs(plan: FormalRenderPlan) -> RenderPlan:
                 "camera_ids": list(step.allowed_camera_ids),
                 "explosion_scales": [0.85, 1.0, 1.15],
                 "pan_offsets": [[0, 0], [-80, 0], [80, 0], [0, -80], [0, 80]],
-                "zoom_scales": [0.9, 1.0, 1.1],
+                "zoom_scales": [0.8, 0.85, 1.0, 1.5, 2.1],
             },
         }
         tasks.append(
@@ -207,6 +209,93 @@ def _compile_camera(plan: FormalRenderPlan, step: FormalRenderStep) -> dict[str,
         "zoom": 1.0,
         "pan": [0.0, 0.0],
         "frame": "square",
+    }
+
+
+def _compile_camera_catalog(plan: FormalRenderPlan) -> dict[str, dict[str, Any]]:
+    basis = plan.camera_basis
+    up = basis.get("up_reference_root")
+    if not isinstance(up, list) or len(up) != 3:
+        raise ValueError("formal render plan lacks its camera up reference")
+    result: dict[str, dict[str, Any]] = {}
+    for camera_id in ("fixed_123", "fixed_456"):
+        direction = basis.get(f"{camera_id}_position_direction_root")
+        if not isinstance(direction, list) or len(direction) != 3:
+            raise ValueError(f"formal render plan lacks {camera_id}")
+        result[camera_id] = {
+            "id": camera_id,
+            "position_direction_root": direction,
+            "up_reference_root": up,
+        }
+    return result
+
+
+def _compile_presentation(step: FormalRenderStep) -> dict[str, Any]:
+    if step.camera_id is None:
+        return {
+            "schema_version": "fixed-frame-presentation/v1",
+            "focus_context": "stage_visible_bbox/v1",
+            "framing_priority": "installation_activity/v1",
+            "zoom_anchor": "installation_activity_center/v1",
+            "centering": _centering_contract(),
+            "variants": [],
+            "frame_gate": _frame_gate(),
+        }
+    return {
+        "schema_version": "fixed-frame-presentation/v1",
+        "focus_context": "stage_visible_bbox/v1",
+        "framing_priority": "installation_activity/v1",
+        "zoom_anchor": "installation_activity_center/v1",
+        "centering": _centering_contract(),
+        "variants": [
+            {
+                "variant_id": variant_id,
+                "camera_id": step.camera_id,
+                "zoom": zoom,
+                "pan": [0.0, 0.0],
+            }
+            for variant_id, zoom in (
+                ("base", 1.0),
+                ("zoom-in-50", 1.5),
+                ("zoom-in-110", 2.1),
+                ("zoom-out-15", 0.85),
+            )
+        ],
+        "frame_gate": _frame_gate(),
+    }
+
+
+def _frame_gate() -> dict[str, Any]:
+    return {
+        "schema_version": "raster-composition-gate/v2",
+        "foreground_delta": 30,
+        "min_component_pixels": 32,
+        "component_downsample": 4,
+        "min_subject_span": 0.54,
+        "max_subject_span": 1.0,
+        "max_clipped_edges": 2,
+        "arrow_green_delta": 20,
+        "min_arrow_pixels": 120,
+        "min_arrow_span_pixels": 24,
+        "min_arrow_border_margin_pixels": 40,
+        "ignored_regions": [[0, 1250, 500, 1600]],
+    }
+
+
+def _centering_contract() -> dict[str, Any]:
+    return {
+        "schema_version": "adaptive-screen-center/v1",
+        "activity_bbox": "subject_plus_native_arrow/v1",
+        "initial_estimate": "cad_activity_origin/v1",
+        "focus_center": "midpoint_subject_arrow/v1",
+        "probe_policy": "on_gate_failure/v1",
+        "response_cache_scope": "camera_zoom_frame_environment/v1",
+        "max_probe_rounds": 2,
+        "target_pixel": [800, 800],
+        "probe_delta": 0.1,
+        "max_abs_pan": 1.0,
+        "max_activity_center_offset_pixels": 120,
+        "max_arrow_center_offset_pixels": 120,
     }
 
 

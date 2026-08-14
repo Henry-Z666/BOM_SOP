@@ -73,6 +73,25 @@ class CameraPlannerTests(unittest.TestCase):
             self.assertAlmostEqual(opposite_matrix[row][1], default_matrix[row][1], places=12)
             self.assertAlmostEqual(opposite_matrix[row][2], -default_matrix[row][2], places=12)
 
+    def test_orthographic_open_view_is_completed_to_a_trihedral_octant(self):
+        saved = absolute_view_matrix([0, 0, 1], [0, 1, 0])
+        basis = calibrate_camera_basis("parent.asm.1", "hash", saved)
+
+        self.assertEqual(basis["schema_version"], "assembly-camera-basis/v4")
+        self.assertEqual(
+            basis["calibration"]["fallback"], "equal_octant_completion/v1"
+        )
+        self.assertFalse(basis["calibration"]["source_trihedral"])
+        self.assertTrue(basis["calibration"]["trihedral"])
+        expected = 1.0 / math.sqrt(3.0)
+        for value in basis["fixed_123_position_direction_root"]:
+            self.assertAlmostEqual(value, expected, places=12)
+        for left, right in zip(
+            basis["fixed_123_position_direction_root"],
+            basis["fixed_456_position_direction_root"],
+        ):
+            self.assertAlmostEqual(left, -right, places=12)
+
     def test_face_confidence_uses_25_degree_limit(self):
         high = classify_receiver_face([1, 0.2, 0], self.basis)
         low = classify_receiver_face([1, 1, 0], self.basis)

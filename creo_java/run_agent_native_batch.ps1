@@ -4,6 +4,7 @@ param(
   [Parameter(Mandatory=$true)][string]$OutputFolder,
   [int]$StartIndex = 0,
   [int]$Count = 1,
+  [ValidateRange(0, 3)][int]$VariantIndex = 0,
   [string]$PreparedModelsRoot = '',
   [ValidateRange(10, 3600)][int]$TimeoutSeconds = 600,
   [ValidateRange(1, 30)][int]$CompletionGraceSeconds = 4
@@ -104,15 +105,48 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   }
   $translation = @($payload.translation_vector_root)
   if ($translation.Count -ne 3) { throw "Task $taskId has no pure translation vector." }
-  $camera = $payload.camera
-  if ([string]$camera.id -notin @('fixed_123', 'fixed_456')) { throw "Task $taskId has an invalid fixed camera." }
+  $presentation = $payload.presentation
+  if ([string]$presentation.schema_version -ne 'fixed-frame-presentation/v1') { throw "Task $taskId has no supported presentation contract." }
+  if ([string]$presentation.focus_context -ne 'stage_visible_bbox/v1') { throw "Task $taskId has an invalid presentation focus context." }
+  if ([string]$presentation.framing_priority -ne 'installation_activity/v1') { throw "Task $taskId does not prioritize the installation activity." }
+  if ([string]$presentation.zoom_anchor -ne 'installation_activity_center/v1') { throw "Task $taskId has an invalid zoom anchor." }
+  if ([string]$presentation.centering.schema_version -ne 'adaptive-screen-center/v1') { throw "Task $taskId has no adaptive centering contract." }
+  if ([string]$presentation.centering.initial_estimate -ne 'cad_activity_origin/v1') { throw "Task $taskId has an invalid centering initial estimate." }
+  if ([string]$presentation.centering.focus_center -ne 'midpoint_subject_arrow/v1') { throw "Task $taskId has an invalid centering focus definition." }
+  if ([string]$presentation.centering.probe_policy -ne 'on_gate_failure/v1') { throw "Task $taskId has an invalid centering probe policy." }
+  if ([string]$presentation.centering.response_cache_scope -ne 'camera_zoom_frame_environment/v1') { throw "Task $taskId has an invalid PAN response cache scope." }
+  if ([int]$presentation.centering.max_probe_rounds -ne 2) { throw "Task $taskId has an invalid PAN probe round limit." }
+  $variants = @($presentation.variants)
+  if ($VariantIndex -ge $variants.Count) { throw "Task $taskId has no presentation variant $VariantIndex." }
+  $variant = $variants[$VariantIndex]
+  if ([string]::IsNullOrWhiteSpace([string]$variant.variant_id)) { throw "Task $taskId has an unnamed presentation variant." }
+  $cameraId = [string]$variant.camera_id
+  if ($cameraId -notin @('fixed_123', 'fixed_456')) { throw "Task $taskId has an invalid fixed camera." }
+  $cameraProperty = $payload.camera_catalog.PSObject.Properties[$cameraId]
+  if ($null -eq $cameraProperty) { throw "Task $taskId has no camera catalog entry for $cameraId." }
+  $camera = $cameraProperty.Value
+  if (@($camera.position_direction_root).Count -ne 3 -or @($camera.up_reference_root).Count -ne 3) {
+    throw "Task $taskId has an invalid camera basis."
+  }
+  $zoom = [double]$variant.zoom
+  if ([double]::IsNaN($zoom) -or [double]::IsInfinity($zoom) -or $zoom -lt 0.8 -or $zoom -gt 3.2) {
+    throw "Task $taskId has a zoom outside the compiled repair bounds."
+  }
   $cameraSpec = 'ABS:' + (& $formatVector $camera.position_direction_root)
   $cameraSpec += ',UP:' + (& $formatVector $camera.up_reference_root)
-  $cameraSpec += ',ZOOM:' + ([double]$camera.zoom).ToString('G17', $culture) + ',CENTER'
-  $pan = @($camera.pan)
-  if ($pan.Count -eq 2) {
-    $cameraSpec += ',PAN:' + ([double]$pan[0]).ToString('G17', $culture) + ':' + ([double]$pan[1]).ToString('G17', $culture)
+  $cameraSpec += ',ZOOM:' + $zoom.ToString('G17', $culture) + ',CENTER,LOOKAT_ACTIVITY'
+  $pan = @($variant.pan)
+  if ($pan.Count -ne 2) { throw "Task $taskId has an invalid pan offset." }
+  $panX = [double]$pan[0]
+  $panY = [double]$pan[1]
+  $maxPan = [double]$presentation.centering.max_abs_pan
+  if ($maxPan -ne 1.0) { throw "Task $taskId has an unsupported PAN bound." }
+  if ([double]::IsNaN($panX) -or [double]::IsInfinity($panX) -or [Math]::Abs($panX) -gt $maxPan -or
+      [double]::IsNaN($panY) -or [double]::IsInfinity($panY) -or [Math]::Abs($panY) -gt $maxPan) {
+    throw "Task $taskId has a pan offset outside the compiled repair bounds."
   }
+  $cameraSpec += ',PAN:' + $panX.ToString('G17', $culture) + ':' + $panY.ToString('G17', $culture)
+  $focusOccurrences = @($moving + $receivers | Sort-Object -Unique)
   $image = Join-Path $output ($taskId + '.jpg')
   $audit = Join-Path $output ($taskId + '.arrow.json')
   Remove-Item -LiteralPath $image,$audit -Force -ErrorAction SilentlyContinue
@@ -124,10 +158,12 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
     ([double]$translation[2]).ToString('G17', $culture),
     ($visible -join ';'),
     $cameraSpec,
-    $audit
+    $audit,
+    ($focusOccurrences -join ';')
   ) -join "`t"))
   $renderedFiles.Add($image)
   $auditFiles.Add($audit)
+  Write-Output ("[AGENT_RENDER] task {0} presentation_variant {1} camera {2} zoom {3}" -f $taskId,$VariantIndex,$cameraId,$zoom)
 }
 
 & (Join-Path $here 'test_license_binding.ps1') -LicenseFile $runtime.LicenseFile -CreoLoadpoint $runtime.CreoLoadpoint

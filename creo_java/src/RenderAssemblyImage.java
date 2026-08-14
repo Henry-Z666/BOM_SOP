@@ -162,7 +162,7 @@ public final class RenderAssemblyImage {
    * an image crop or a simulated mouse/keyboard action.
    */
   private static void applyZoom(Window window, String cameraSpec) throws jxthrowable {
-    boolean panBeforeZoom = cameraSpec.toUpperCase(java.util.Locale.ROOT).contains("LOOKAT_STAGE");
+    boolean panBeforeZoom = cameraSpec.toUpperCase(java.util.Locale.ROOT).contains("LOOKAT_ACTIVITY");
     if (panBeforeZoom) {
       for (String term : cameraSpec.split(",")) {
         if (!term.trim().regionMatches(true, 0, "PAN:", 0, 4)) continue;
@@ -450,12 +450,21 @@ public final class RenderAssemblyImage {
   static void renderInSession(Session session, String assemblyFile, String outputJpeg,
       String occurrencePaths, double dx, double dy, double dz, String visiblePaths,
       String cameraSpec, String arrowAuditJson) throws Throwable {
-    renderInSession(session, assemblyFile, outputJpeg, occurrencePaths, dx, dy, dz, visiblePaths, cameraSpec, arrowAuditJson, true);
+    renderInSession(session, assemblyFile, outputJpeg, occurrencePaths, dx, dy, dz,
+        visiblePaths, cameraSpec, arrowAuditJson, visiblePaths, true);
   }
   /** V3 may retain the exact same geometric audit while exporting an unannotated base raster. */
   static void renderInSession(Session session, String assemblyFile, String outputJpeg,
       String occurrencePaths, double dx, double dy, double dz, String visiblePaths,
       String cameraSpec, String arrowAuditJson, boolean drawNativeArrow) throws Throwable {
+    renderInSession(session, assemblyFile, outputJpeg, occurrencePaths, dx, dy, dz,
+        visiblePaths, cameraSpec, arrowAuditJson, visiblePaths, drawNativeArrow);
+  }
+  /** Formal Agent path: zoom is anchored to moving + receiver occurrences. */
+  static void renderInSession(Session session, String assemblyFile, String outputJpeg,
+      String occurrencePaths, double dx, double dy, double dz, String visiblePaths,
+      String cameraSpec, String arrowAuditJson, String focusPaths,
+      boolean drawNativeArrow) throws Throwable {
     Window window = null;
     DisplayList3D arrowDisplay = null;
     try {
@@ -481,6 +490,8 @@ public final class RenderAssemblyImage {
       for (String rawPath : visiblePaths.split(";")) if (!rawPath.trim().startsWith("!")) desired.add(rawPath.trim());
       java.util.List<intseq> visibleOccurrencePaths = parseOccurrencePaths(String.join(";", desired));
       if (visibleOccurrencePaths.isEmpty()) throw new IllegalArgumentException("No visible occurrence paths supplied");
+      java.util.List<intseq> focusOccurrencePaths = parseOccurrencePaths(focusPaths);
+      if (focusOccurrencePaths.isEmpty()) throw new IllegalArgumentException("No installation focus occurrence paths supplied");
 
       Assembly assembly = (Assembly)model;
       CreateNewSimpRepInstructions stage = pfcSimpRep.CreateNewSimpRepInstructions_Create("AI_SOP_STAGE");
@@ -496,12 +507,13 @@ public final class RenderAssemblyImage {
 
       if (!assembly.GetDynamicPositioning()) assembly.SetDynamicPositioning(true);
       if (!assembly.GetDynamicPositioning()) throw new IllegalStateException("Creo DynamicPositioning was not enabled");
-      boolean useStageLookAt = cameraSpec.toUpperCase(java.util.Locale.ROOT).contains("LOOKAT_STAGE");
-      if (useStageLookAt) {
-        double[] stageCenter = stageOccurrenceCenter(session, assembly, visibleOccurrencePaths);
+      boolean useActivityLookAt = cameraSpec.toUpperCase(java.util.Locale.ROOT).contains("LOOKAT_ACTIVITY");
+      if (useActivityLookAt) {
+        double[] stageCenter = stageOccurrenceCenter(session, assembly, focusOccurrencePaths);
         for (intseq ids : minimalOccurrenceRoots(visibleOccurrencePaths))
           translateResolved(session, assembly, ids, -stageCenter[0], -stageCenter[1], -stageCenter[2]);
-        System.err.println("[PERSISTENT] framing_stage_translation=" + java.util.Arrays.toString(new double[] {-stageCenter[0], -stageCenter[1], -stageCenter[2]}));
+        System.err.println("[PERSISTENT] framing_activity_center=" + java.util.Arrays.toString(stageCenter)
+          + " translation=" + java.util.Arrays.toString(new double[] {-stageCenter[0], -stageCenter[1], -stageCenter[2]}));
       }
 
       java.util.List<ArrowProjection.MovingOccurrence> arrowMoving = new java.util.ArrayList<ArrowProjection.MovingOccurrence>();

@@ -105,12 +105,29 @@ def calibrate_camera_basis(assembly_file: str, assembly_hash: str,
     # Creo's view axes are columns, not rows.  Rebuild an orthonormal rotation
     # from the saved default back/up columns so replay preserves its standard
     # roll instead of producing a tilted/diamond view.
-    direction = normalize([float(default_view_matrix[row][2]) for row in range(3)])
+    saved_direction = normalize(
+        [float(default_view_matrix[row][2]) for row in range(3)]
+    )
     saved_up = normalize([float(default_view_matrix[row][1]) for row in range(3)])
+    signs = [_sign(value) for value in saved_direction]
+    weak_axes = [
+        AXES[index]
+        for index, value in enumerate(saved_direction)
+        if abs(value) < 0.15
+    ]
+    fallback = None
+    direction = saved_direction
+    if weak_axes:
+        # Creo OpenFile commonly returns a front/side orthographic transform,
+        # even when the product has no reusable named default view.  Such a
+        # direction collapses two receiver-face families into silhouettes.
+        # Complete only the missing octant weights while preserving the saved
+        # visible signs and saved up reference.  The resulting camera remains
+        # deterministic and still requires the normal preview hard gates.
+        direction = normalize([float(value) for value in signs])
+        fallback = "equal_octant_completion/v1"
     fixed_123_matrix = absolute_view_matrix(direction, saved_up)
     fixed_456_matrix = absolute_view_matrix(opposite(direction), saved_up)
-    signs = [_sign(value) for value in direction]
-    weak_axes = [AXES[index] for index, value in enumerate(direction) if abs(value) < 0.15]
     faces: dict[str, Any] = {}
     for axis_index, axis in enumerate(AXES):
         positive_face, negative_face = axis_index + 1, axis_index + 4
@@ -126,12 +143,12 @@ def calibrate_camera_basis(assembly_file: str, assembly_hash: str,
             "normal_root": _axis_direction(axis_index, -sign),
         }
     return {
-        "schema_version": "assembly-camera-basis/v3",
+        "schema_version": "assembly-camera-basis/v4",
         "assembly_file": assembly_file,
         "assembly_sha256": assembly_hash,
         "coordinate_system": "root_asm",
         "default_view_matrix": default_view_matrix,
-        "saved_default_position_direction_root": direction,
+        "saved_default_position_direction_root": saved_direction,
         "default_position_direction_root": direction,
         "opposite_position_direction_root": opposite(direction),
         "fixed_123_position_direction_root": direction,
@@ -143,10 +160,16 @@ def calibrate_camera_basis(assembly_file: str, assembly_hash: str,
         "faces": faces,
         "calibration": {
             "source": "Creo GetCurrentViewTransform immediately after OpenFile",
-            "trihedral": not weak_axes,
+            "source_trihedral": not weak_axes,
+            "trihedral": True,
             "weak_axes": weak_axes,
-            "formal_view_policy": "fixed_saved_default_and_centre_opposite",
-            "fallback": None,
+            "formal_view_policy": (
+                "fixed_equal_octant_and_centre_opposite"
+                if fallback
+                else "fixed_saved_default_and_centre_opposite"
+            ),
+            "fallback": fallback,
+            "preview_required": True,
         },
     }
 
@@ -230,8 +253,8 @@ def generate_camera_candidates(basis: dict[str, Any], receiver_face: dict[str, A
 def score_camera_candidate(candidate: dict[str, Any], *, receiver_boundary_visible: bool,
                            hole_min_pixel_gap: float, occlusion_score: float,
                            frame_coverage: float, required_hole_gap: float = 12.0,
-                           minimum_frame_coverage: float = 0.45,
-                           maximum_frame_coverage: float = 0.90) -> dict[str, Any]:
+                           minimum_frame_coverage: float = 0.55,
+                           maximum_frame_coverage: float = 1.0) -> dict[str, Any]:
     result = {**candidate, "metrics": dict(candidate["metrics"]), "hard_gate": dict(candidate["hard_gate"])}
     metrics, gate = result["metrics"], result["hard_gate"]
     metrics.update({"receiver_boundary_visible": bool(receiver_boundary_visible),

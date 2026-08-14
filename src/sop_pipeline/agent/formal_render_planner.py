@@ -112,6 +112,13 @@ def compile_formal_render_plan(
     process_by_row = _process_index(draft_plan)
     descendant_rows = _descendant_rows(mapping.rows)
     diagnostics: list[PlanningDiagnostic] = []
+    if camera_basis.get("calibration", {}).get("fallback"):
+        diagnostics.append(
+            PlanningDiagnostic(
+                "CAMERA_BASIS_AUTO_COMPLETED",
+                "Creo 打开总装后的视图不是三轴八分体；Agent 已保留方向符号与 Up，自动补全 fixed_123/fixed_456，并要求真实预览硬门复核。",
+            )
+        )
     scope_bases: dict[str, set[str]] = {}
     initial_completed: set[str] = set()
     raw_steps: list[tuple[tuple[int, int, int], FormalRenderStep]] = []
@@ -633,12 +640,25 @@ def _proven_step(
     low_alignment = min(item.alignment for item in members) < 0.10
     low_face_confidence = face["confidence"] != "high"
     missing_arrow_anchor = any(item.moving_anchor_point is None for item in members)
+    camera_gate = camera.get("hard_gate", {})
     step_diagnostics = tuple(
         code
         for code, active in (
             ("DIRECTION_SIGN_WEAK", low_alignment),
             ("RECEIVER_NORMAL_NOT_AXIS_ALIGNED", low_face_confidence),
             ("MOVING_ARROW_ANCHOR_UNAVAILABLE", missing_arrow_anchor),
+            (
+                "CAMERA_RECEIVER_WRONG_HALF_SPACE",
+                not bool(camera_gate.get("receiver_outside_half_space")),
+            ),
+            (
+                "CAMERA_RECEIVER_SILHOUETTE",
+                not bool(camera_gate.get("receiver_face_not_silhouette")),
+            ),
+            (
+                "EXPLOSION_NOT_VISIBLE_IN_CAMERA",
+                not bool(camera_gate.get("projected_explosion_nonzero")),
+            ),
         )
         if active
     )
