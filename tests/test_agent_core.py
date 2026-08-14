@@ -6,7 +6,9 @@ import unittest
 
 from sop_pipeline.agent import (
     AgentCore,
+    AnalysisResult,
     ClarificationPacket,
+    ClarificationItem,
     GenerationResult,
     RunStatus,
     StepResult,
@@ -17,10 +19,12 @@ from sop_pipeline.agent import (
 
 class SuccessfulWorkflow:
     def analyze(self, run):
-        return ClarificationPacket(
-            schema_version="clarification-packet/v1",
-            summary="识别到 1 个主工序和 1 个安装步骤。",
-            items=(),
+        return AnalysisResult(
+            packet=ClarificationPacket(
+                schema_version="clarification-packet/v1",
+                summary="识别到 1 个主工序和 1 个安装步骤。",
+                items=(),
+            )
         )
 
     def generate(self, run, plan):
@@ -95,6 +99,25 @@ class QuestionedWorkflow(SuccessfulWorkflow):
 class CrashingWorkflow(SuccessfulWorkflow):
     def generate(self, run, plan):
         raise RuntimeError("simulated worker crash")
+
+
+class ClarifyingWorkflow(SuccessfulWorkflow):
+    def analyze(self, run):
+        return AnalysisResult(
+            packet=ClarificationPacket(
+                schema_version="clarification-packet/v1",
+                summary="存在一个需要确认的装配语义。",
+                items=(
+                    ClarificationItem(
+                        item_id="install-mode",
+                        category="CONFIRMATION",
+                        question="左右支架是否同一步安装？",
+                        options=("同一步安装", "分成两个步骤"),
+                        recommended_option="同一步安装",
+                    ),
+                ),
+            )
+        )
 
 
 class UnsafeDeliveryWorkflow(SuccessfulWorkflow):
@@ -264,6 +287,26 @@ class AgentCoreTests(unittest.TestCase):
                     run_id,
                     StepResolution(step_id="step-questioned", candidate_id="B"),
                 )
+
+    def test_confirmation_requires_one_valid_answer_per_question(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            bom = root / "BOM.xlsx"
+            bom.write_bytes(b"bom-v1")
+            cad = root / "cad"
+            cad.mkdir()
+            (cad / "root.asm.1").write_bytes(b"assembly-v1")
+            core = AgentCore(root / "agent-workspace", workflow=ClarifyingWorkflow())
+            run_id = core.create_run(bom, cad)
+            core.analyze(run_id)
+
+            with self.assertRaisesRegex(ValueError, "install-mode"):
+                core.confirm(run_id, answers={})
+            with self.assertRaisesRegex(ValueError, "不属于确认卡选项"):
+                core.confirm(run_id, answers={"install-mode": "随便处理"})
+            plan = core.confirm(run_id, answers={"install-mode": "同一步安装"})
+
+        self.assertEqual(plan.answers, {"install-mode": "同一步安装"})
 
 
 if __name__ == "__main__":

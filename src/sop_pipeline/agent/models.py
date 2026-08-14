@@ -60,6 +60,20 @@ class ClarificationPacket:
     schema_version: str
     summary: str
     items: tuple[ClarificationItem, ...]
+    facts: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ProducedArtifact:
+    kind: str
+    relative_path: str
+    value: Any
+
+
+@dataclass(frozen=True)
+class AnalysisResult:
+    packet: ClarificationPacket
+    artifacts: tuple[ProducedArtifact, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -67,6 +81,7 @@ class PlanRevision:
     run_id: str
     revision: int
     answers: dict[str, str]
+    analysis_fingerprint: str
     fingerprint: str
     created_at: str
 

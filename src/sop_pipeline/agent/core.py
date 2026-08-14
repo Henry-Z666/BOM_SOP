@@ -9,6 +9,8 @@ from uuid import uuid4
 
 from .artifacts import ArtifactStore
 from .models import (
+    AnalysisResult,
+    ClarificationItem,
     ClarificationPacket,
     GenerationResult,
     PlanRevision,
@@ -98,9 +100,18 @@ class AgentCore:
         run = self._store.get(run_id)
         if run.status is not RunStatus.ANALYZING:
             raise ValueError("只有 ANALYZING 状态可以执行输入分析")
-        packet = self._require_workflow().analyze(run)
+        result: AnalysisResult = self._require_workflow().analyze(run)
+        packet = result.packet
         if packet.schema_version != "clarification-packet/v1":
             raise ValueError(f"不支持的释疑包版本：{packet.schema_version}")
+        for artifact in result.artifacts:
+            self._artifacts.write_json(
+                run_id=run_id,
+                run_workspace=run.workspace,
+                kind=artifact.kind,
+                relative_path=artifact.relative_path,
+                value=artifact.value,
+            )
         self._artifacts.write_json(
             run_id=run_id,
             run_workspace=run.workspace,
@@ -120,15 +131,31 @@ class AgentCore:
         run = self._store.get(run_id)
         if run.status is not RunStatus.AWAITING_CONFIRMATION:
             raise ValueError("只有 AWAITING_CONFIRMATION 状态可以锁定生成方案")
+        packet = self._load_clarification(run)
+        questions = {item.item_id: item for item in packet.items if item.category == "CONFIRMATION"}
+        unknown = sorted(set(answers) - set(questions))
+        if unknown:
+            raise ValueError("确认答案包含未知释疑项：" + ", ".join(unknown))
+        for item_id, item in questions.items():
+            if item_id not in answers:
+                raise ValueError(f"释疑项 {item_id} 尚未确认")
+            if answers[item_id] not in item.options:
+                raise ValueError(f"释疑项 {item_id} 的答案不属于确认卡选项")
         revision = run.plan_revision + 1
         canonical = json.dumps(answers, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        packet_data = self._artifacts.read_json(run.workspace, "analysis/clarification-packet.json")
+        packet_canonical = json.dumps(
+            packet_data, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        analysis_fingerprint = "sha256:" + hashlib.sha256(packet_canonical.encode("utf-8")).hexdigest()
         digest = hashlib.sha256(
-            f"plan-revision/v1\0{run.input_fingerprint}\0{canonical}".encode("utf-8")
+            f"plan-revision/v1\0{run.input_fingerprint}\0{analysis_fingerprint}\0{canonical}".encode("utf-8")
         ).hexdigest()
         plan = PlanRevision(
             run_id=run_id,
             revision=revision,
             answers=dict(answers),
+            analysis_fingerprint=analysis_fingerprint,
             fingerprint="sha256:" + digest,
             created_at=self._now(),
         )
@@ -148,6 +175,28 @@ class AgentCore:
         )
         return plan
 
+    def _load_clarification(self, run: RunRecord) -> ClarificationPacket:
+        data: dict[str, Any] = self._artifacts.read_json(
+            run.workspace, "analysis/clarification-packet.json"
+        )
+        return ClarificationPacket(
+            schema_version=str(data["schema_version"]),
+            summary=str(data["summary"]),
+            items=tuple(
+                ClarificationItem(
+                    item_id=str(item["item_id"]),
+                    category=str(item["category"]),
+                    question=str(item["question"]),
+                    options=tuple(str(option) for option in item["options"]),
+                    recommended_option=str(item["recommended_option"]),
+                    evidence=tuple(str(value) for value in item.get("evidence", [])),
+                    affected_steps=tuple(str(value) for value in item.get("affected_steps", [])),
+                )
+                for item in data.get("items", [])
+            ),
+            facts=dict(data.get("facts", {})),
+        )
+
     def _load_plan(self, run: RunRecord) -> PlanRevision:
         data: dict[str, Any] = self._artifacts.read_json(
             run.workspace, f"plans/plan-revision-{run.plan_revision:04d}.json"
@@ -156,6 +205,7 @@ class AgentCore:
             run_id=str(data["run_id"]),
             revision=int(data["revision"]),
             answers={str(key): str(value) for key, value in data["answers"].items()},
+            analysis_fingerprint=str(data["analysis_fingerprint"]),
             fingerprint=str(data["fingerprint"]),
             created_at=str(data["created_at"]),
         )

@@ -1,11 +1,13 @@
 from .core import AgentCore
 from .models import RunRecord, RunStatus, SkillStatus, StepStatus
 from .models import (
+    AnalysisResult,
     ArtifactRef,
     ClarificationItem,
     ClarificationPacket,
     GenerationResult,
     PlanRevision,
+    ProducedArtifact,
     RunOutcome,
     StepResolution,
     StepResult,
@@ -16,12 +18,14 @@ from .store import RunNotFoundError
 
 __all__ = [
     "AgentCore",
+    "AnalysisResult",
     "ArtifactRef",
     "ClarificationItem",
     "ClarificationPacket",
     "Diagnostic",
     "GenerationResult",
     "PlanRevision",
+    "ProducedArtifact",
     "RunNotFoundError",
     "RunOutcome",
     "RetryScope",
