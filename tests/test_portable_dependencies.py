@@ -14,6 +14,7 @@ class PortableDependencyTests(unittest.TestCase):
 
         self.assertNotRegex(pyproject, r"\bopenai\b|@oai/artifact-tool|codex_node")
         self.assertNotRegex(source, r"\bimport openai\b|\bfrom openai\b|codex_node")
+        self.assertFalse(Path("src/sop_pipeline/qwen_orchestrator.py").exists())
 
     def test_qwen_agent_metadata_uses_dashscope_sdk(self) -> None:
         metadata = Path(

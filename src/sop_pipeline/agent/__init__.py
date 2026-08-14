@@ -1,5 +1,6 @@
 from .core import AgentCore
 from .creo_worker import PowerShellCreoWorker
+from .desktop_workflow import DesktopWorkflow
 from .excel_verifier import ExcelComVerifier
 from .models import RunRecord, RunStatus, SkillStatus, StepStatus
 from .models import (
@@ -35,6 +36,12 @@ from .render_scheduler import (
     RenderTask,
 )
 from .skill_contract import Diagnostic, RetryScope, SkillResult
+from .skill_registry import (
+    AGENT_SKILL_DEFINITIONS,
+    SkillDefinition,
+    SkillInvocation,
+    SkillRegistry,
+)
 from .step_revision import (
     RevisionKind,
     StepDependencyGraph,
@@ -59,6 +66,7 @@ __all__ = [
     "compile_creo_render_jobs",
     "Diagnostic",
     "DeterministicRenderValidator",
+    "DesktopWorkflow",
     "DashScopeTransport",
     "FileCheckpointStore",
     "ExcelComVerifier",
@@ -88,6 +96,10 @@ __all__ = [
     "SkillStatus",
     "SemanticReview",
     "SkillResult",
+    "SkillDefinition",
+    "SkillInvocation",
+    "SkillRegistry",
+    "AGENT_SKILL_DEFINITIONS",
     "StepStatus",
     "SopImage",
     "SopPublisher",

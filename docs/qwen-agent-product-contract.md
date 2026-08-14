@@ -94,6 +94,7 @@ Skill 是稳定的批量能力，不是每个 BOM 步骤的一段提示词。正
 | `discover-cad` | 递归抽取 occurrence、变换和约束 | `cad-graph.json` |
 | `map-bom-cad` | 建立带证据的 BOM/occurrence 映射 | `occurrence-map.json` |
 | `plan-assembly` | 生成全部原子安装步骤及依赖图 | `step-plan.json` |
+| `clarify-plan` | 汇总生成前确认项并锁定推荐选择 | `clarification-packet.json` |
 | `compile-render-jobs` | 生成状态增量、双视角、爆炸和箭头合同 | `render-plan.json` |
 | `render-batch` | 以受控 Creo worker 批量出图 | 底图、校准图、箭头审计 |
 | `validate-repair` | 执行硬门、视觉门和有界局部重试 | `acceptance-report.json` |
@@ -288,21 +289,22 @@ BOM 文本和渲染图片是否允许发送到 DashScope，必须由部署方确
 - 用户选择候选后只重跑最小受影响子图，不受影响图片哈希不变；
 - 全部疑惑解决后，用户目录中只剩 `SOP.xlsx` 和正式步骤图片。
 
-## 11. 当前实现差距（2026-08-13）
+## 11. 当前实现状态与剩余差距（2026-08-14）
 
 | 目标 | 当前证据 | 结论 |
 | --- | --- | --- |
-| 用户只提供 BOM + CAD 文件夹 | `Product` 还要求模板、最终总装名和手写 `product.json` | 未实现 |
-| Agent 自动走完全流程 | CLI 只暴露分段命令，Qwen 提示词要求用户确认并指示用户运行 Creo/出版脚本 | 未实现 |
-| Qwen 正式运行 | `qwen_orchestrator.py` 引用仓库中不存在的正式 `qwen_client/qwen_tools`；参考客户端依赖 OpenAI SDK | 未实现且方向不合格 |
-| 受控 Skill 接口 | 参考工具允许模型传任意文件路径和写任意 JSON，且没有 render/publish 工具 | 未实现 |
-| 大规模批处理 | 当前水箱 8 个主工序展开为 42 个任务，合同保存累计可见集，产品脚本写死 | 未实现 |
-| 自动恢复 | 只有简单轮次和连续失败计数，没有持久状态机、指纹和原子完成标记 | 未实现 |
-| 步骤隔离与候选图 | 当前流程按批次成败处理，没有依赖子图隔离、候选状态或释疑接口 | 未实现 |
-| 动态出版 | 当前正式说明仍指向水箱专用出版脚本 | 未实现 |
-| 干净迁移验收 | 现有单元测试与预检不能证明从两项原料自动交付 | 未证明 |
+| 用户只提供 BOM + CAD 文件夹 | `AgentCore` 与桌面入口自动识别工作表、表头、总装文件版本和文件级 BOM/CAD 映射 | 分析入口已实现；真实 Creo occurrence 映射仍待迁移验收 |
+| Agent 自动走完全流程 | 持久接口、独立 worker 进程和桌面确认页已实现；通用两输入分析可运行 | 真实通用 CAD 规划到渲染的组合尚未通过阶段七 |
+| Qwen 正式运行 | 已实现官方 DashScope `Generation`/`MultiModalConversation` adapter，并删除损坏的旧编排器 | 离线合同已测；等待 Key 做真实调用 |
+| 受控 Skill 接口 | 12 个仓库 Skill、统一信封、状态白名单和任意输出路径拒绝已实现 | 已实现并单测 |
+| 大规模批处理 | 500 任务、每 20 步检查点、25 个有界会话和现有 42 任务合同编译已测试 | 调度内核已实现；真实 Creo 压测待阶段七 |
+| 自动恢复 | SQLite WAL、产物哈希、原子写、磁盘检查点和恢复不重渲染已实现 | 内核已实现；真实强杀验收待阶段七 |
+| 步骤隔离与候选图 | 表现失败继续、结构失败仅等待后代、2～4 候选与 StepRevision 最小失效图已测试 | 内核已实现；真实图片链待阶段七 |
+| 动态出版 | Python 动态分页通过 8/42 与 100/100 测试，交付白名单和 Excel COM adapter 已实现 | `pywin32` 未安装，真实 Excel COM 尚未执行 |
+| 桌面 Agent | PySide6 页面、首次配置、统一确认、后台进程、暂停/续跑、历史任务和候选/文字释疑入口已实现 | 当前环境未安装 PySide6/PyInstaller，EXE 尚未构建 |
+| 干净迁移验收 | 10 次两输入分析一致；500 任务与出版规模测试通过 | 真实 Creo、Excel、DashScope 的全新工作区验收未完成 |
 
-因此，现有 Qwen 编排器和移植参考代码不能直接转正；应提取协议知识后重建 provider adapter、状态机和批量 Skill 接口。
+旧产品脚本继续只作为对照和真实 Creo 适配基础，不能替代阶段七的清洁迁移证据。
 
 ## 12. 推荐开发顺序
 

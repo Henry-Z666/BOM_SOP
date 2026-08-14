@@ -1,8 +1,25 @@
 # Creo 装配 SOP 生成流水线
 
-从产品包指定的 BOM、Creo 最终总装和 SOP 模板出发，生成经过校验的安装步骤图，并将合格图片写入 SOP Excel 模板。
+从用户选择的 BOM 和 CAD 文件夹出发，生成经过校验的安装步骤图与可编辑 SOP。
 
-当前仓库面向后续开发者：先保证步骤图正确，再进行 SOP 出版。正式 CAD 自动化只使用 Creo 异步 J-Link Java API；不使用屏幕坐标或 computer use。
+目标产品是 PySide6 Windows 桌面 Agent。正式 CAD 自动化只使用 Creo 异步 J-Link
+Java API；语义能力只通过阿里云官方 DashScope SDK 调用 Qwen。界面不直接操作
+Creo、Excel 或 Qwen，后台独立进程通过 SQLite 状态和检查点续跑。
+
+## 桌面 Agent
+
+安装依赖后运行：
+
+```powershell
+qwen-creo-sop-agent
+```
+
+普通用户只需拖入 BOM、选择 CAD 文件夹、查看一次确认页并开始生成。首次使用配置
+Creo、J-Link、普通版 Excel 和 DashScope Key。最终用户目录只保留 `SOP.xlsx`
+（有疑问时为 `SOP_待确认.xlsx`）与 `步骤图片/`。
+
+仓库自有的 12 个 Agent Skill 位于 `skills/`，正式接口和状态机实现位于
+`src/sop_pipeline/agent/`，桌面入口位于 `src/sop_pipeline/desktop/`。
 
 ## 输入与产物
 
@@ -20,7 +37,7 @@
 | 安装图片与箭头审计 | `outputs/images/` |
 | 可出版 SOP | `outputs/published_sop/` |
 
-## 当前水箱批次流程
+## 旧水箱批次诊断流程
 
 ```mermaid
 flowchart LR
@@ -42,7 +59,7 @@ flowchart LR
 5. 相机只能在产品级 `fixed_123`、`fixed_456` 中选择其一。
 6. V3 箭头从活动件同一 CAD 锚点的爆炸态指向完整态；只有通过审计的图片才能出版。
 
-## 从零开始跑一个产品
+## 旧脚本：从零开始跑一个产品
 
 以下命令在 PowerShell、仓库根目录执行。先把运行时示例复制为本机配置；许可证文件本身不进入仓库。
 
@@ -160,7 +177,7 @@ python ./products/water-tank/scripts/validate_published_sop.py
 
 ## 规则与实现细节
 
-- [Qwen Agent 产品契约](docs/qwen-agent-product-contract.md)：两项运行输入、无人值守边界、Skill 接口、状态机、交付结构、规模与迁移验收；这是目标架构，当前实现尚未达到。
+- [Qwen Agent 产品契约](docs/qwen-agent-product-contract.md)：两项运行输入、无人值守边界、Skill 接口、状态机、交付结构、规模与迁移验收。
 - [Qwen Agent 实施计划](docs/qwen-agent-implementation-plan.md)：已确认的桌面产品流程、生成前释疑、步骤隔离、局部再生成、开发阶段和验收标准。
 - [安装图规划规则](docs/render-planning-rules.md)：阶段可见性、固定双视角、爆炸、构图和 BOM/CAD 匹配。
 - [Pixel Arrow V3 规则](docs/pixel-arrow-v3-rules.md)：同点锚定、端点识别、像素阈值和发布条件。
