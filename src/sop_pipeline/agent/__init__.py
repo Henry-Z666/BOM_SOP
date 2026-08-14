@@ -1,5 +1,6 @@
 from .core import AgentCore
 from .creo_worker import PowerShellCreoWorker
+from .excel_verifier import ExcelComVerifier
 from .models import RunRecord, RunStatus, SkillStatus, StepStatus
 from .models import (
     AnalysisResult,
@@ -40,6 +41,12 @@ from .step_revision import (
     StepRevision,
     validate_revision,
 )
+from .sop_publisher import (
+    OpenpyxlWorkbookVerifier,
+    SopImage,
+    SopPublisher,
+    SopStep,
+)
 from .store import RunNotFoundError
 
 __all__ = [
@@ -54,8 +61,10 @@ __all__ = [
     "DeterministicRenderValidator",
     "DashScopeTransport",
     "FileCheckpointStore",
+    "ExcelComVerifier",
     "GenerationResult",
     "MemoryCheckpointStore",
+    "OpenpyxlWorkbookVerifier",
     "PlanRevision",
     "PowerShellCreoWorker",
     "ProducedArtifact",
@@ -80,6 +89,9 @@ __all__ = [
     "SemanticReview",
     "SkillResult",
     "StepStatus",
+    "SopImage",
+    "SopPublisher",
+    "SopStep",
     "StepResolution",
     "StepDependencyGraph",
     "StepRevision",

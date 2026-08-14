@@ -4,4 +4,4 @@ interface:
   default_prompt: "Use $generate-creo-assembly-sop to generate validated installation images and an SOP from a BOM and a final Creo assembly."
   model_provider: "dashscope"
   model_name: "qwen-max"
-  api_style: "openai-compatible"
+  api_style: "dashscope-python-sdk"

@@ -128,7 +128,7 @@ python ./products/water-tank/scripts/validate_render_jobs.py
 python ./scripts/validate_corrected_render_outputs.py
 
 $env:SOP_REFERENCE_PATH = 'D:\path\to\one-process-per-sheet-template.xlsx'
-node ./products/water-tank/scripts/publish_sop_spreadsheets.mjs
+python -m sop_pipeline.cli publish <validated-step-contract.json>
 python ./products/water-tank/scripts/validate_published_sop.py
 ```
 
