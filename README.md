@@ -160,6 +160,8 @@ python ./products/water-tank/scripts/validate_published_sop.py
 
 ## 规则与实现细节
 
+- [Qwen Agent 产品契约](docs/qwen-agent-product-contract.md)：两项运行输入、无人值守边界、Skill 接口、状态机、交付结构、规模与迁移验收；这是目标架构，当前实现尚未达到。
+- [Qwen Agent 实施计划](docs/qwen-agent-implementation-plan.md)：已确认的桌面产品流程、生成前释疑、步骤隔离、局部再生成、开发阶段和验收标准。
 - [安装图规划规则](docs/render-planning-rules.md)：阶段可见性、固定双视角、爆炸、构图和 BOM/CAD 匹配。
 - [Pixel Arrow V3 规则](docs/pixel-arrow-v3-rules.md)：同点锚定、端点识别、像素阈值和发布条件。
 - [Spreadsheet SOP 出版](docs/spreadsheet-sop-publication.md)：模板、图片和出版校验。

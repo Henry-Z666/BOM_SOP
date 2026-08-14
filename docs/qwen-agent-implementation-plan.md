@@ -1,0 +1,270 @@
+# Qwen Creo SOP Agent 实施与上传计划
+
+状态：`ACCEPTED`  
+确认日期：2026-08-14  
+目标：将现有 Creo SOP 生成器改造成由 Qwen 编排、面向非开发用户、可从 BOM 与 CAD 文件夹自动交付 SOP 和步骤图片的 Windows 桌面 Agent。
+
+## 1. Git 交付顺序
+
+直接在 `main` 开发并推送，不创建 PR，不强制推送。
+
+1. 获取远端状态，确保本地 `main` 可安全快进；远端若有新提交，先合并并复核冲突。
+2. 新建本文并同步修订产品契约和 README。
+3. 只暂存计划相关文档，提交 `docs: add Qwen SOP Agent implementation plan` 并推送 `main`。
+4. 将已经确认的旧产物删除和 `research/qwen-transplant` 参考归档单独提交为 `chore: remove obsolete artifacts and archive transplant references`。
+5. 运行现有测试和预检，通过后推送。
+6. 后续每个实施阶段独立提交、测试并推送 `main`；推送前始终先获取远端状态，禁止强制推送。
+
+## 2. 最终产品流程
+
+采用 PySide6 构建 Windows 桌面 Agent。首次部署配置 Creo、J-Link、普通版 Excel 和 DashScope Key。每次运行用户只需要：
+
+1. 拖入 BOM；
+2. 选择 CAD 文件夹；
+3. 查看一次 BOM 与装配方案确认页；
+4. 点击“确认并开始生成”。
+
+生成前自动完成：
+
+- BOM 工作表、列、层级、数量和工艺理解；
+- 最终总装识别与版本锁定；
+- CAD occurrence 和约束扫描；
+- BOM/CAD 映射；
+- 主工序、安装步骤和依赖图规划；
+- 关键疑问收集与推荐方案生成。
+
+确认页始终显示一次。用户无法回答时可以选择“不确定，按推荐方案生成”。确认后锁定 `PlanRevision`，正式生成期间不再提问。
+
+最终用户目录只包含：
+
+```text
+交付结果/
+├─ SOP.xlsx
+└─ 步骤图片/
+```
+
+仍有疑问时交付 `SOP_待确认.xlsx`，推荐图带明显“待确认”标识，其他候选图保存在步骤图片目录。JSON、日志、底图、校准图和报告仅保存在 Agent 内部。
+
+## 3. 核心架构
+
+### 3.1 Agent 接口
+
+```text
+create_run(bom_file, cad_directory) -> run_id
+analyze(run_id) -> clarification_packet
+confirm(run_id, answers) -> plan_revision
+generate(run_id) -> run_outcome
+resolve(run_id, step_id, candidate_id | instruction) -> run_outcome
+resume(run_id) -> run_outcome
+```
+
+桌面界面不直接操作 Creo 或 Qwen。后台执行器作为独立进程运行，状态写入 SQLite WAL，产物使用版本化 JSON、SHA-256 和原子完成标记。
+
+运行状态：
+
+```text
+ANALYZING
+AWAITING_CONFIRMATION
+GENERATING
+NEEDS_REVIEW
+COMPLETED
+BLOCKED_SYSTEM
+```
+
+步骤状态：
+
+```text
+PENDING
+RUNNING
+PASSED
+QUESTIONED
+FAILED
+DEPENDENCY_WAIT
+```
+
+单张图片失败不能使整个运行进入 `BLOCKED_SYSTEM`。
+
+### 3.2 Skill 模块
+
+实现以下仓库自有 Skill：
+
+- `intake-preflight`
+- `normalize-bom`
+- `lock-assembly`
+- `discover-cad`
+- `map-bom-cad`
+- `plan-assembly`
+- `clarify-plan`
+- `compile-render-jobs`
+- `render-batch`
+- `validate-repair`
+- `publish-delivery`
+- `resolve-step`
+
+每个 Skill 使用版本化 Schema，接收 `run_id` 和内部产物引用，返回 `passed / retryable / questioned / blocked`，同时返回输入指纹、产物哈希、错误代码、重试范围和下一允许状态。Qwen 不能指定任意输出路径或绕过状态机。
+
+### 3.3 Qwen 接入
+
+使用阿里云官方 DashScope Python SDK，删除正式路径中的 OpenAI SDK 依赖。
+
+Qwen 负责：
+
+- BOM 及工艺文本语义理解；
+- 生成普通语言确认卡；
+- 理解用户释疑；
+- 渲染图语义复核；
+- 在状态机许可范围内选择恢复策略。
+
+确定性程序负责 CAD occurrence、约束、数量、安装方向、可见集、相机、箭头、状态转换和出版资格。
+
+CAD 原文件、完整 CAD 图谱、许可证和本机路径禁止上传；允许上传最小化 BOM 文本和渲染图片。
+
+## 4. 生成前释疑
+
+疑问分为：
+
+- `AUTO_RESOLVED`：规则可以唯一确定；
+- `CONFIRMATION`：多个方案会改变装配语义；
+- `PRESENTATION`：只影响图片表现，生成阶段自动修复；
+- `SYSTEM_ERROR`：输入或环境无法开始。
+
+必须在生成前确认：
+
+- BOM 和 CAD 数量不一致；
+- 多个可能的最终总装；
+- 同一图号对应多个模型；
+- 子装配整体安装或拆分不明确；
+- 安装顺序存在多个合理方案；
+- 方案会改变后续完整安装状态。
+
+确认卡提供 2～4 个选项、推荐项、普通语言依据和必要预览图。用户每次运行都确认一次；历史决定只用于预填推荐，不能跳过确认。
+
+## 5. 步骤隔离、重试和候选图
+
+安装计划采用依赖图，每个步骤记录：
+
+```text
+depends_on
+state_delta
+complete_state_hash
+affected_descendants
+main_process_id
+```
+
+图片生成失败不改变规划中的完整安装态，因此后续步骤继续。只有结构事实变化时才暂停真正依赖它的后代，其他分支继续。
+
+默认恢复策略：
+
+- Creo 或 API 故障：清理会话后按原合同重试，最多 3 次；
+- 构图问题：在 `fixed_123`、`fixed_456` 和允许的 PAN、ZOOM、爆炸距离内搜索；
+- 箭头问题：重新选择同一 CAD 锚点或调整二维布局；
+- 遮挡问题：调整临时简化表示，禁止显示未来零件；
+- 仍无法通过：生成候选图或明确占位图，继续其他步骤。
+
+候选图限制为 2～4 张，每组只改变一个因素。候选必须通过基础几何硬门。Agent 推荐一张写入待确认 SOP；不能通过基础硬门时只能使用“待重新生成”占位图。
+
+Creo 默认使用 1 个 worker，验证许可证和稳定性后允许配置为 2 个。每个 worker 只复制一次完整模型集，默认执行 20 个任务后重启。步骤状态使用增量加每 20 步检查点，支持 500 任务规模。
+
+## 6. 释疑后局部再生成
+
+用户可以点击候选图或输入普通语言修正。Qwen 将反馈解析为版本化 `StepRevision`，确定性验证器确认其合法性后计算最小失效子图：
+
+- 构图或箭头变化：只重做当前步骤；
+- 安装对象或方向变化但完整态不变：重做直接受影响图片；
+- 完整安装态或顺序变化：重做依赖后代；
+- 未受影响图片哈希必须保持不变。
+
+SOP 重新出版并复用未失效图片。全部问题解决后，用 `SOP.xlsx` 原子替换待确认版本，并清除用户目录中的候选图和占位图。
+
+## 7. SOP 出版
+
+第一版使用内置标准模板，不开放任意自定义模板。
+
+采用主工序自动分页：
+
+- 同一主工序可包含多张安装图；
+- 放不下时创建“主工序名称-续页”；
+- 不硬编码 8 个工序、固定工作表数或两位编号；
+- 图片不得通过过度缩小强塞进一页。
+
+使用 Python `openpyxl` 和必要的 OOXML 处理生成工作簿，移除 Node、Codex 和 `@oai/artifact-tool` 依赖。
+
+使用普通版 Excel COM 完成最终复核：只读打开，检查修复提示、图片、工作表和打印区域，临时导出 PDF 并渲染检查。临时 PDF 和检查图不进入用户交付目录，不使用宏、加载项或专业版功能。
+
+## 8. 分阶段实施
+
+### 阶段一：状态机和统一契约
+
+建立领域词典、SQLite 运行状态、产物注册表、指纹、原子完成标记、统一 Skill 信封和恢复机制。
+
+验收：使用假 Creo/Qwen adapter 走通创建、确认、生成、崩溃恢复和局部失效。
+
+### 阶段二：两项输入与生成前释疑
+
+实现自动 BOM 工作表及表头识别、最终总装选择、BOM/CAD 映射、依赖图、疑问检测、确认卡和计划锁定。
+
+验收：只提供 BOM 和 CAD 目录即可得到稳定确认页，不需要用户创建 `product.json`。
+
+### 阶段三：可扩展规划和 Creo worker
+
+将水箱专用规划规则拆入通用模块，采用状态增量、检查点、批量任务和可恢复 Creo worker。
+
+验收：现有 42 任务可断点续跑，单图故障不停止无关步骤。
+
+### 阶段四：自动复核、候选图和局部再生成
+
+实现确定性图片门、Qwen-VL 复核、有界修复、候选图、自然语言释疑和最小子图重跑。
+
+验收：选图或输入修正后仅重做受影响范围，其他图片哈希不变。
+
+### 阶段五：动态 SOP 出版
+
+实现主工序自动分页、候选标识、占位图、Excel COM 复核和交付目录白名单。
+
+验收：8 工序和 100 工序用例均可正常打开、打印和编辑。
+
+### 阶段六：桌面 Agent 与安装包
+
+实现 PySide6 界面、后台任务、暂停继续、历史任务、候选选择、释疑和首次配置向导，使用 PyInstaller 打包。
+
+验收：普通用户全程无需打开终端。
+
+### 阶段七：清洁迁移验收
+
+在全新工作区只放 BOM、CAD 和已安装 Agent，使用真实 Creo、Excel 和 DashScope 完成全流程。
+
+验收通过后，将旧水箱产品脚本降级为测试夹具或删除。
+
+## 9. 必须通过的测试
+
+- 当前水箱 8 主工序、42 渲染任务；
+- 100 主工序、至少 500 渲染任务；
+- 同一干净输入连续运行 10 次，步骤、occurrence、相机、爆炸向量和箭头端点一致；
+- 图片规范化差异处于版本化容差；
+- 多工作表、合并单元格、中文和数字工序；
+- 多个总装、缺件、数量不符和无约束接收件；
+- 单步骤 Creo 崩溃、API 超时、遮挡和箭头失败；
+- 单步骤失败后无关步骤继续；
+- 用户选择候选后的局部重跑；
+- 自然语言释疑后的依赖子图重跑；
+- Agent 和 Creo 被强制终止后的续跑；
+- 源 CAD 运行前后逐文件哈希一致；
+- 用户交付目录只有 SOP 和步骤图片；
+- 仓库和安装包不存在 OpenAI、Codex Skill 运行时或 `CODEX_NODE` 正式依赖。
+
+## 10. 已确认默认值
+
+- 直接提交并推送 `main`，不建 PR，不强制推送；
+- 计划文档、清理改动和各实施阶段分别提交；
+- Windows 桌面应用；
+- 每次生成前统一确认一次；
+- 用户不确定时按推荐方案继续；
+- 待确认 SOP 使用推荐图加明显标识；
+- 释疑支持候选选择和自然语言；
+- CAD 不上传，允许发送最小化 BOM 文本和渲染图；
+- 目标电脑保证安装普通版 Excel；
+- SOP 按主工序自动分页；
+- 第一版使用内置模板；
+- 最终只交付 XLSX 和步骤图片；
+- 正式 Qwen 集成测试时由用户提供 DashScope Key。
+
