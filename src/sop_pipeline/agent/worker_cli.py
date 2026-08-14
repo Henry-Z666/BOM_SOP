@@ -28,6 +28,9 @@ def _json_value(value: Any) -> Any:
 
 
 def execute(workspace: Path, action: str, payload: dict[str, Any]) -> Any:
+    allowed_actions = {"start-analysis", "confirm", "generate", "resolve", "resume"}
+    if action not in allowed_actions:
+        raise ValueError(f"unsupported worker action: {action}")
     core = AgentCore(workspace, DesktopWorkflow())
     if action == "start-analysis":
         run_id = core.create_run(
@@ -52,27 +55,49 @@ def execute(workspace: Path, action: str, payload: dict[str, Any]) -> Any:
         )
     if action == "resume":
         return core.resume(run_id)
-    raise ValueError(f"unsupported worker action: {action}")
+    raise AssertionError("unreachable worker action")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--action", required=True)
+    parser.add_argument("--request-file", type=Path)
+    parser.add_argument("--response-file", type=Path)
     args = parser.parse_args(argv)
+    response: dict[str, Any]
+    response_file_is_safe = False
     try:
-        payload = json.loads(sys.stdin.read() or "{}")
+        if bool(args.request_file) != bool(args.response_file):
+            raise ValueError("request-file and response-file must be provided together")
+        if args.request_file:
+            _assert_workspace_file(args.workspace, args.request_file)
+            _assert_workspace_file(args.workspace, args.response_file)
+            response_file_is_safe = True
+            payload = json.loads(args.request_file.read_text(encoding="utf-8"))
+        else:
+            payload = json.loads(sys.stdin.read() or "{}")
         result = execute(args.workspace, args.action, payload)
-        print(json.dumps({"ok": True, "result": _json_value(result)}, ensure_ascii=False))
-        return 0
+        response = {"ok": True, "result": _json_value(result)}
+        exit_code = 0
     except Exception as error:
-        print(
-            json.dumps(
-                {"ok": False, "error": f"{type(error).__name__}: {error}"},
-                ensure_ascii=False,
-            )
-        )
-        return 1
+        response = {"ok": False, "error": f"{type(error).__name__}: {error}"}
+        exit_code = 1
+    encoded = json.dumps(response, ensure_ascii=False)
+    if args.response_file and response_file_is_safe:
+        temporary = args.response_file.with_suffix(".tmp")
+        temporary.write_text(encoded, encoding="utf-8")
+        temporary.replace(args.response_file)
+    elif not args.response_file:
+        print(encoded)
+    return exit_code
+
+
+def _assert_workspace_file(workspace: Path, path: Path) -> None:
+    root = workspace.resolve()
+    resolved = path.resolve()
+    if root not in resolved.parents:
+        raise ValueError("worker IPC file must stay inside the Agent workspace")
 
 
 if __name__ == "__main__":

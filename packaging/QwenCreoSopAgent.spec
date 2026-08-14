@@ -1,19 +1,22 @@
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
-root = Path(SPECPATH).parent.parent
+root = Path(SPECPATH).parent
 skill_names = (
     "intake-preflight", "normalize-bom", "lock-assembly", "discover-cad",
     "map-bom-cad", "plan-assembly", "clarify-plan", "compile-render-jobs",
     "render-batch", "validate-repair", "publish-delivery", "resolve-step",
 )
 
-hiddenimports = collect_submodules("dashscope") + collect_submodules("sop_pipeline")
+hiddenimports = [
+    "dashscope.aigc.generation",
+    "dashscope.aigc.multimodal_conversation",
+] + collect_submodules("sop_pipeline")
 datas = collect_data_files("dashscope")
 datas += [(str(root / "skills" / name), f"skills/{name}") for name in skill_names]
 
 a = Analysis(
-    [str(root / "src" / "sop_pipeline" / "desktop" / "app.py")],
+    [str(root / "packaging" / "entrypoint.py")],
     pathex=[str(root / "src")],
     binaries=[],
     datas=datas,

@@ -25,6 +25,27 @@ class FakeTransport:
 
 
 class QwenAdvisorTests(unittest.TestCase):
+    def test_invalid_schema_is_corrected_with_a_bounded_retry(self) -> None:
+        class RetryTransport(FakeTransport):
+            def __init__(self):
+                super().__init__('{"type":"presentation"}')
+                self.responses = [
+                    '{"type":"presentation"}',
+                    '{"kind":"presentation","changes":{"camera_id":"fixed_456"}}',
+                ]
+
+            def call_text(self, messages, *, seed):
+                self.text_calls.append((messages, seed))
+                return self.responses.pop(0)
+
+        transport = RetryTransport()
+        revision = QwenAdvisor(transport).interpret_resolution(
+            "step-1", "换另一侧固定视角", 1
+        )
+
+        self.assertEqual(revision.changes, {"camera_id": "fixed_456"})
+        self.assertEqual(len(transport.text_calls), 2)
+
     def test_natural_language_resolution_becomes_validated_step_revision(self) -> None:
         transport = FakeTransport(
             json.dumps(
@@ -60,6 +81,33 @@ class QwenAdvisorTests(unittest.TestCase):
         self.assertEqual(sent_image, image)
         self.assertIn("安装阀门", prompt)
         self.assertNotIn("CAD", prompt.upper())
+
+    def test_invalid_vision_schema_is_retried_without_adding_more_input_data(self) -> None:
+        class RetryVisionTransport(FakeTransport):
+            def __init__(self):
+                super().__init__('{"result":"bad"}')
+                self.responses = [
+                    '{"result":"bad"}',
+                    '{"passed":false,"issues":["receiver hidden"]}',
+                ]
+
+            def call_vision(self, image_file, prompt, *, seed):
+                self.vision_calls.append((image_file, prompt, seed))
+                return self.responses.pop(0)
+
+        transport = RetryVisionTransport()
+        with tempfile.TemporaryDirectory() as folder:
+            image = Path(folder) / "step.jpg"
+            image.write_bytes(b"image")
+            review = QwenAdvisor(transport).review_render(
+                image, {"step_title": "安装阀门"}
+            )
+
+        self.assertFalse(review.passed)
+        self.assertEqual(len(transport.vision_calls), 2)
+        self.assertEqual(
+            transport.vision_calls[0][0], transport.vision_calls[1][0]
+        )
 
     def test_qwen_cannot_return_arbitrary_output_path(self) -> None:
         transport = FakeTransport(

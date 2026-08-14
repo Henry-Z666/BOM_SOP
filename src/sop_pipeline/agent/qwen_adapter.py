@@ -84,9 +84,18 @@ class SemanticReview:
 class QwenAdvisor:
     """Small Qwen surface: wording, semantic review, and constrained revisions."""
 
-    def __init__(self, transport: QwenTransport, *, seed: int = 7) -> None:
+    def __init__(
+        self,
+        transport: QwenTransport,
+        *,
+        seed: int = 7,
+        max_schema_attempts: int = 3,
+    ) -> None:
+        if not 1 <= max_schema_attempts <= 3:
+            raise ValueError("max_schema_attempts must be between 1 and 3")
         self.transport = transport
         self.seed = seed
+        self.max_schema_attempts = max_schema_attempts
 
     def interpret_resolution(
         self,
@@ -94,42 +103,68 @@ class QwenAdvisor:
         instruction: str,
         revision: int,
     ) -> StepRevision:
-        response = self.transport.call_text(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "Return JSON only. Convert feedback into one of "
-                        "presentation, installation_geometry, complete_state. "
-                        "Use only bounded fields allowed by the supplied schema."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Return one JSON object only with exactly two top-level fields: "
+                    'kind and changes. kind is one of "presentation", '
+                    '"installation_geometry", "complete_state". changes must contain '
+                    "the concrete bounded correction, not only a category. Example: "
+                    '{"kind":"presentation","changes":{"camera_id":"fixed_456",'
+                    '"zoom":1.1}}. Never return type, explanation, paths, or markdown.'
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "schema_version": "step-resolution-request/v1",
+                        "step_id": step_id,
+                        "instruction": instruction,
+                        "allowed_cameras": ["fixed_123", "fixed_456"],
+                        "zoom_range": [0.5, 2.0],
+                        "pan_range": [-1.0, 1.0],
+                        "explosion_distance_range": [0.0, 1000.0],
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+        last_error: Exception | None = None
+        for attempt in range(1, self.max_schema_attempts + 1):
+            response = self.transport.call_text(messages, seed=self.seed)
+            try:
+                payload = _parse_json_object(response)
+                if set(payload) != {"kind", "changes"}:
+                    raise ValueError("response requires exactly kind and changes")
+                if not isinstance(payload["changes"], dict) or not payload["changes"]:
+                    raise ValueError("changes must be a non-empty object")
+                result = StepRevision(
+                    revision=revision,
+                    step_id=step_id,
+                    kind=RevisionKind(payload["kind"]),
+                    changes=dict(payload["changes"]),
+                )
+                return validate_revision(result)
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+                last_error = error
+                if attempt == self.max_schema_attempts:
+                    break
+                messages.extend(
+                    [
+                        {"role": "assistant", "content": response},
                         {
-                            "schema_version": "step-resolution-request/v1",
-                            "step_id": step_id,
-                            "instruction": instruction,
-                            "allowed_cameras": ["fixed_123", "fixed_456"],
-                            "zoom_range": [0.5, 2.0],
-                            "pan_range": [-1.0, 1.0],
-                            "explosion_distance_range": [0.0, 1000.0],
+                            "role": "user",
+                            "content": (
+                                "SCHEMA_VALIDATION_FAILED: "
+                                f"{type(error).__name__}. Return the exact required JSON "
+                                "with a concrete non-empty changes object."
+                            ),
                         },
-                        ensure_ascii=False,
-                    ),
-                },
-            ],
-            seed=self.seed,
-        )
-        payload = _parse_json_object(response)
-        result = StepRevision(
-            revision=revision,
-            step_id=step_id,
-            kind=RevisionKind(payload["kind"]),
-            changes=dict(payload.get("changes", {})),
-        )
-        return validate_revision(result)
+                    ]
+                )
+        raise ValueError("Qwen did not return a valid StepRevision") from last_error
 
     def review_render(
         self,
@@ -142,13 +177,30 @@ class QwenAdvisor:
             '{"passed": boolean, "issues": [short strings]}. Context: '
             + json.dumps(minimized_context, ensure_ascii=False, sort_keys=True)
         )
-        payload = _parse_json_object(
-            self.transport.call_vision(image_file, prompt, seed=self.seed)
-        )
-        return SemanticReview(
-            passed=bool(payload.get("passed")),
-            issues=tuple(str(issue) for issue in payload.get("issues", [])),
-        )
+        last_error: Exception | None = None
+        for attempt in range(1, self.max_schema_attempts + 1):
+            response = self.transport.call_vision(image_file, prompt, seed=self.seed)
+            try:
+                payload = _parse_json_object(response)
+                if set(payload) != {"passed", "issues"}:
+                    raise ValueError("review requires exactly passed and issues")
+                if not isinstance(payload["passed"], bool) or not isinstance(
+                    payload["issues"], list
+                ):
+                    raise ValueError("review fields have invalid types")
+                return SemanticReview(
+                    passed=payload["passed"],
+                    issues=tuple(str(issue) for issue in payload["issues"]),
+                )
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                last_error = error
+                if attempt == self.max_schema_attempts:
+                    break
+                prompt += (
+                    " Previous response failed schema validation. Return exactly passed "
+                    "as a boolean and issues as an array of short strings."
+                )
+        raise ValueError("Qwen-VL did not return a valid semantic review") from last_error
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 from typing import Any
+from uuid import uuid4
 
 
 class SubprocessAgentBackend:
@@ -55,8 +56,28 @@ class SubprocessAgentBackend:
             return True
 
     def _call(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
-        if getattr(sys, "frozen", False):
-            command = [self.python_executable, "--agent-worker"]
+        frozen = bool(getattr(sys, "frozen", False))
+        request_file: Path | None = None
+        response_file: Path | None = None
+        if frozen:
+            ipc_directory = self.workspace / "ipc"
+            ipc_directory.mkdir(parents=True, exist_ok=True)
+            token = uuid4().hex
+            request_file = ipc_directory / f"{token}.request.json"
+            response_file = ipc_directory / f"{token}.response.json"
+            temporary = request_file.with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+            )
+            temporary.replace(request_file)
+            command = [
+                self.python_executable,
+                "--agent-worker",
+                "--request-file",
+                str(request_file),
+                "--response-file",
+                str(response_file),
+            ]
         else:
             command = [
                 self.python_executable,
@@ -73,7 +94,7 @@ class SubprocessAgentBackend:
         )
         process = subprocess.Popen(
             command,
-            stdin=subprocess.PIPE,
+            stdin=subprocess.DEVNULL if frozen else subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -86,7 +107,7 @@ class SubprocessAgentBackend:
             self._pause_requested = False
         try:
             stdout, stderr = process.communicate(
-                input=json.dumps(payload, ensure_ascii=False),
+                input=None if frozen else json.dumps(payload, ensure_ascii=False),
                 timeout=self.timeout_seconds,
             )
         except subprocess.TimeoutExpired:
@@ -99,17 +120,31 @@ class SubprocessAgentBackend:
                 self._current_process = None
                 self._pause_requested = False
         if paused:
+            _remove_ipc_files(request_file, response_file)
             return {
                 "run_id": str(payload.get("run_id", "")),
                 "status": "GENERATING",
                 "paused": True,
             }
         try:
-            response = json.loads(stdout)
+            response_text = (
+                response_file.read_text(encoding="utf-8")
+                if response_file is not None and response_file.is_file()
+                else stdout
+            )
+            response = json.loads(response_text)
         except json.JSONDecodeError as error:
             raise RuntimeError(
                 f"Agent worker returned invalid output: {stderr.strip()}"
             ) from error
+        finally:
+            _remove_ipc_files(request_file, response_file)
         if process.returncode != 0 or not response.get("ok"):
             raise RuntimeError(str(response.get("error", "Agent worker failed")))
         return dict(response["result"])
+
+
+def _remove_ipc_files(*paths: Path | None) -> None:
+    for path in paths:
+        if path is not None and path.exists():
+            path.unlink()

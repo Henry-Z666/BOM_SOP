@@ -8,11 +8,13 @@ class DesktopPackagingTests(unittest.TestCase):
     def test_desktop_entrypoint_and_pyinstaller_spec_exist(self) -> None:
         pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
         spec = Path("packaging/QwenCreoSopAgent.spec").read_text(encoding="utf-8")
+        entrypoint = Path("packaging/entrypoint.py").read_text(encoding="utf-8")
         app = Path("src/sop_pipeline/desktop/app.py").read_text(encoding="utf-8")
 
         self.assertIn("qwen-creo-sop-agent", pyproject)
         self.assertIn("PySide6", pyproject)
         self.assertIn('excludes=["openai"]', spec)
+        self.assertIn("sop_pipeline.desktop.app", entrypoint)
         self.assertNotIn("creo_worker", app)
         self.assertNotIn("qwen_adapter", app)
         self.assertIn("--agent-worker", app)
