@@ -14,7 +14,15 @@ from .models import (
     StepResult,
 )
 from .ports import WorkflowPort
+from .qwen_adapter import DashScopeTransport, QwenAdvisor, SemanticReview
+from .repair_candidates import BoundedRepairPlanner, RepairCandidate
 from .render_job_compiler import compile_creo_render_jobs
+from .render_validation import (
+    ArrowEvidence,
+    DeterministicRenderValidator,
+    RenderEvidence,
+    RenderGateReport,
+)
 from .render_scheduler import (
     FileCheckpointStore,
     MemoryCheckpointStore,
@@ -26,37 +34,56 @@ from .render_scheduler import (
     RenderTask,
 )
 from .skill_contract import Diagnostic, RetryScope, SkillResult
+from .step_revision import (
+    RevisionKind,
+    StepDependencyGraph,
+    StepRevision,
+    validate_revision,
+)
 from .store import RunNotFoundError
 
 __all__ = [
     "AgentCore",
     "AnalysisResult",
     "ArtifactRef",
+    "ArrowEvidence",
     "ClarificationItem",
     "ClarificationPacket",
     "compile_creo_render_jobs",
     "Diagnostic",
+    "DeterministicRenderValidator",
+    "DashScopeTransport",
     "FileCheckpointStore",
     "GenerationResult",
     "MemoryCheckpointStore",
     "PlanRevision",
     "PowerShellCreoWorker",
     "ProducedArtifact",
+    "QwenAdvisor",
     "RunNotFoundError",
     "RunOutcome",
     "RetryScope",
     "RenderAttempt",
+    "RenderEvidence",
+    "RenderGateReport",
     "RenderMetrics",
     "RenderPlan",
     "RenderScheduleResult",
     "RenderScheduler",
     "RenderTask",
+    "RepairCandidate",
+    "BoundedRepairPlanner",
     "RunRecord",
     "RunStatus",
+    "RevisionKind",
     "SkillStatus",
+    "SemanticReview",
     "SkillResult",
     "StepStatus",
     "StepResolution",
+    "StepDependencyGraph",
+    "StepRevision",
     "StepResult",
     "WorkflowPort",
+    "validate_revision",
 ]
