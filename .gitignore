@@ -11,6 +11,7 @@ config/creo-runtime.json
 # Source CAD and generated deliverables are kept locally, not in the workflow repository.
 零件图/
 outputs/
+.agent-runs/
 
 # Ephemeral Creo sessions, rendered images, spreadsheet build caches and logs
 data/runs/published-sop-build/
