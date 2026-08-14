@@ -1,0 +1,31 @@
+{
+  "schema": "rendering-config/v1",
+  "_comment": "single authority for every tuned constant of the fixed drawing chain (pipeline-stability/v1). planner (plan_steps.py) and renderer (DrawingRenderer.java) both read this file; never re-hardcode these numbers in code. Migration to another equipment: edit assembly_file + drawing.template only, then re-run camera calibration.",
+  "assembly_file": "jb9918900337.asm.2",
+  "drawing": {
+    "template": "a3_drawing",
+    "margin_mm": 15.0,
+    "arrow_shaft_w_mm": 1.0,
+    "arrow_head_len_mm": 14.0,
+    "arrow_head_w_mm": 6.0
+  },
+  "explosion": {
+    "floor_cap_mm": 60.0,
+    "size_factor": 1.2,
+    "insert_extent_frac": 0.5,
+    "insert_gap_mm": 5.0,
+    "distance_cap_mm": 260.0,
+    "distance_extent_frac": 0.4,
+    "fallback_floor_mm": 60.0,
+    "screen_floor_px": 100.0,
+    "screen_floor_max_scale": 4.0
+  },
+  "framing_mirror": {
+    "image_px": 1600,
+    "margin_l_px": 48,
+    "margin_r_px": 48,
+    "margin_t_px": 48,
+    "margin_b_px": 64,
+    "occupancy": 0.98
+  }
+}
