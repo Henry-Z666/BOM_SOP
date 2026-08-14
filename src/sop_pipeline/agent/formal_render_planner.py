@@ -27,6 +27,13 @@ class PlanningDiagnostic:
 
 
 @dataclass(frozen=True)
+class ArrowAnchorEvidence:
+    occurrence_id: str
+    constraint_id: str
+    complete_point_root: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
 class FormalRenderStep:
     step_id: str
     main_process_id: str
@@ -40,6 +47,7 @@ class FormalRenderStep:
     receiver_point_root: tuple[float, float, float] | None
     receiver_normal_root: tuple[float, float, float] | None
     translation_vector_root: tuple[float, float, float] | None
+    arrow_anchors: tuple[ArrowAnchorEvidence, ...]
     camera_id: str | None
     allowed_camera_ids: tuple[str, str]
     depends_on: tuple[str, ...]
@@ -72,6 +80,7 @@ class _OccurrenceEvidence:
     receiver_id: str
     constraint_id: str
     receiver_point: tuple[float, float, float]
+    moving_anchor_point: tuple[float, float, float] | None
     outward_normal: tuple[float, float, float]
     alignment: float
     constraint_rank: int
@@ -214,6 +223,7 @@ def compile_formal_render_plan(
                 receiver_point_root=None,
                 receiver_normal_root=None,
                 translation_vector_root=None,
+                arrow_anchors=(),
                 camera_id=None,
                 allowed_camera_ids=("fixed_123", "fixed_456"),
                 depends_on=(),
@@ -244,7 +254,7 @@ def compile_formal_render_plan(
     ready_steps = sum(step.status == "ready" for step in ordered)
     questioned_steps = sum(step.status == "questioned" for step in ordered)
     payload = {
-        "schema_version": "formal-render-plan/v1",
+        "schema_version": "formal-render-plan/v2",
         "assembly_file": mapping.assembly_file,
         "camera_basis": camera_basis,
         "initial_completed_occurrences": sorted(initial_completed, key=_path_key),
@@ -260,7 +270,7 @@ def compile_formal_render_plan(
         "scope_decisions": {},
     }
     return FormalRenderPlan(
-        schema_version="formal-render-plan/v1",
+        schema_version="formal-render-plan/v2",
         assembly_file=mapping.assembly_file,
         camera_basis=camera_basis,
         initial_completed_occurrences=tuple(sorted(initial_completed, key=_path_key)),
@@ -285,7 +295,7 @@ def lock_formal_render_plan(
 ) -> FormalRenderPlan:
     """Apply confirmed semantic choices and recompute all derived plan state."""
 
-    if plan.schema_version != "formal-render-plan/v1":
+    if plan.schema_version not in {"formal-render-plan/v1", "formal-render-plan/v2"}:
         raise ValueError("不支持的正式规划版本")
     recommendations = recommended_scopes or {}
     removed: set[str] = set()
@@ -360,7 +370,7 @@ def lock_formal_render_plan(
 
 
 def formal_render_plan_from_dict(payload: dict[str, Any]) -> FormalRenderPlan:
-    if payload.get("schema_version") != "formal-render-plan/v1":
+    if payload.get("schema_version") not in {"formal-render-plan/v1", "formal-render-plan/v2"}:
         raise ValueError("不支持的正式规划版本")
     return FormalRenderPlan(
         schema_version=str(payload["schema_version"]),
@@ -389,6 +399,14 @@ def formal_render_plan_from_dict(payload: dict[str, Any]) -> FormalRenderPlan:
                     "translation_vector_root": tuple(item["translation_vector_root"])
                     if item.get("translation_vector_root") is not None
                     else None,
+                    "arrow_anchors": tuple(
+                        ArrowAnchorEvidence(
+                            occurrence_id=str(anchor["occurrence_id"]),
+                            constraint_id=str(anchor["constraint_id"]),
+                            complete_point_root=tuple(anchor["complete_point_root"]),
+                        )
+                        for anchor in item.get("arrow_anchors", ())
+                    ),
                     "allowed_camera_ids": tuple(item["allowed_camera_ids"]),
                     "depends_on": tuple(item["depends_on"]),
                     "affected_descendants": tuple(item["affected_descendants"]),
@@ -546,12 +564,25 @@ def _select_evidence(
         alignment = abs(_dot(normal, separation_unit)) if separation_unit else 0.0
         sign = 1.0 if _dot(normal, separation) >= 0.0 else -1.0
         outward = tuple(sign * value for value in normal)
+        component_reference = edge.get("component_reference")
+        component_geometry = (
+            component_reference.get("geometry")
+            if isinstance(component_reference, dict)
+            else None
+        )
+        moving_anchor = (
+            _vector(component_geometry.get("point_root"))
+            if isinstance(component_geometry, dict)
+            and component_geometry.get("status") == "available"
+            else None
+        )
         candidates.append(
             _OccurrenceEvidence(
                 occurrence_id,
                 receiver,
                 str(edge.get("id", "")),
                 point,
+                moving_anchor,
                 outward,
                 alignment,
                 _constraint_rank(str(edge.get("type", ""))),
@@ -601,11 +632,13 @@ def _proven_step(
     scope = _common_ancestor(moving + receivers)
     low_alignment = min(item.alignment for item in members) < 0.10
     low_face_confidence = face["confidence"] != "high"
+    missing_arrow_anchor = any(item.moving_anchor_point is None for item in members)
     step_diagnostics = tuple(
         code
         for code, active in (
             ("DIRECTION_SIGN_WEAK", low_alignment),
             ("RECEIVER_NORMAL_NOT_AXIS_ALIGNED", low_face_confidence),
+            ("MOVING_ARROW_ANCHOR_UNAVAILABLE", missing_arrow_anchor),
         )
         if active
     )
@@ -622,6 +655,15 @@ def _proven_step(
         receiver_point_root=point,
         receiver_normal_root=normal,
         translation_vector_root=translation,
+        arrow_anchors=tuple(
+            ArrowAnchorEvidence(
+                occurrence_id=item.occurrence_id,
+                constraint_id=item.constraint_id,
+                complete_point_root=item.moving_anchor_point,
+            )
+            for item in members
+            if item.moving_anchor_point is not None
+        ),
         camera_id=str(camera["id"]),
         allowed_camera_ids=("fixed_123", "fixed_456"),
         depends_on=(),

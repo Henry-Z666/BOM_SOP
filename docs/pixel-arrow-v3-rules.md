@@ -1,13 +1,15 @@
-# Pixel Arrow V3 — formal rendering rules
+# Pixel Arrow V3 — legacy compatibility rules
 
-V3 separates geometric truth from delivered arrow appearance. It is the only
-permitted arrow path for new formal batches; legacy `run_stage_batch.ps1`,
+V3 separates geometric truth from delivered arrow appearance. It is retained
+only for legacy-batch diagnosis and explicit compatibility experiments. New
+formal Agent batches use Creo/J-Link `DisplayList3D` through
+`creo_display_list/v1`; legacy `run_stage_batch.ps1`,
 `run_bounded_stage_batch.ps1`, `run_render.ps1`, V2 runners and image-overlay
 scripts are not V3 dependencies.
 
 ## Two-pass contract
 
-For every stage, the official J-Link process exports two disposable rasters
+For every legacy V3 stage, the compatibility J-Link process exports two disposable rasters
 from the same locked final ASM, fixed camera, stage occurrence set and pure
 translation:
 

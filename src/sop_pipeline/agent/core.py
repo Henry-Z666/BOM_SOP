@@ -23,6 +23,7 @@ from .models import (
     StepStatus,
 )
 from .ports import WorkflowPort
+from .render_job_compiler import compile_locked_render_jobs
 from .store import RunStore
 
 
@@ -162,6 +163,7 @@ class AgentCore:
         )
         formal_plan_path = run.workspace / "analysis" / "formal-render-plan.json"
         locked_render_plan = None
+        locked_render_jobs = None
         if formal_plan_path.is_file():
             formal_plan = formal_render_plan_from_dict(
                 self._artifacts.read_json(run.workspace, "analysis/formal-render-plan.json")
@@ -181,6 +183,7 @@ class AgentCore:
                 plan.answers,
                 recommendations,
             )
+            locked_render_jobs = compile_locked_render_jobs(locked_render_plan)
         self._artifacts.write_json(
             run_id=run_id,
             run_workspace=run.workspace,
@@ -195,6 +198,13 @@ class AgentCore:
                 kind="locked-render-plan",
                 relative_path=f"plans/locked-render-plan-{revision:04d}.json",
                 value=locked_render_plan,
+            )
+            self._artifacts.write_json(
+                run_id=run_id,
+                run_workspace=run.workspace,
+                kind="locked-render-jobs",
+                relative_path=f"plans/locked-render-jobs-{revision:04d}.json",
+                value=locked_render_jobs,
             )
         self._store.transition(
             run_id,

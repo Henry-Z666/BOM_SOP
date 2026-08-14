@@ -96,7 +96,7 @@ Skill 是稳定的批量能力，不是每个 BOM 步骤的一段提示词。正
 | `plan-assembly` | 生成全部原子安装步骤及依赖图 | `step-plan.json` |
 | `clarify-plan` | 汇总生成前确认项并锁定推荐选择 | `clarification-packet.json` |
 | `compile-render-jobs` | 生成状态增量、双视角、爆炸和箭头合同 | `render-plan.json` |
-| `render-batch` | 以受控 Creo worker 批量出图 | 底图、校准图、箭头审计 |
+| `render-batch` | 以受控 Creo worker 批量出图 | Creo 原生箭头图、箭头审计 |
 | `validate-repair` | 执行硬门、视觉门和有界局部重试 | `acceptance-report.json` |
 | `publish-delivery` | 动态分页、写入模板并封装交付 | `SOP.xlsx`、交付清单 |
 | `resolve-step` | 接收普通语言、候选编号或标注图，释疑并局部再生成 | 新步骤修订和更新后的 SOP |
@@ -148,8 +148,9 @@ resolve(运行标识, 步骤编号, 用户释疑) -> 更新后的SOP与步骤图
 
 - 步骤状态保存“相对前一步的增量 + 周期检查点”，不得在每个任务重复完整累计可见集；
 - 规划输出为依赖图，不能依靠 Qwen 逐步骤循环维持进度；
-- `formal-render-plan/v1` 必须记录 scope-local 可见态增量、完整态哈希、结构依赖、受影响后代和固定相机集合；
+- `formal-render-plan/v2` 必须记录 scope-local 可见态增量、完整态哈希、结构依赖、受影响后代、固定相机集合和同 CAD 点锚点证据；
 - 生成前确认把语义答案锁定为版本化 `locked-render-plan`，生成阶段不得重新解释同一问题；
+- 锁定计划编译为 `render-plan/v2`；正式任务只能声明 `creo_display_list/v1`，像素合成只可作为显式诊断适配器；
 - Creo worker 在一个准备好的只读模型副本上执行一批任务，不能每张图复制整套模型；
 - 并发由 Creo 许可证和稳定性控制，默认 1～2 个 worker；worker 执行有限任务后重启；
 - 单步骤失败只重算受影响子图；上游事实变化才使相应下游失效；
@@ -232,7 +233,7 @@ delivery/<run_id>/
 
 - `SOP.xlsx` 可编辑，安装步骤图同时单独交付；
 - 每张图可追溯到 BOM 行、occurrence、相机、箭头审计和源总装哈希；
-- 用户目录只保留最终安装图；无箭头底图、校准图和审计文件仅在 Agent 内部保留；
+- 用户目录只保留最终安装图；箭头审计、日志和任何诊断底图仅在 Agent 内部保留；
 - 所有步骤通过后才使用正式文件名 `SOP.xlsx`；仍有问题时必须使用 `SOP_待确认.xlsx`；
 - SOP 内的问题步骤图位必须显示“待确认”或“待重新生成”，不能依赖用户理解文件命名；
 - 用户完成释疑后，Agent 更新交付目录为最新版本；全部通过时把 `SOP_待确认.xlsx` 转为 `SOP.xlsx`，候选图从用户目录移除；

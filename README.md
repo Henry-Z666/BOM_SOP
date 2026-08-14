@@ -47,12 +47,17 @@ Creo 安装目录、许可证文件、普通版 Excel 和 DashScope Key；正式
 | 锁定总装、BOM/CAD 映射、图谱、正式渲染计划、日志和校验报告 | Agent 内部运行目录；不进入用户交付目录 |
 | SOP 与步骤图片 | 用户选择的 `交付结果/`；只能包含工作簿和 `步骤图片/` |
 
-真实 Creo 图谱会先编译为 `formal-render-plan/v1`。生成前确认的每个答案与 Qwen 的
+真实 Creo 图谱会先编译为 `formal-render-plan/v2`。生成前确认的每个答案与 Qwen 的
 受限推荐共同锁定一个版本化 `PlanRevision` 和 `locked-render-plan`；生成阶段只消费该
 不可变计划，不再次向 Qwen 询问或重新猜测步骤。Qwen 只推荐“展开子装配”或“整体安装”
 这类工艺语义，occurrence、接收几何、平移方向、相机和依赖图仍由确定性代码决定。
 相同模型版本与最小语义请求的成功推荐按指纹保存在 Agent 内部，因此确认页仍会显示，
 但重复运行相同输入不会因再次调用模型而改变默认方案。
+
+确认后的正式计划继续编译为 `render-plan/v2`。正式 worker 只接受
+`arrow_renderer=creo_display_list/v1`：J-Link 在 Creo 模型窗口中使用同一 CAD 表面点
+绘制绿色箭头，再由 Creo 导出 JPEG。像素箭头合成器只保留为旧批次诊断和兼容性实验，
+不能成为正式任务的静默回退。
 
 ## 旧水箱批次诊断流程
 
@@ -148,9 +153,10 @@ python ./products/water-tank/scripts/validate_render_jobs.py
 
 输出：`data/runs/corrected-v2-render-jobs.json` 及对应相机合同。静态校验必须确认数量、前序可见集、接收件、接收面法向爆炸方向、双视角和安装顺序。
 
-### 5. V3 单步骤试跑
+### 5. 旧 V3 单步骤诊断试跑
 
-先对一个任务生成一张正式箭头图；`JobIndex` 从 `0` 开始。
+该入口只用于复现旧批次和比较像素合成方案；`JobIndex` 从 `0` 开始。新的正式 Agent
+任务不得调用它。
 
 ```powershell
 ./creo_java/run_pixel_arrow_trial_v3.ps1 `
@@ -187,21 +193,21 @@ python ./products/water-tank/scripts/validate_published_sop.py
 
 | 目录 | 内容 |
 | --- | --- |
-| `creo_java/` | J-Link Java 源码、构建脚本、Creo runner 和 V3 箭头合成入口 |
-| `src/sop_pipeline/` | BOM、CAD 图谱、规划、校验、像素箭头和出版逻辑 |
+| `creo_java/` | J-Link Java 源码、产品无关 Creo 原生箭头 worker，以及旧 V3 兼容入口 |
+| `src/sop_pipeline/` | BOM、CAD 图谱、规划、校验、Agent worker 和出版逻辑 |
 | `scripts/` | 与产品无关的总装锁定、图片校验和通用工具 |
 | `data/runs/` | 批次合同、扫描结果、相机基准和临时会话记录 |
 | `outputs/` | 安装图片和出版 Excel；不作为源码提交 |
 | `docs/` | 正式渲染与箭头规则 |
 | `products/` | 可移植的产品包配置与产品适配脚本；不包含 CAD、运行时路径或许可证 |
-| `tests/` | 规划、相机和 V3 箭头的确定性测试 |
+| `tests/` | 规划、相机、Creo 原生箭头合同和旧兼容路径的确定性测试 |
 
 ## 开发约束
 
 - 正式出图只使用最终总装；中间 ASM 可用于诊断，但不能成为正式图片来源。
 - 总装 occurrence 必须使用完整根路径，例如 `51/5025/79`，不能使用裸特征号。
 - 源 CAD 保持只读；所有会话在隔离副本中运行且不保存。
-- 正式箭头只使用 V3 校准图 + 纯零件底图流程；不使用旧图片覆盖箭头脚本。
+- 正式箭头只使用 Creo/J-Link `DisplayList3D` 原生绘制；像素合成不得静默回退。
 - 不使用相对 `X/Y/Z` 旋转、第三视角、动态几何裁切或按颜色隐藏焊接标识。
 - `data/runs/`、`outputs/`、Creo 模型和本地构建缓存均为运行产物，不提交到仓库。
 
@@ -212,7 +218,8 @@ python ./products/water-tank/scripts/validate_published_sop.py
 - [Qwen Agent 产品契约](docs/qwen-agent-product-contract.md)：两项运行输入、无人值守边界、Skill 接口、状态机、交付结构、规模与迁移验收。
 - [Qwen Agent 实施计划](docs/qwen-agent-implementation-plan.md)：已确认的桌面产品流程、生成前释疑、步骤隔离、局部再生成、开发阶段和验收标准。
 - [安装图规划规则](docs/render-planning-rules.md)：阶段可见性、固定双视角、爆炸、构图和 BOM/CAD 匹配。
-- [Pixel Arrow V3 规则](docs/pixel-arrow-v3-rules.md)：同点锚定、端点识别、像素阈值和发布条件。
+- [箭头生成与迁移规则](docs/arrow-generation-and-portability.md)：Creo 原生同点箭头合同、审计与兼容边界。
+- [Pixel Arrow V3 兼容规则](docs/pixel-arrow-v3-rules.md)：旧批次诊断与对照，不是正式 Agent 出版入口。
 - [Spreadsheet SOP 出版](docs/spreadsheet-sop-publication.md)：模板、图片和出版校验。
 - [降本增效路线](docs/reduce-script-roadmap.md)：会话复用和后续开发方向。
 

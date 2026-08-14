@@ -60,6 +60,7 @@ class DesktopWorkflowTests(unittest.TestCase):
                         ["层级", "物料编码", "图号", "名称", "数量", "单位", "装配步骤"],
                         ["30", "ROOT", "ROOT-ASM", "设备总装", "1", "件", "第2步：检查"],
                         ["30.1", "A", "PART-A", "底座", "1", "件", "第1步：固定底座"],
+                        ["30.2", "B", "PART-B", "支架", "1", "件", "第2步：安装支架"],
                     ],
                 )],
             )
@@ -67,6 +68,7 @@ class DesktopWorkflowTests(unittest.TestCase):
             cad.mkdir()
             (cad / "root-asm.asm.1").write_bytes(b"root")
             (cad / "part-a.prt.1").write_bytes(b"part")
+            (cad / "part-b.prt.1").write_bytes(b"part-b")
             graph = {
                 "schema_version": "creo-cad-graph/v3",
                 "assembly_file": "root-asm.asm.1",
@@ -89,10 +91,43 @@ class DesktopWorkflowTests(unittest.TestCase):
                             "z_axis": [0.0, 0.0, 1.0],
                             "origin": [0.0, 0.0, 0.0],
                         },
-                    }
+                    },
+                    {
+                        "occurrence_id": "20",
+                        "parent_occurrence": "ROOT",
+                        "model_name": "PART-B",
+                        "part_no": "part-b.prt",
+                        "transform": {
+                            "x_axis": [1.0, 0.0, 0.0],
+                            "y_axis": [0.0, 1.0, 0.0],
+                            "z_axis": [0.0, 0.0, 1.0],
+                            "origin": [0.0, 0.0, 20.0],
+                        },
+                    },
                 ],
                 "constraints": [
-                    {"occurrences": ["10", "ROOT"], "type": "FIX"}
+                    {"occurrences": ["10", "ROOT"], "type": "FIX"},
+                    {
+                        "id": "20-mate",
+                        "occurrences": ["20", "10"],
+                        "type": "MATE",
+                        "assembly_reference": {
+                            "occurrence_id": "10",
+                            "geometry": {
+                                "status": "available",
+                                "direction_root": [0.0, 0.0, 1.0],
+                                "point_root": [0.0, 0.0, 0.0],
+                            },
+                        },
+                        "component_reference": {
+                            "occurrence_id": "20",
+                            "geometry": {
+                                "status": "available",
+                                "direction_root": [0.0, 0.0, 1.0],
+                                "point_root": [0.0, 0.0, 20.0],
+                            },
+                        },
+                    },
                 ],
             }
             core = AgentCore(
@@ -103,8 +138,8 @@ class DesktopWorkflowTests(unittest.TestCase):
             packet = core.analyze(run_id)
 
             self.assertEqual(packet.facts["creo_discovery"], "passed")
-            self.assertEqual(packet.facts["cad_occurrences"], 1)
-            self.assertEqual(packet.facts["mapped_bom_rows"], 2)
+            self.assertEqual(packet.facts["cad_occurrences"], 2)
+            self.assertEqual(packet.facts["mapped_bom_rows"], 3)
             run = core.get_run(run_id)
             self.assertTrue((run.workspace / "analysis" / "creo-cad-graph.json").is_file())
             self.assertTrue((run.workspace / "analysis" / "bom-cad-map.json").is_file())
@@ -122,6 +157,13 @@ class DesktopWorkflowTests(unittest.TestCase):
                     run.workspace
                     / "plans"
                     / f"locked-render-plan-{revision.revision:04d}.json"
+                ).is_file()
+            )
+            self.assertTrue(
+                (
+                    run.workspace
+                    / "plans"
+                    / f"locked-render-jobs-{revision.revision:04d}.json"
                 ).is_file()
             )
 

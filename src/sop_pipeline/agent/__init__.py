@@ -1,8 +1,9 @@
 from .core import AgentCore
-from .creo_worker import PowerShellCreoWorker
+from .creo_worker import AgentNativeCreoWorker, PowerShellCreoWorker
 from .desktop_workflow import DesktopWorkflow
 from .excel_verifier import ExcelComVerifier
 from .formal_render_planner import (
+    ArrowAnchorEvidence,
     FormalRenderPlan,
     FormalRenderStep,
     PlanningDiagnostic,
@@ -31,7 +32,7 @@ from .qwen_adapter import (
     SemanticReview,
 )
 from .repair_candidates import BoundedRepairPlanner, RepairCandidate
-from .render_job_compiler import compile_creo_render_jobs
+from .render_job_compiler import compile_creo_render_jobs, compile_locked_render_jobs
 from .render_validation import (
     ArrowEvidence,
     DeterministicRenderValidator,
@@ -71,12 +72,15 @@ from .store import RunNotFoundError
 
 __all__ = [
     "AgentCore",
+    "AgentNativeCreoWorker",
     "AnalysisResult",
     "ArtifactRef",
+    "ArrowAnchorEvidence",
     "ArrowEvidence",
     "ClarificationItem",
     "ClarificationPacket",
     "compile_creo_render_jobs",
+    "compile_locked_render_jobs",
     "compile_formal_render_plan",
     "formal_render_plan_from_dict",
     "Diagnostic",

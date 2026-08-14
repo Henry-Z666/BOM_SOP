@@ -11,6 +11,7 @@ from sop_pipeline.agent.formal_render_planner import (
     formal_render_plan_from_dict,
     lock_formal_render_plan,
 )
+from sop_pipeline.agent.render_job_compiler import compile_locked_render_jobs
 
 
 def bom_row(number: int, level: str, drawing: str, name: str) -> NormalizedBomRow:
@@ -162,6 +163,7 @@ class FormalRenderPlannerTests(unittest.TestCase):
         self.assertGreater(bolt.translation_vector_root[2], 0.0)
         self.assertEqual(bolt.camera_id, "fixed_123")
         self.assertEqual(internal.stage_scope_occurrence, "20")
+        self.assertEqual(len(internal.arrow_anchors), 1)
         self.assertEqual(assembly.moving_occurrences, ("20",))
         self.assertIn(internal.step_id, assembly.depends_on)
         self.assertIn(assembly.step_id, internal.affected_descendants)
@@ -288,6 +290,39 @@ class FormalRenderPlannerTests(unittest.TestCase):
         positions = {step.step_id: index for index, step in enumerate(plan.steps)}
         self.assertIn(receiver.step_id, dependent.depends_on)
         self.assertLess(positions[receiver.step_id], positions[dependent.step_id])
+
+    def test_locked_plan_compiles_same_cad_point_worker_tasks(self) -> None:
+        bom, draft, mapping, graph = fixture()
+        plan = compile_formal_render_plan(bom, draft, mapping, graph)
+        locked = lock_formal_render_plan(
+            plan,
+            {"subassembly-scope-0006": "作为已完成整体安装"},
+        )
+
+        render_plan = compile_locked_render_jobs(locked)
+
+        self.assertEqual(render_plan.schema_version, "render-plan/v2")
+        self.assertEqual(len(render_plan.tasks), 2)
+        task = next(item for item in render_plan.tasks if item.payload["execution_mode"] == "formal")
+        anchor = task.payload["arrow_anchors"][0]
+        translation = task.payload["translation_vector_root"]
+        self.assertEqual(
+            anchor["expected_exploded_point_root"],
+            [
+                round(anchor["complete_point_root"][index] + translation[index], 6)
+                for index in range(3)
+            ],
+        )
+        self.assertEqual(task.payload["arrow_renderer"], "creo_display_list/v1")
+        self.assertIn(task.payload["camera"]["id"], {"fixed_123", "fixed_456"})
+        self.assertNotIn("output_path", str(task.payload))
+
+    def test_unconfirmed_plan_cannot_compile_worker_tasks(self) -> None:
+        bom, draft, mapping, graph = fixture()
+        plan = compile_formal_render_plan(bom, draft, mapping, graph)
+
+        with self.assertRaisesRegex(ValueError, "locked"):
+            compile_locked_render_jobs(plan)
 
 
 if __name__ == "__main__":
