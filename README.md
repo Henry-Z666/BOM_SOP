@@ -15,27 +15,33 @@ qwen-creo-sop-agent
 ```
 
 普通用户只需拖入 BOM、选择 CAD 文件夹、查看一次确认页并开始生成。首次使用配置
-Creo、J-Link、普通版 Excel 和 DashScope Key。最终用户目录只保留 `SOP.xlsx`
+Creo 安装目录、许可证文件、普通版 Excel 和 DashScope Key；正式包已内置 J-Link
+适配代码，不要求用户另找脚本。最终用户目录只保留 `SOP.xlsx`
 （有疑问时为 `SOP_待确认.xlsx`）与 `步骤图片/`。
 
 仓库自有的 12 个 Agent Skill 位于 `skills/`，正式接口和状态机实现位于
 `src/sop_pipeline/agent/`，桌面入口位于 `src/sop_pipeline/desktop/`。
 
+发布包必须通过统一入口构建，先编译 J-Link 类再调用 PyInstaller，避免构建目录残留
+改变安装包能力。`PythonCommand` 应指向与目标 Excel/系统一致的 64 位 Python：
+
+```powershell
+./packaging/build.ps1 `
+  -RuntimeConfig ./config/creo-runtime.json `
+  -PythonCommand ./data/clean-build/.venv/Scripts/python.exe
+```
+
 ## 输入与产物
 
 | 输入 | 用途 |
 | --- | --- |
-| `products/<产品>/product.json` | BOM、模型目录、SOP 模板、最终总装与可选 BOM 工作表 |
-| 产品包所指向的 BOM | 工序层级、物料、数量、工艺文字、控制要点和工装 |
-| 产品包所指向的模型目录 | Creo `.asm/.prt` 模型；其中最终总装用于正式出图 |
+| 用户选择的 BOM | 自动识别工作表、表头、工序层级、物料、数量、工艺文字、控制要点和工装 |
+| 用户选择的 CAD 文件夹 | 自动锁定最终总装和版本，并从 Creo `.asm/.prt` 提取 occurrence 与约束证据 |
 
 | 产物 | 位置 |
 | --- | --- |
-| 锁定的总装、哈希和双视角 | `data/runs/*authoritative-assembly*.json`、`*camera-basis*.json` |
-| 递归 occurrence 图 | `data/runs/*final-recursive-discovery*.json` |
-| 安装步骤任务与相机合同 | `data/runs/*render-jobs*.json`、`data/runs/*camera-contracts/` |
-| 安装图片与箭头审计 | `outputs/images/` |
-| 可出版 SOP | `outputs/published_sop/` |
+| 锁定总装、BOM/CAD 映射、图谱、日志和校验报告 | Agent 内部运行目录；不进入用户交付目录 |
+| SOP 与步骤图片 | 用户选择的 `交付结果/`；只能包含工作簿和 `步骤图片/` |
 
 ## 旧水箱批次诊断流程
 
@@ -96,6 +102,21 @@ python ./scripts/create_authoritative_assembly_manifest.py `
 输出：相机基准和权威总装清单。之后若总装哈希变化，已有批次不得继续使用。
 
 ### 3. 递归扫描最终总装
+
+Agent 正式路径直接接收 CAD 目录和锁定后的总装相对路径，不需要产品配置：
+
+```powershell
+./creo_java/run_input_discovery.ps1 `
+  -ModelsDirectory ./零件图 `
+  -AssemblyRelativePath jb9918900337.asm.2 `
+  -RunWorkspace ./data/runs/discovery-clean `
+  -RuntimeConfig ./config/creo-runtime.json
+```
+
+该入口输出 `creo-cad-graph/v3`：完整根 occurrence、稳定约束类型、约束两侧模型项，
+以及可由 Creo 证明的根坐标曲面法向/轴向。源 CAD 在运行前后逐文件校验哈希。
+
+以下旧产品入口只保留作迁移对照：
 
 ```powershell
 ./creo_java/run_discovery.ps1 `

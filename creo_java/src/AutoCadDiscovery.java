@@ -4,7 +4,9 @@ import com.ptc.pfc.pfcAssembly.*;
 import com.ptc.pfc.pfcBase.*;
 import com.ptc.pfc.pfcComponentFeat.*;
 import com.ptc.pfc.pfcFeature.*;
+import com.ptc.pfc.pfcGeometry.*;
 import com.ptc.pfc.pfcModel.*;
+import com.ptc.pfc.pfcModelItem.*;
 import com.ptc.pfc.pfcSession.*;
 import com.ptc.pfc.pfcSolid.*;
 import com.ptc.pfc.pfcSelect.*;
@@ -13,7 +15,11 @@ import java.io.*;
 
 /** Fact-only, asynchronous Creo Java Free OTK assembly extractor. */
 public final class AutoCadDiscovery {
-  private static String esc(String value) { return value == null ? "" : value.replace("\\", "\\\\").replace("\"", "\\\""); }
+  private static String esc(String value) {
+    if (value == null) return "";
+    return value.replace("\\", "\\\\").replace("\"", "\\\"")
+      .replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t");
+  }
   private static String id(int value) { return "C_" + value; }
   private static String pathId(intseq path) throws jxthrowable {
     if (path.getarraysize() == 0) return "ROOT";
@@ -45,15 +51,128 @@ public final class AutoCadDiscovery {
     return "{\"x_axis\":[" + t[0][0] + "," + t[0][1] + "," + t[0][2] + "],\"y_axis\":[" + t[1][0] + "," + t[1][1] + "," + t[1][2]
       + "],\"z_axis\":[" + t[2][0] + "," + t[2][1] + "," + t[2][2] + "],\"origin\":[" + t[3][0] + "," + t[3][1] + "," + t[3][2] + "]}";
   }
+  private static String matrixJson(Transform3D value) throws jxthrowable {
+    Matrix3D source = value.GetMatrix(); StringBuilder result = new StringBuilder("[");
+    for (int row = 0; row < 4; row++) {
+      if (row > 0) result.append(','); result.append('[');
+      for (int col = 0; col < 4; col++) { if (col > 0) result.append(','); result.append(source.get(row, col)); }
+      result.append(']');
+    }
+    return result.append(']').toString();
+  }
   private static double[][] identity() { double[][] value = new double[4][4]; for (int i = 0; i < 4; i++) value[i][i] = 1.0; return value; }
-  private static String pathOccurrence(intseq parentPath, Selection selection) throws jxthrowable {
-    if (selection == null || selection.GetPath() == null || selection.GetPath().GetComponentIds().getarraysize() == 0) return "ROOT";
-    intseq selected = selection.GetPath().GetComponentIds(); intseq full = intseq.create();
-    // Constraint selections inside a child ASM are local to that child.  The
-    // graph stores root paths, so prefix the currently traversed ASM path.
-    for (int i = 0; i < parentPath.getarraysize(); i++) full.append(parentPath.get(i));
-    for (int i = 0; i < selected.getarraysize(); i++) full.append(selected.get(i));
-    return pathId(full);
+  private static intseq appendPaths(intseq prefix, intseq suffix) throws jxthrowable {
+    intseq result = intseq.create();
+    for (int i = 0; i < prefix.getarraysize(); i++) result.append(prefix.get(i));
+    for (int i = 0; suffix != null && i < suffix.getarraysize(); i++) result.append(suffix.get(i));
+    return result;
+  }
+  private static intseq selectionPath(intseq basePath, Selection selection) throws jxthrowable {
+    if (selection == null || selection.GetPath() == null) return appendPaths(basePath, null);
+    return appendPaths(basePath, selection.GetPath().GetComponentIds());
+  }
+  private static double[] transformVector(double[][] pose, Vector3D local) throws jxthrowable {
+    double[] source = new double[]{local.get(0), local.get(1), local.get(2)}; double[] result = new double[3];
+    for (int col = 0; col < 3; col++) for (int row = 0; row < 3; row++) result[col] += source[row] * pose[row][col];
+    double length = Math.sqrt(result[0]*result[0] + result[1]*result[1] + result[2]*result[2]);
+    if (length < 1.0e-12) throw new IllegalArgumentException("degenerate reference direction");
+    for (int i = 0; i < 3; i++) result[i] /= length;
+    return result;
+  }
+  private static double[] transformPoint(double[][] pose, Point3D local) throws jxthrowable {
+    double[] source = new double[]{local.get(0), local.get(1), local.get(2)}; double[] result = new double[3];
+    for (int col = 0; col < 3; col++) {
+      result[col] = pose[3][col];
+      for (int row = 0; row < 3; row++) result[col] += source[row] * pose[row][col];
+    }
+    return result;
+  }
+  private static String array(double[] value) { return "[" + value[0] + "," + value[1] + "," + value[2] + "]"; }
+  private static String error(Throwable value) {
+    String message = value.getMessage();
+    return esc(value.getClass().getSimpleName() + (message == null ? "" : ": " + message));
+  }
+  private static Point3D surfaceAnchor(Surface surface) throws jxthrowable {
+    Outline3D extent = surface.GetXYZExtents(); Point3D low = extent.get(0), high = extent.get(1); Point3D probe = Point3D.create();
+    for (int i = 0; i < 3; i++) probe.set(i, (low.get(i) + high.get(i)) / 2.0);
+    return surface.EvalClosestPointOnSurface(probe);
+  }
+  private static String constraintType(ComponentConstraintType type) {
+    int value = type.getValue();
+    if (value == ComponentConstraintType._ASM_CONSTRAINT_MATE) return "MATE";
+    if (value == ComponentConstraintType._ASM_CONSTRAINT_MATE_OFF) return "MATE_OFF";
+    if (value == ComponentConstraintType._ASM_CONSTRAINT_ALIGN) return "ALIGN";
+    if (value == ComponentConstraintType._ASM_CONSTRAINT_ALIGN_OFF) return "ALIGN_OFF";
+    if (value == ComponentConstraintType._ASM_CONSTRAINT_INSERT) return "INSERT";
+    if (value == ComponentConstraintType._ASM_CONSTRAINT_ORIENT) return "ORIENT";
+    if (value == ComponentConstraintType._ASM_CONSTRAINT_CSYS) return "CSYS";
+    if (value == ComponentConstraintType._ASM_CONSTRAINT_TANGENT) return "TANGENT";
+    if (value == ComponentConstraintType._ASM_CONSTRAINT_FIX) return "FIX";
+    if (value == ComponentConstraintType._ASM_CONSTRAINT_AUTO) return "AUTO";
+    return "TYPE_" + value;
+  }
+  private static String itemType(ModelItemType type) {
+    int value = type.getValue();
+    if (value == ModelItemType._ITEM_SURFACE) return "SURFACE";
+    if (value == ModelItemType._ITEM_AXIS) return "AXIS";
+    if (value == ModelItemType._ITEM_EDGE) return "EDGE";
+    if (value == ModelItemType._ITEM_CURVE) return "CURVE";
+    if (value == ModelItemType._ITEM_POINT) return "POINT";
+    if (value == ModelItemType._ITEM_COORD_SYS) return "COORD_SYS";
+    return "ITEM_" + value;
+  }
+  private static String referenceGeometry(ModelItem item, Selection selection, double[][] toRoot) {
+    try {
+      Surface surface = null; String source = null;
+      if (item instanceof Surface) { surface = (Surface)item; source = "surface"; }
+      else if (item instanceof Axis) { surface = ((Axis)item).GetSurf(); source = "axis_surface"; }
+      if (surface == null) return "{\"status\":\"unavailable\"}";
+      Point3D anchor = null; Vector3D direction;
+      try { anchor = selection.GetPoint(); } catch (Throwable ignored) {}
+      if (surface instanceof TransformedSurface) {
+        Transform3D surfaceCoordinates = ((TransformedSurface)surface).GetCoordSys();
+        direction = surfaceCoordinates.GetZAxis();
+        if (anchor == null) anchor = surfaceCoordinates.GetOrigin();
+      } else {
+        if (anchor == null) anchor = surfaceAnchor(surface);
+        UVParams parameters = null; try { parameters = selection.GetParams(); } catch (Throwable ignored) {}
+        if (parameters == null) parameters = surface.EvalParameters(anchor);
+        direction = surface.Eval3DData(parameters).GetNormal();
+      }
+      if (anchor == null) anchor = surfaceAnchor(surface);
+      return "{\"status\":\"available\",\"source\":\"" + source + "\",\"point_root\":"
+        + array(transformPoint(toRoot, anchor)) + ",\"direction_root\":" + array(transformVector(toRoot, direction)) + "}";
+    } catch (Throwable unavailable) {
+      return "{\"status\":\"unavailable\",\"error\":\"" + error(unavailable) + "\"}";
+    }
+  }
+  private static String referenceJson(Assembly root, intseq basePath, double[][] baseToRoot, Selection selection, DatumSide side) {
+    if (selection == null) return "null";
+    try {
+      intseq selected = selection.GetPath() == null ? intseq.create() : selection.GetPath().GetComponentIds();
+      intseq fullPath = appendPaths(basePath, selected); ModelItem item = selection.GetSelItem();
+      double[][] referenceToRoot = baseToRoot;
+      if (selected.getarraysize() > 0) {
+        try { referenceToRoot = matrix(pfcAssembly.CreateComponentPath(root, fullPath).GetTransform(true)); }
+        catch (Throwable prefixedUnavailable) {
+          try {
+            referenceToRoot = matrix(pfcAssembly.CreateComponentPath(root, selected).GetTransform(true));
+            fullPath = appendPaths(intseq.create(), selected);
+          } catch (Throwable rootUnavailable) {
+            fullPath = appendPaths(basePath, null);
+          }
+        }
+      }
+      String selectionString = ""; try { selectionString = selection.GetSelectionString(); } catch (Throwable ignored) {}
+      if (item == null) return "{\"occurrence_id\":\"" + esc(pathId(fullPath)) + "\",\"status\":\"no_model_item\"}";
+      return "{\"occurrence_id\":\"" + esc(pathId(fullPath)) + "\",\"item_id\":" + item.GetId()
+        + ",\"item_type_code\":" + item.GetType().getValue() + ",\"item_type\":\"" + itemType(item.GetType())
+        + "\",\"item_name\":\"" + esc(item.GetName()) + "\",\"selection\":\"" + esc(selectionString)
+        + "\",\"datum_side\":" + (side == null ? -1 : side.getValue()) + ",\"geometry\":"
+        + referenceGeometry(item, selection, referenceToRoot) + "}";
+    } catch (Throwable unavailable) {
+      return "{\"status\":\"unavailable\",\"error\":\"" + error(unavailable) + "\"}";
+    }
   }
   private static void append(StringBuilder target, String value) { if (target.length() > 0) target.append(','); target.append(value); }
   private static void discoverAssembly(Session session, Assembly root, Assembly current, intseq parentPath,
@@ -71,9 +190,12 @@ public final class AutoCadDiscovery {
       ComponentConstraints constraints = component.GetConstraints();
       for (int j = 0; constraints != null && j < constraints.getarraysize(); j++) {
         ComponentConstraint c = constraints.get(j);
+        intseq assemblyReferencePath = selectionPath(parentPath, c.GetAssemblyReference());
         append(edges, "{\"id\":\"" + esc(path) + "_K_" + (j + 1) + "\",\"occurrences\":[\"" + esc(path)
-          + "\",\"" + esc(pathOccurrence(parentPath, c.GetAssemblyReference())) + "\"],\"type\":\""
-          + esc(c.GetType().toString()) + "\",\"offset\":" + (c.GetOffset() == null ? "null" : c.GetOffset()) + "}");
+          + "\",\"" + esc(pathId(assemblyReferencePath)) + "\"],\"type_code\":" + c.GetType().getValue()
+          + ",\"type\":\"" + constraintType(c.GetType()) + "\",\"offset\":" + (c.GetOffset() == null ? "null" : c.GetOffset())
+          + ",\"assembly_reference\":" + referenceJson(root, parentPath, parentToRoot, c.GetAssemblyReference(), c.GetAssemblyDatumSide())
+          + ",\"component_reference\":" + referenceJson(root, componentPath, componentToRoot, c.GetComponentReference(), c.GetComponentDatumSide()) + "}");
       }
       try {
         Model child = session.RetrieveModel(model);
@@ -89,7 +211,7 @@ public final class AutoCadDiscovery {
     return result.append(']').toString();
   }
   public static void main(String[] args) {
-    if (args.length != 3) { System.err.println("Usage: AutoCadDiscovery <parametric.exe> <assembly-file> <output.json>"); System.exit(2); }
+    if (args.length != 3 && args.length != 4) { System.err.println("Usage: AutoCadDiscovery <parametric.exe> <assembly-file> <output.json> [complete-marker]"); System.exit(2); }
     AsyncConnection connection = null;
     try {
       System.err.println("[DISCOVERY-TRACE] start");
@@ -115,10 +237,18 @@ public final class AutoCadDiscovery {
       System.err.println("[DISCOVERY-TRACE] top_level_components=" + features.getarraysize());
       StringBuilder nodes = new StringBuilder(); StringBuilder edges = new StringBuilder();
       discoverAssembly(session, assembly, assembly, intseq.create(), identity(), nodes, edges);
-      String json = "{\"schema_version\":\"creo-cad-graph/v2\",\"assembly_file\":\"" + esc(args[1]) + "\",\"root_occurrence\":\"ROOT\",\"occurrences\":[" + nodes + "],\"constraints\":[" + edges + "]}";
+      String json = "{\"schema_version\":\"creo-cad-graph/v3\",\"assembly_file\":\"" + esc(requestedFile)
+        + "\",\"assembly_name\":\"" + esc(assembly.GetFileName()) + "\",\"assembly_version\":" + assembly.GetDescr().GetFileVersion()
+        + ",\"root_coordinate_system\":\"root_asm\",\"root_occurrence\":\"ROOT\",\"default_view_matrix\":"
+        + matrixJson(assembly.GetCurrentViewTransform()) + ",\"occurrences\":[" + nodes + "],\"constraints\":[" + edges + "]}";
       try (Writer out = new OutputStreamWriter(new FileOutputStream(args[2]), "UTF-8")) { out.write(json); }
       System.err.println("[DISCOVERY-TRACE] wrote=" + args[2]);
       connection.End();
+      connection = null;
+      if (args.length == 4) {
+        try (Writer marker = new OutputStreamWriter(new FileOutputStream(args[3]), "UTF-8")) { marker.write("complete\n"); }
+        System.err.println("[DISCOVERY-TRACE] complete=" + args[3]);
+      }
     } catch (Throwable error) { error.printStackTrace(); try { if (connection != null) connection.End(); } catch (Throwable ignored) {} System.exit(1); }
   }
 }

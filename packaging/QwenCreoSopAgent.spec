@@ -14,6 +14,18 @@ hiddenimports = [
 ] + collect_submodules("sop_pipeline")
 datas = collect_data_files("dashscope")
 datas += [(str(root / "skills" / name), f"skills/{name}") for name in skill_names]
+datas += [
+    (str(root / "creo_java" / "RuntimeConfig.ps1"), "creo_java"),
+    (str(root / "creo_java" / "run_input_discovery.ps1"), "creo_java"),
+    (str(root / "creo_java" / "src" / "AutoCadDiscovery.java"), "creo_java/src"),
+]
+compiled_discovery = root / "creo_java" / "build" / "AutoCadDiscovery.class"
+if not compiled_discovery.is_file():
+    raise FileNotFoundError(
+        "AutoCadDiscovery.class is required; run packaging/build.ps1 so J-Link "
+        "is compiled before PyInstaller analysis"
+    )
+datas.append((str(compiled_discovery), "creo_java/build"))
 
 a = Analysis(
     [str(root / "packaging" / "entrypoint.py")],

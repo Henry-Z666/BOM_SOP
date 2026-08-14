@@ -6,11 +6,22 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+from .bom_cad_mapper import map_bom_to_occurrences
+from .creo_discovery import (
+    CreoDiscoveryPort,
+    PowerShellCreoDiscovery,
+    bundled_discovery_script,
+    powershell_command,
+    resolve_runtime_config,
+)
 from .local_workflow import LocalAnalysisWorkflow
 from .models import (
     AnalysisResult,
+    ClarificationItem,
+    ClarificationPacket,
     GenerationResult,
     PlanRevision,
+    ProducedArtifact,
     RunRecord,
     StepResolution,
     StepResult,
@@ -20,13 +31,75 @@ from .sop_publisher import SopImage, SopPublisher, SopStep
 
 
 class DesktopWorkflow:
-    """Safe desktop composition until a product-neutral Creo plan is provable."""
+    """Desktop composition with optional real Creo facts and safe generation gates."""
 
-    def __init__(self) -> None:
+    def __init__(self, discovery: CreoDiscoveryPort | None = None) -> None:
         self.analysis = LocalAnalysisWorkflow()
+        self.discovery = discovery
 
     def analyze(self, run: RunRecord) -> AnalysisResult:
-        return self.analysis.analyze(run)
+        base = self.analysis.analyze(run)
+        discovery = self.discovery
+        runtime_config = resolve_runtime_config(run.workspace) if discovery is None else None
+        if discovery is None and runtime_config is not None:
+            discovery = PowerShellCreoDiscovery(
+                powershell=powershell_command(),
+                script=bundled_discovery_script(),
+                runtime_config=runtime_config,
+            )
+        if discovery is None:
+            facts = dict(base.packet.facts)
+            facts["creo_discovery"] = "not_configured"
+            return AnalysisResult(
+                packet=ClarificationPacket(
+                    schema_version=base.packet.schema_version,
+                    summary=base.packet.summary,
+                    items=base.packet.items,
+                    facts=facts,
+                ),
+                artifacts=base.artifacts,
+            )
+
+        artifacts = {item.kind: item.value for item in base.artifacts}
+        bom = artifacts["normalized-bom"]
+        inventory = artifacts["model-inventory"]
+        draft_plan = artifacts["draft-plan"]
+        graph = discovery.discover(
+            run.cad_directory, inventory.final_assembly, run.workspace
+        )
+        mapping = map_bom_to_occurrences(bom, inventory, graph, draft_plan)
+        questions = list(base.packet.items)
+        questions.extend(_mapping_questions(mapping))
+        facts = dict(base.packet.facts)
+        facts.update(
+            {
+                "creo_discovery": "passed",
+                "cad_occurrences": len(graph["occurrences"]),
+                "cad_constraints": len(graph["constraints"]),
+                "mapped_bom_rows": mapping.matched_rows,
+                "ambiguous_occurrence_rows": len(mapping.ambiguous_rows),
+                "missing_occurrence_rows": len(mapping.missing_rows),
+                "quantity_mismatch_rows": len(mapping.quantity_mismatch_rows),
+            }
+        )
+        packet = ClarificationPacket(
+            schema_version=base.packet.schema_version,
+            summary=(
+                base.packet.summary
+                + f" Creo 已验证 {len(graph['occurrences'])} 个 occurrence 和 "
+                f"{len(graph['constraints'])} 条原生约束。"
+            ),
+            items=tuple(questions),
+            facts=facts,
+        )
+        return AnalysisResult(
+            packet=packet,
+            artifacts=base.artifacts
+            + (
+                ProducedArtifact("creo-cad-graph", "analysis/creo-cad-graph.json", graph),
+                ProducedArtifact("bom-cad-map", "analysis/bom-cad-map.json", mapping),
+            ),
+        )
 
     def generate(self, run: RunRecord, plan: PlanRevision) -> GenerationResult:
         del plan
@@ -103,3 +176,33 @@ def _placeholder_font(size: int):
         if candidate.is_file():
             return ImageFont.truetype(str(candidate), size)
     return ImageFont.load_default()
+
+
+def _mapping_questions(mapping) -> tuple[ClarificationItem, ...]:
+    result: list[ClarificationItem] = []
+    if mapping.ambiguous_rows:
+        rows = ", ".join(str(value) for value in mapping.ambiguous_rows[:20])
+        result.append(
+            ClarificationItem(
+                item_id="ambiguous-creo-occurrences",
+                category="CONFIRMATION",
+                question=f"BOM 第 {rows} 行在同一父装配下仍有多组 occurrence 候选，是否生成候选方案供后续选图？",
+                options=("保留候选并继续", "返回检查 BOM/CAD"),
+                recommended_option="保留候选并继续",
+                evidence=("Agent 未按文件顺序截取 occurrence，也未猜测重复件身份。",),
+            )
+        )
+    unresolved = tuple(sorted(set(mapping.missing_rows + mapping.quantity_mismatch_rows)))
+    if unresolved:
+        rows = ", ".join(str(value) for value in unresolved[:20])
+        result.append(
+            ClarificationItem(
+                item_id="creo-quantity-mismatch",
+                category="CONFIRMATION",
+                question=f"BOM 第 {rows} 行的 Creo occurrence 数量不足或缺失，是否保留为待确认步骤并继续？",
+                options=("保留待确认步骤并继续", "返回检查 BOM/CAD"),
+                recommended_option="保留待确认步骤并继续",
+                evidence=("缺失实体不会由 Qwen 或脚本虚构。",),
+            )
+        )
+    return tuple(result)

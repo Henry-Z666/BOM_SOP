@@ -84,13 +84,16 @@ class MainWindow(QMainWindow):
         setup = QGroupBox("首次配置")
         setup_form = QFormLayout(setup)
         self.creo_path = QLineEdit(self.settings.value("creo_path", ""))
-        self.jlink_path = QLineEdit(self.settings.value("jlink_path", ""))
+        self.license_path = QLineEdit(
+            self.settings.value("license_path", self.settings.value("jlink_path", ""))
+        )
         self.excel_path = QLineEdit(self.settings.value("excel_path", ""))
         self.dashscope_key = QLineEdit()
         self.dashscope_key.setEchoMode(QLineEdit.Password)
         self.dashscope_key.setPlaceholderText("仅保存在本次进程；也可使用 DASHSCOPE_API_KEY")
         setup_form.addRow("Creo 安装目录", self.creo_path)
-        setup_form.addRow("J-Link 配置", self.jlink_path)
+        setup_form.addRow("Creo 许可证文件", self.license_path)
+        setup_form.addRow("J-Link", QLabel("随 Agent 提供，通过已安装 Creo 的官方接口运行"))
         setup_form.addRow("Excel 路径", self.excel_path)
         setup_form.addRow("DashScope Key", self.dashscope_key)
         layout.addWidget(setup)
@@ -209,9 +212,16 @@ class MainWindow(QMainWindow):
         if not bom.is_file() or not cad.is_dir():
             self._show_error("请选择有效的 BOM 文件和 CAD 文件夹。")
             return
+        creo_path = self.creo_path.text().strip()
+        license_path = self.license_path.text().strip()
+        if not creo_path or not license_path:
+            self._show_error("首次使用请填写 Creo 安装目录和许可证文件。")
+            return
         self.settings.setValue("creo_path", self.creo_path.text().strip())
-        self.settings.setValue("jlink_path", self.jlink_path.text().strip())
+        self.settings.setValue("license_path", self.license_path.text().strip())
         self.settings.setValue("excel_path", self.excel_path.text().strip())
+        os.environ["QWEN_CREO_LOADPOINT"] = creo_path
+        os.environ["QWEN_CREO_LICENSE_FILE"] = license_path
         if self.dashscope_key.text().strip():
             os.environ["DASHSCOPE_API_KEY"] = self.dashscope_key.text().strip()
         self.progress_title.setText("正在理解 BOM 与 CAD")

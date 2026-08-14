@@ -8,10 +8,58 @@ import unittest
 from openpyxl import load_workbook
 
 from sop_pipeline.agent import AgentCore, DesktopWorkflow, RunStatus
+from sop_pipeline.agent.creo_discovery import StaticCreoDiscovery
 from tests.test_agent_analysis import _xlsx
 
 
 class DesktopWorkflowTests(unittest.TestCase):
+    def test_real_discovery_facts_are_registered_before_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            bom = root / "BOM.xlsx"
+            _xlsx(
+                bom,
+                [(
+                    "BOM",
+                    [
+                        ["层级", "物料编码", "图号", "名称", "数量", "单位", "装配步骤"],
+                        ["30", "ROOT", "ROOT-ASM", "设备总装", "1", "件", "第2步：检查"],
+                        ["30.1", "A", "PART-A", "底座", "1", "件", "第1步：固定底座"],
+                    ],
+                )],
+            )
+            cad = root / "cad"
+            cad.mkdir()
+            (cad / "root-asm.asm.1").write_bytes(b"root")
+            (cad / "part-a.prt.1").write_bytes(b"part")
+            graph = {
+                "schema_version": "creo-cad-graph/v3",
+                "assembly_file": "root-asm.asm.1",
+                "occurrences": [
+                    {
+                        "occurrence_id": "10",
+                        "parent_occurrence": "ROOT",
+                        "model_name": "PART-A",
+                    }
+                ],
+                "constraints": [
+                    {"occurrences": ["10", "ROOT"], "type": "MATE"}
+                ],
+            }
+            core = AgentCore(
+                root / "workspace", DesktopWorkflow(StaticCreoDiscovery(graph))
+            )
+
+            run_id = core.create_run(bom, cad)
+            packet = core.analyze(run_id)
+
+            self.assertEqual(packet.facts["creo_discovery"], "passed")
+            self.assertEqual(packet.facts["cad_occurrences"], 1)
+            self.assertEqual(packet.facts["mapped_bom_rows"], 2)
+            run = core.get_run(run_id)
+            self.assertTrue((run.workspace / "analysis" / "creo-cad-graph.json").is_file())
+            self.assertTrue((run.workspace / "analysis" / "bom-cad-map.json").is_file())
+
     def test_unproven_geometry_delivers_pending_sop_instead_of_crashing_or_guessing(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

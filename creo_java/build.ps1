@@ -1,6 +1,8 @@
+param([string]$RuntimeConfig = '')
+
 $projectRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'RuntimeConfig.ps1')
-$runtime = Get-CreoRuntime -ProjectRoot $projectRoot
+$runtime = Get-CreoRuntime -ProjectRoot $projectRoot -ConfigPath $RuntimeConfig
 $output = Join-Path $PSScriptRoot 'build'
 New-Item -ItemType Directory -Force -Path $output | Out-Null
 $classpath = (Join-Path $runtime.CommonFiles 'text\java\pfcasync.jar') + ';' + (Join-Path $runtime.CommonFiles 'text\java\otk.jar')

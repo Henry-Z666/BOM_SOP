@@ -5,6 +5,14 @@ description: Inventory Creo ASM and PRT versions and extract occurrence or const
 
 # Discover CAD
 
-Operate on a disposable model copy for Creo access. Use full root occurrence paths as identities.
-Record source hashes before and after access. Return a versioned inventory and stable diagnostics;
-never expose local paths to Qwen.
+Accept only `run_id` plus the locked CAD-directory and final-assembly artifact references. Run
+official asynchronous J-Link on a fresh disposable model copy. Return `creo-cad-graph/v3` with:
+
+- the actual assembly filename/version, root coordinate system, SHA-256 manifest and default view;
+- every recursive full root occurrence path and complete transform;
+- stable constraint type codes and both assembly/component references;
+- referenced item IDs/types plus root-coordinate surface normal or axis direction when available.
+
+Hash every source CAD file before and after access. Return `blocked` on any mutation, assembly
+version mismatch, unknown occurrence reference or invalid root vector. Mark unavailable geometry
+explicitly; never infer it from an occurrence centre. Keep local paths and raw CAD out of Qwen.
