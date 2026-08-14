@@ -6,6 +6,7 @@ param(
   [int]$Count = 1,
   [ValidateRange(0, 3)][int]$VariantIndex = 0,
   [string]$PreparedModelsRoot = '',
+  [string]$RunWorkspaceRoot = '',
   [ValidateRange(10, 3600)][int]$TimeoutSeconds = 600,
   [ValidateRange(1, 30)][int]$CompletionGraceSeconds = 4
 )
@@ -27,7 +28,15 @@ $stop = [Math]::Min($StartIndex + $Count, $tasks.Count)
 
 $output = [IO.Path]::GetFullPath($OutputFolder)
 New-Item -ItemType Directory -Force -Path $output | Out-Null
-$runRoot = Split-Path -Parent $output
+$runRoot = if ($RunWorkspaceRoot) {
+  [IO.Path]::GetFullPath($RunWorkspaceRoot)
+}
+else {
+  Split-Path -Parent $output
+}
+if (-not $output.StartsWith($runRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+  throw 'OutputFolder must stay inside the current Agent run workspace.'
+}
 $internalRoot = Join-Path $runRoot 'internal'
 New-Item -ItemType Directory -Force -Path $internalRoot | Out-Null
 
@@ -116,6 +125,10 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   if ([string]$presentation.centering.probe_policy -ne 'on_gate_failure/v1') { throw "Task $taskId has an invalid centering probe policy." }
   if ([string]$presentation.centering.response_cache_scope -ne 'camera_zoom_frame_environment/v1') { throw "Task $taskId has an invalid PAN response cache scope." }
   if ([int]$presentation.centering.max_probe_rounds -ne 2) { throw "Task $taskId has an invalid PAN probe round limit." }
+  if ([string]$presentation.zoom_recovery.schema_version -ne 'centered-span-zoom/v1') { throw "Task $taskId has no supported Zoom recovery contract." }
+  if ([double]$presentation.zoom_recovery.target_subject_span -ne 0.55) { throw "Task $taskId has an invalid Zoom target span." }
+  if ([double]$presentation.zoom_recovery.min_zoom -ne 0.4 -or [double]$presentation.zoom_recovery.max_zoom -ne 3.2) { throw "Task $taskId has invalid Zoom recovery bounds." }
+  if ([int]$presentation.zoom_recovery.max_rounds -ne 2) { throw "Task $taskId has an invalid Zoom recovery round limit." }
   $variants = @($presentation.variants)
   if ($VariantIndex -ge $variants.Count) { throw "Task $taskId has no presentation variant $VariantIndex." }
   $variant = $variants[$VariantIndex]

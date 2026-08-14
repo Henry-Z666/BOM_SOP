@@ -193,6 +193,17 @@ class DeterministicNativeRenderValidator:
         ):
             failures.append("PRESENTATION_CONTRACT_INVALID")
             return None, None
+        zoom_recovery = presentation.get("zoom_recovery")
+        if (
+            not isinstance(zoom_recovery, dict)
+            or zoom_recovery.get("schema_version") != "centered-span-zoom/v1"
+            or zoom_recovery.get("target_subject_span") != 0.55
+            or zoom_recovery.get("min_zoom") != 0.4
+            or zoom_recovery.get("max_zoom") != 3.2
+            or zoom_recovery.get("max_rounds") != 2
+        ):
+            failures.append("PRESENTATION_CONTRACT_INVALID")
+            return None, None
         gate = presentation.get("frame_gate", {})
         if not isinstance(gate, dict):
             failures.append("PRESENTATION_CONTRACT_INVALID")

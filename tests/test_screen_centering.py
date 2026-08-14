@@ -9,6 +9,7 @@ from sop_pipeline.agent.screen_centering import (
     plan_screen_center_probes,
     solve_screen_center_pan,
     solve_with_screen_pan_response,
+    update_screen_pan_response,
 )
 
 
@@ -25,6 +26,17 @@ class ScreenCenteringTests(unittest.TestCase):
         )
         self.assertEqual(plan.x_probe_pan, (0.85, -0.95))
         self.assertEqual(plan.y_probe_pan, (0.95, -0.85))
+
+    def test_probe_plan_moves_toward_visible_target_using_creo_pan_signs(self) -> None:
+        plan = plan_screen_center_probes(
+            base_pan=(0.0, 0.0),
+            probe_delta=0.1,
+            max_abs_pan=1.0,
+            target_pixel=(800.0, 800.0),
+            base_center=(1500.0, 700.0),
+        )
+        self.assertEqual(plan.x_probe_pan, (-0.1, 0.0))
+        self.assertEqual(plan.y_probe_pan, (0.0, -0.1))
 
     def test_solves_coupled_pan_response_from_same_zoom_probes(self) -> None:
         result = solve_screen_center_pan(
@@ -58,6 +70,31 @@ class ScreenCenteringTests(unittest.TestCase):
             max_abs_pan=1.0,
         )
         self.assertLess(max(abs(value) for value in result.pan), 1.0)
+
+    def test_actual_correction_updates_response_without_second_probe_pair(self) -> None:
+        response = measure_screen_pan_response(
+            base_pan=(0.0, 0.0),
+            base_center=(1500.0, 700.0),
+            x_probe_pan=(-0.1, 0.0),
+            x_probe_center=(1420.0, 700.0),
+            y_probe_pan=(0.0, -0.1),
+            y_probe_center=(1490.0, 840.0),
+        )
+        updated = update_screen_pan_response(
+            response=response,
+            prior_pan=(0.0, 0.0),
+            prior_center=(1500.0, 700.0),
+            observed_pan=(-0.85, -0.05),
+            observed_center=(500.0, 800.0),
+        )
+        result = solve_with_screen_pan_response(
+            target_pixel=(800.0, 800.0),
+            base_pan=(-0.85, -0.05),
+            base_center=(500.0, 800.0),
+            response=updated,
+            max_abs_pan=1.0,
+        )
+        self.assertGreater(result.pan[0], -0.85)
 
     def test_rejects_singular_or_out_of_contract_solution(self) -> None:
         common = dict(

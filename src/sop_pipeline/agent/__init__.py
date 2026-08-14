@@ -11,6 +11,7 @@ from .formal_render_planner import (
     formal_render_plan_from_dict,
     lock_formal_render_plan,
 )
+from .framing_recovery import FramingRecoveryError, derive_zoom_for_subject_span
 from .models import RunRecord, RunStatus, SkillStatus, StepStatus
 from .models import (
     AnalysisResult,
@@ -42,6 +43,7 @@ from .screen_centering import (
     plan_screen_center_probes,
     solve_screen_center_pan,
     solve_with_screen_pan_response,
+    update_screen_pan_response,
 )
 from .render_job_compiler import compile_creo_render_jobs, compile_locked_render_jobs
 from .render_validation import (
@@ -108,6 +110,7 @@ __all__ = [
     "ExcelComVerifier",
     "FormalRenderPlan",
     "FormalRenderStep",
+    "FramingRecoveryError",
     "GenerationResult",
     "MemoryCheckpointStore",
     "OpenpyxlWorkbookVerifier",
@@ -157,9 +160,11 @@ __all__ = [
     "StepResult",
     "WorkflowPort",
     "validate_revision",
+    "derive_zoom_for_subject_span",
     "activity_focus_center",
     "measure_screen_pan_response",
     "plan_screen_center_probes",
     "solve_screen_center_pan",
     "solve_with_screen_pan_response",
+    "update_screen_pan_response",
 ]

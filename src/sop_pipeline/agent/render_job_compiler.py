@@ -238,6 +238,7 @@ def _compile_presentation(step: FormalRenderStep) -> dict[str, Any]:
             "framing_priority": "installation_activity/v1",
             "zoom_anchor": "installation_activity_center/v1",
             "centering": _centering_contract(),
+            "zoom_recovery": _zoom_recovery_contract(),
             "variants": [],
             "frame_gate": _frame_gate(),
         }
@@ -247,6 +248,7 @@ def _compile_presentation(step: FormalRenderStep) -> dict[str, Any]:
         "framing_priority": "installation_activity/v1",
         "zoom_anchor": "installation_activity_center/v1",
         "centering": _centering_contract(),
+        "zoom_recovery": _zoom_recovery_contract(),
         "variants": [
             {
                 "variant_id": variant_id,
@@ -296,6 +298,16 @@ def _centering_contract() -> dict[str, Any]:
         "max_abs_pan": 1.0,
         "max_activity_center_offset_pixels": 120,
         "max_arrow_center_offset_pixels": 120,
+    }
+
+
+def _zoom_recovery_contract() -> dict[str, Any]:
+    return {
+        "schema_version": "centered-span-zoom/v1",
+        "target_subject_span": 0.55,
+        "min_zoom": 0.4,
+        "max_zoom": 3.2,
+        "max_rounds": 2,
     }
 
 

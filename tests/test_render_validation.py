@@ -45,6 +45,13 @@ def _native_payload(**changes) -> dict:
                 "max_activity_center_offset_pixels": 120,
                 "max_arrow_center_offset_pixels": 120,
             },
+            "zoom_recovery": {
+                "schema_version": "centered-span-zoom/v1",
+                "target_subject_span": 0.55,
+                "min_zoom": 0.4,
+                "max_zoom": 3.2,
+                "max_rounds": 2,
+            },
             "variants": [
                 {"variant_id": "base", "camera_id": "fixed_123", "zoom": 1.0, "pan": [0.0, 0.0]}
             ],

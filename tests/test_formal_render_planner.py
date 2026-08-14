@@ -348,6 +348,16 @@ class FormalRenderPlannerTests(unittest.TestCase):
             task.payload["presentation"]["centering"]["schema_version"],
             "adaptive-screen-center/v1",
         )
+        self.assertEqual(
+            task.payload["presentation"]["zoom_recovery"],
+            {
+                "schema_version": "centered-span-zoom/v1",
+                "target_subject_span": 0.55,
+                "min_zoom": 0.4,
+                "max_zoom": 3.2,
+                "max_rounds": 2,
+            },
+        )
         self.assertNotIn("output_path", str(task.payload))
 
     def test_unconfirmed_plan_cannot_compile_worker_tasks(self) -> None:

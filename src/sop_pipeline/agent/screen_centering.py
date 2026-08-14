@@ -46,6 +46,8 @@ def plan_screen_center_probes(
     base_pan: tuple[float, float],
     probe_delta: float,
     max_abs_pan: float,
+    target_pixel: tuple[float, float] | None = None,
+    base_center: tuple[float, float] | None = None,
 ) -> ScreenCenteringProbePlan:
     """Create two same-Zoom orthogonal probes without crossing PAN bounds."""
 
@@ -56,17 +58,30 @@ def plan_screen_center_probes(
     if max(abs(base_pan[0]), abs(base_pan[1])) > max_abs_pan:
         raise ScreenCenteringError("base PAN exceeds the presentation contract")
 
-    def probed(value: float) -> float:
-        if value + probe_delta <= max_abs_pan:
-            return value + probe_delta
-        if value - probe_delta >= -max_abs_pan:
-            return value - probe_delta
+    if (target_pixel is None) != (base_center is None):
+        raise ScreenCenteringError(
+            "probe direction requires both target_pixel and base_center"
+        )
+    x_direction = 1.0
+    y_direction = 1.0
+    if target_pixel is not None and base_center is not None:
+        x_direction = 1.0 if target_pixel[0] >= base_center[0] else -1.0
+        # Creo positive PAN Y moves the raster toward smaller pixel Y.
+        y_direction = -1.0 if target_pixel[1] >= base_center[1] else 1.0
+
+    def probed(value: float, direction: float) -> float:
+        preferred = value + direction * probe_delta
+        if -max_abs_pan <= preferred <= max_abs_pan:
+            return preferred
+        fallback = value - direction * probe_delta
+        if -max_abs_pan <= fallback <= max_abs_pan:
+            return fallback
         raise ScreenCenteringError("PAN bound is too narrow for a probe")
 
     return ScreenCenteringProbePlan(
         base_pan=base_pan,
-        x_probe_pan=(probed(base_pan[0]), base_pan[1]),
-        y_probe_pan=(base_pan[0], probed(base_pan[1])),
+        x_probe_pan=(probed(base_pan[0], x_direction), base_pan[1]),
+        y_probe_pan=(base_pan[0], probed(base_pan[1], y_direction)),
     )
 
 
@@ -130,6 +145,48 @@ def solve_with_screen_pan_response(
         pan=pan,
         correction=(correction_x, correction_y),
         determinant=response.determinant,
+    )
+
+
+def update_screen_pan_response(
+    *,
+    response: ScreenPanResponse,
+    prior_pan: tuple[float, float],
+    prior_center: tuple[float, float],
+    observed_pan: tuple[float, float],
+    observed_center: tuple[float, float],
+) -> ScreenPanResponse:
+    """Apply one Broyden rank-one update from an actual correction render."""
+
+    delta_pan = (
+        observed_pan[0] - prior_pan[0],
+        observed_pan[1] - prior_pan[1],
+    )
+    denominator = delta_pan[0] ** 2 + delta_pan[1] ** 2
+    if denominator <= 1.0e-12:
+        raise ScreenCenteringError("response update needs a nonzero PAN change")
+    j00, j10 = response.pixels_per_pan_x
+    j01, j11 = response.pixels_per_pan_y
+    predicted = (
+        j00 * delta_pan[0] + j01 * delta_pan[1],
+        j10 * delta_pan[0] + j11 * delta_pan[1],
+    )
+    residual = (
+        observed_center[0] - prior_center[0] - predicted[0],
+        observed_center[1] - prior_center[1] - predicted[1],
+    )
+    updated_j00 = j00 + residual[0] * delta_pan[0] / denominator
+    updated_j01 = j01 + residual[0] * delta_pan[1] / denominator
+    updated_j10 = j10 + residual[1] * delta_pan[0] / denominator
+    updated_j11 = j11 + residual[1] * delta_pan[1] / denominator
+    determinant = updated_j00 * updated_j11 - updated_j01 * updated_j10
+    values = (updated_j00, updated_j01, updated_j10, updated_j11, determinant)
+    if not all(math.isfinite(value) for value in values) or abs(determinant) <= 1.0e-6:
+        raise ScreenCenteringError("updated PAN response matrix is singular")
+    return ScreenPanResponse(
+        pixels_per_pan_x=(updated_j00, updated_j10),
+        pixels_per_pan_y=(updated_j01, updated_j11),
+        determinant=determinant,
     )
 
 
