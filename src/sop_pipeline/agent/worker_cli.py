@@ -9,8 +9,9 @@ import sys
 from typing import Any
 
 from .core import AgentCore
-from .desktop_workflow import DesktopWorkflow
+from .excel_verifier import ExcelComVerifier
 from .models import StepResolution
+from .pipeline_orchestrator import PipelineOrchestrator
 
 
 def _json_value(value: Any) -> Any:
@@ -31,7 +32,10 @@ def execute(workspace: Path, action: str, payload: dict[str, Any]) -> Any:
     allowed_actions = {"start-analysis", "confirm", "generate", "resolve", "resume"}
     if action not in allowed_actions:
         raise ValueError(f"unsupported worker action: {action}")
-    core = AgentCore(workspace, DesktopWorkflow())
+    core = AgentCore(
+        workspace,
+        PipelineOrchestrator(adapters={"workbook_verifier": ExcelComVerifier()}),
+    )
     if action == "start-analysis":
         run_id = core.create_run(
             Path(payload["bom_file"]), Path(payload["cad_directory"])

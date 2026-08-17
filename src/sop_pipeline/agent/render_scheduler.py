@@ -209,7 +209,6 @@ class RenderScheduler:
         restored_steps = len(completed)
         session: Any | None = None
         rendered_in_session = 0
-        rendered_since_checkpoint = 0
         rendered_tasks = 0
         render_attempts = 0
         worker_sessions = 0
@@ -223,6 +222,7 @@ class RenderScheduler:
                         task,
                         StepStatus.DEPENDENCY_WAIT,
                     )
+                    checkpoints.save(plan.fingerprint, completed)
                     continue
 
                 if session is None:
@@ -244,18 +244,16 @@ class RenderScheduler:
                 completed[task.step_id] = _result_from_attempt(task, final_attempt)
                 rendered_tasks += 1
                 rendered_in_session += 1
-                rendered_since_checkpoint += 1
+                checkpoints.save(plan.fingerprint, completed)
 
                 if rendered_in_session == self.tasks_per_session:
                     worker.close_session(session)
                     session = None
-                    checkpoints.save(plan.fingerprint, completed)
-                    rendered_since_checkpoint = 0
         finally:
             if session is not None:
                 worker.close_session(session)
 
-        if rendered_since_checkpoint or (not plan.tasks and not completed):
+        if not plan.tasks and not completed:
             checkpoints.save(plan.fingerprint, completed)
 
         return RenderScheduleResult(

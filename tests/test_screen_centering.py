@@ -7,6 +7,7 @@ from sop_pipeline.agent.screen_centering import (
     activity_focus_center,
     measure_screen_pan_response,
     plan_screen_center_probes,
+    project_lower_left_anchored_zoom_center,
     solve_screen_center_pan,
     solve_with_screen_pan_response,
     update_screen_pan_response,
@@ -14,6 +15,17 @@ from sop_pipeline.agent.screen_centering import (
 
 
 class ScreenCenteringTests(unittest.TestCase):
+    def test_projects_activity_center_around_creo_lower_left_zoom_anchor(self) -> None:
+        self.assertEqual(
+            project_lower_left_anchored_zoom_center(
+                current_center=(600.0, 1000.0),
+                current_zoom=1.0,
+                target_zoom=2.0,
+                frame_pixels=(1600, 1600),
+            ),
+            (1200.0, 400.0),
+        )
+
     def test_focus_center_balances_subject_and_arrow(self) -> None:
         self.assertEqual(
             activity_focus_center((870.0, 800.0), (800.0, 740.0)),

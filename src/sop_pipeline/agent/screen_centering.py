@@ -41,6 +41,34 @@ def activity_focus_center(
     )
 
 
+def project_lower_left_anchored_zoom_center(
+    *,
+    current_center: tuple[float, float],
+    current_zoom: float,
+    target_zoom: float,
+    frame_pixels: tuple[int, int],
+) -> tuple[float, float]:
+    """Predict the same activity point after Creo's lower-left Zoom anchor.
+
+    PAN is applied in exported screen coordinates after the native Zoom.  The
+    measured PAN Jacobian can therefore be reused across Zoom values, while
+    the anchor displacement itself is an affine projection around the lower
+    left corner of the exported frame.
+    """
+
+    values = (*current_center, current_zoom, target_zoom, *frame_pixels)
+    if not all(math.isfinite(float(value)) for value in values):
+        raise ScreenCenteringError("Zoom projection inputs must be finite")
+    width, height = frame_pixels
+    if current_zoom <= 0.0 or target_zoom <= 0.0 or width <= 0 or height <= 0:
+        raise ScreenCenteringError("Zoom projection inputs must be positive")
+    ratio = target_zoom / current_zoom
+    return (
+        ratio * current_center[0],
+        height - ratio * (height - current_center[1]),
+    )
+
+
 def plan_screen_center_probes(
     *,
     base_pan: tuple[float, float],

@@ -3,15 +3,41 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import asdict, replace
 from pathlib import Path
+import ctypes
 import json
+import os
 import subprocess
+import sys
 import tempfile
+from time import perf_counter
 import unittest
 
 from PIL import Image, ImageDraw
 
-from sop_pipeline.agent.creo_worker import AgentNativeCreoWorker, PowerShellCreoWorker
+from sop_pipeline.agent.creo_worker import (
+    AgentNativeCreoWorker,
+    PowerShellCreoWorker,
+    _effective_pan_bound,
+    _screen_pan_response_key,
+)
+from sop_pipeline.agent.creo_worker import SubprocessCommandRunner
 from sop_pipeline.agent.render_scheduler import RenderPlan, RenderTask
+
+
+def _windows_pid_is_running(pid: int) -> bool:
+    process_query_limited_information = 0x1000
+    still_active = 259
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        return False
+    try:
+        exit_code = ctypes.c_ulong()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return False
+        return exit_code.value == still_active
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 class RecordingRunner:
@@ -45,6 +71,46 @@ def _task(index: int) -> RenderTask:
 
 
 class PowerShellCreoWorkerTests(unittest.TestCase):
+    def test_command_runner_does_not_wait_for_grandchild_stdout_eof(self) -> None:
+        child_code = (
+            "import subprocess,sys; "
+            "subprocess.Popen([sys.executable,'-c','import time;time.sleep(1.5)'],"
+            "stdout=sys.stdout,stderr=sys.stderr,close_fds=False); "
+            "print('direct-process-complete')"
+        )
+        runner = SubprocessCommandRunner(timeout_seconds=1)
+
+        started = perf_counter()
+        result = runner.run([sys.executable, "-c", child_code])
+        elapsed = perf_counter() - started
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("direct-process-complete", result.stdout)
+        self.assertLess(elapsed, 1.0)
+
+    @unittest.skipUnless(os.name == "nt", "Windows process-tree contract")
+    def test_command_timeout_terminates_inherited_grandchild(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            pid_file = Path(folder) / "grandchild.pid"
+            grandchild_code = (
+                "import os,time; "
+                f"open({str(pid_file)!r},'w').write(str(os.getpid())); "
+                "time.sleep(30)"
+            )
+            parent_code = (
+                "import subprocess,sys,time; "
+                f"subprocess.Popen([sys.executable,'-c',{grandchild_code!r}]); "
+                "time.sleep(30)"
+            )
+            runner = SubprocessCommandRunner(timeout_seconds=1)
+
+            with self.assertRaises(subprocess.TimeoutExpired):
+                runner.run([sys.executable, "-c", parent_code])
+
+            self.assertTrue(pid_file.is_file())
+            grandchild_pid = int(pid_file.read_text(encoding="utf-8"))
+            self.assertFalse(_windows_pid_is_running(grandchild_pid))
+
     def test_one_model_copy_is_reused_for_all_tasks_in_a_session(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             workspace = Path(folder)
@@ -150,10 +216,37 @@ class NativeRecordingRunner:
         )
 
 
+class PersistentProtocolRunner(NativeRecordingRunner):
+    def run(self, command: list[str]) -> subprocess.CompletedProcess[str]:
+        if "-OutputFolder" not in command:
+            self.commands.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        result = super().run(command)
+        generation = self.prepared_models.parent / "native-worker" / "generation-test"
+        return subprocess.CompletedProcess(
+            command,
+            result.returncode,
+            stdout=(result.stdout or "")
+            + f"[AGENT_RENDER] worker_generation {generation}\n",
+            stderr=result.stderr,
+        )
+
+
 class AdaptiveCenteringRunner:
-    def __init__(self, prepared_models: Path, *, zoom_sensitive: bool = False) -> None:
+    def __init__(
+        self,
+        prepared_models: Path,
+        *,
+        zoom_sensitive: bool = False,
+        hide_arrow_when_off_center: bool = False,
+        lower_left_zoom_anchor: bool = False,
+        subject_half_size: float = 400.0,
+    ) -> None:
         self.prepared_models = prepared_models
         self.zoom_sensitive = zoom_sensitive
+        self.hide_arrow_when_off_center = hide_arrow_when_off_center
+        self.lower_left_zoom_anchor = lower_left_zoom_anchor
+        self.subject_half_size = subject_half_size
         self.commands: list[list[str]] = []
 
     def run(self, command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -169,13 +262,24 @@ class AdaptiveCenteringRunner:
             variant = task["payload"]["presentation"]["variants"][variant_index]
             pan_x, pan_y = (float(value) for value in variant["pan"])
             zoom = float(variant["zoom"])
-            center_x = 1100.0 + 1000.0 * pan_x + 100.0 * pan_y
-            center_y = 800.0 + 50.0 * pan_x - 900.0 * pan_y
+            if self.lower_left_zoom_anchor:
+                # Creo applies PAN in exported screen coordinates after Zoom;
+                # its response is therefore reusable across Zoom values.
+                center_x = zoom * 1100.0 + 1000.0 * pan_x + 100.0 * pan_y
+                center_y = (
+                    1600.0
+                    - zoom * (1600.0 - 800.0)
+                    + 50.0 * pan_x
+                    - 900.0 * pan_y
+                )
+            else:
+                center_x = 1100.0 + 1000.0 * pan_x + 100.0 * pan_y
+                center_y = 800.0 + 50.0 * pan_x - 900.0 * pan_y
             task_id = task["task_id"]
             image = Image.new("RGB", (1600, 1600), "white")
             draw = ImageDraw.Draw(image)
-            half_width = 400.0 * zoom if self.zoom_sensitive else 440.0
-            half_height = 380.0 * zoom if self.zoom_sensitive else 425.0
+            half_width = self.subject_half_size * zoom if self.zoom_sensitive else 440.0
+            half_height = self.subject_half_size * 0.95 * zoom if self.zoom_sensitive else 425.0
             draw.rectangle(
                 (
                     round(center_x - half_width),
@@ -185,16 +289,17 @@ class AdaptiveCenteringRunner:
                 ),
                 fill=(80, 100, 120),
             )
-            draw.line(
-                (
-                    round(center_x - 125),
-                    round(center_y),
-                    round(center_x + 125),
-                    round(center_y),
-                ),
-                fill=(0, 150, 0),
-                width=8,
-            )
+            if not self.hide_arrow_when_off_center or center_x <= 1000.0:
+                draw.line(
+                    (
+                        round(center_x - 125),
+                        round(center_y),
+                        round(center_x + 125),
+                        round(center_y),
+                    ),
+                    fill=(0, 150, 0),
+                    width=8,
+                )
             image.save(output / f"{task_id}.jpg")
             (output / f"{task_id}.arrow.json").write_text(
                 json.dumps(
@@ -264,7 +369,7 @@ def _native_task() -> RenderTask:
                     "initial_estimate": "cad_activity_origin/v1",
                     "focus_center": "midpoint_subject_arrow/v1",
                     "probe_policy": "on_gate_failure/v1",
-                    "response_cache_scope": "camera_zoom_frame_environment/v1",
+                    "response_cache_scope": "camera_frame_environment/v2",
                     "max_probe_rounds": 2,
                     "target_pixel": [800, 800],
                     "probe_delta": 0.1,
@@ -305,6 +410,98 @@ def _native_task() -> RenderTask:
 
 
 class AgentNativeCreoWorkerTests(unittest.TestCase):
+    def test_native_framing_has_a_six_raster_hard_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            task = _native_task()
+            plan = RenderPlan("render-plan/v2", (task,))
+            plan_path = workspace / "locked-render-jobs.json"
+            plan_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": plan.schema_version,
+                        "tasks": [asdict(task)],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runner = AdaptiveCenteringRunner(
+                workspace / "internal" / "prepared-models"
+            )
+            worker = AgentNativeCreoWorker(
+                powershell="pwsh",
+                batch_script=Path("native.ps1"),
+                models_root=Path("cad"),
+                render_plan_json=plan_path,
+                runner=runner,
+            )
+            session = worker.open_session(workspace, plan)
+            for _ in range(3):
+                self.assertIsNone(
+                    worker._run_batch(
+                        session,
+                        plan_path=plan_path,
+                        output_directory=workspace / "rendered",
+                        start_index=0,
+                        count=2,
+                        variant_index=0,
+                        budget_task_id=task.task_id,
+                    )
+                )
+            denied = worker._run_batch(
+                session,
+                plan_path=plan_path,
+                output_directory=workspace / "rendered",
+                start_index=0,
+                count=1,
+                variant_index=0,
+                budget_task_id=task.task_id,
+            )
+
+        self.assertEqual(denied, "FRAMING_FRAME_BUDGET_EXCEEDED")
+        self.assertEqual(sum(int(command[command.index("-Count") + 1]) for command in runner.commands), 6)
+
+    def test_pan_response_cache_is_reused_across_zoom_values(self) -> None:
+        payload = _native_task().payload
+        self.assertEqual(
+            _screen_pan_response_key(payload, camera_id="fixed_123", zoom=1.0),
+            _screen_pan_response_key(payload, camera_id="fixed_123", zoom=2.75),
+        )
+
+    def test_pan_bound_scales_from_contract_at_native_zoom(self) -> None:
+        self.assertEqual(_effective_pan_bound(1.0, 0.8), 1.0)
+        self.assertAlmostEqual(_effective_pan_bound(1.0, 2.65), 2.65)
+
+    def test_native_worker_uses_bounded_session_protocol_and_stops_on_close(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            runner = PersistentProtocolRunner(
+                workspace / "internal" / "prepared-models"
+            )
+            worker = AgentNativeCreoWorker(
+                powershell="pwsh",
+                batch_script=Path("creo_java/run_agent_native_batch.ps1"),
+                models_root=Path("cad"),
+                render_plan_json=Path("locked-render-jobs.json"),
+                runner=runner,
+            )
+            plan = RenderPlan("render-plan/v2", (_native_task(),))
+            session = worker.open_session(workspace, plan)
+
+            attempt = worker.render(session, plan.tasks[0], 1)
+            worker.close_session(session)
+
+        self.assertEqual(attempt.disposition, "passed")
+        self.assertEqual(len(runner.commands), 2)
+        render_command, stop_command = runner.commands
+        self.assertIn("-WorkerRoot", render_command)
+        self.assertEqual(
+            Path(render_command[render_command.index("-WorkerRoot") + 1]),
+            workspace / "internal" / "native-worker",
+        )
+        self.assertIn("stop_agent_native_worker.ps1", str(stop_command))
+        self.assertFalse(session.native_worker_active)
+
     def test_native_worker_reuses_model_copy_and_validates_arrow_audit(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             workspace = Path(folder)
@@ -433,6 +630,39 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         self.assertEqual(counts, ["1", "2", "1", "1", "1"])
         self.assertEqual(len(reopened.screen_pan_responses), 1)
 
+    def test_offscreen_audited_arrow_enters_bounded_center_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            task = _native_task()
+            plan = RenderPlan("render-plan/v2", (task,))
+            plan_path = workspace / "locked-render-jobs.json"
+            plan_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": plan.schema_version,
+                        "tasks": [asdict(task)],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runner = AdaptiveCenteringRunner(
+                workspace / "internal" / "prepared-models",
+                hide_arrow_when_off_center=True,
+            )
+            worker = AgentNativeCreoWorker(
+                powershell="pwsh",
+                batch_script=Path("native.ps1"),
+                models_root=Path("cad"),
+                render_plan_json=plan_path,
+                runner=runner,
+            )
+
+            result = worker.render(worker.open_session(workspace, plan), task, 1)
+
+        self.assertEqual(result.disposition, "passed")
+        counts = [command[command.index("-Count") + 1] for command in runner.commands]
+        self.assertEqual(counts, ["1", "2", "1"])
+
     def test_centered_small_subject_derives_zoom_without_fixed_device_value(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             workspace = Path(folder)
@@ -474,6 +704,58 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         self.assertEqual(result.disposition, "passed")
         self.assertGreater(final_zoom, 1.0)
         self.assertLess(final_zoom, 1.2)
+
+    def test_large_zoom_ratio_stays_observable_and_recenters_each_round(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            task = _native_task()
+            plan = RenderPlan("render-plan/v2", (task,))
+            plan_path = workspace / "locked-render-jobs.json"
+            plan_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": plan.schema_version,
+                        "tasks": [asdict(task)],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runner = AdaptiveCenteringRunner(
+                workspace / "internal" / "prepared-models",
+                zoom_sensitive=True,
+                lower_left_zoom_anchor=True,
+                subject_half_size=160.0,
+            )
+            worker = AgentNativeCreoWorker(
+                powershell="pwsh",
+                batch_script=Path("native.ps1"),
+                models_root=Path("cad"),
+                render_plan_json=plan_path,
+                runner=runner,
+            )
+
+            result = worker.render(worker.open_session(workspace, plan), task, 1)
+            zooms = []
+            rendered_frames = 0
+            for command in runner.commands:
+                rendered_frames += int(command[command.index("-Count") + 1])
+                command_plan = Path(
+                    command[command.index("-RenderPlanJson") + 1]
+                )
+                payload = json.loads(command_plan.read_text(encoding="utf-8"))
+                zooms.append(
+                    payload["tasks"][0]["payload"]["presentation"]["variants"][0]["zoom"]
+                )
+
+        self.assertEqual(result.disposition, "passed")
+        self.assertEqual(
+            rendered_frames,
+            4,
+            "a cold framing recovery is base + two probes + one solved raster",
+        )
+        distinct_zooms = sorted({round(float(value), 6) for value in zooms})
+        self.assertEqual(len(distinct_zooms), 2)
+        self.assertGreater(distinct_zooms[-1], 1.0)
 
 
 if __name__ == "__main__":

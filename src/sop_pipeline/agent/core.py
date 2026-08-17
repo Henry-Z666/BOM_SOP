@@ -23,7 +23,8 @@ from .models import (
     StepStatus,
 )
 from .ports import WorkflowPort
-from .render_job_compiler import compile_locked_render_jobs
+from .pipeline_orchestrator import SkillPipelineError
+from .models import SkillStatus
 from .store import RunStore
 
 
@@ -59,6 +60,9 @@ class AgentCore:
         self._store = RunStore(self._workspace / "agent.sqlite3")
         self._artifacts = ArtifactStore(self._store)
         self._workflow = workflow
+        bind = getattr(workflow, "bind", None)
+        if callable(bind):
+            bind(self._workspace, self._store, self._artifacts)
 
     def create_run(self, bom_file: Path, cad_directory: Path) -> str:
         bom_file = Path(bom_file).resolve()
@@ -102,7 +106,17 @@ class AgentCore:
         run = self._store.get(run_id)
         if run.status is not RunStatus.ANALYZING:
             raise ValueError("只有 ANALYZING 状态可以执行输入分析")
-        result: AnalysisResult = self._require_workflow().analyze(run)
+        try:
+            result: AnalysisResult = self._require_workflow().analyze(run)
+        except SkillPipelineError as error:
+            if error.status is SkillStatus.BLOCKED:
+                self._store.transition(
+                    run_id,
+                    expected={RunStatus.ANALYZING},
+                    status=RunStatus.BLOCKED_SYSTEM,
+                    updated_at=self._now(),
+                )
+            raise
         packet = result.packet
         if packet.schema_version != "clarification-packet/v1":
             raise ValueError(f"不支持的释疑包版本：{packet.schema_version}")
@@ -163,7 +177,6 @@ class AgentCore:
         )
         formal_plan_path = run.workspace / "analysis" / "formal-render-plan.json"
         locked_render_plan = None
-        locked_render_jobs = None
         if formal_plan_path.is_file():
             formal_plan = formal_render_plan_from_dict(
                 self._artifacts.read_json(run.workspace, "analysis/formal-render-plan.json")
@@ -183,7 +196,6 @@ class AgentCore:
                 plan.answers,
                 recommendations,
             )
-            locked_render_jobs = compile_locked_render_jobs(locked_render_plan)
         self._artifacts.write_json(
             run_id=run_id,
             run_workspace=run.workspace,
@@ -198,13 +210,6 @@ class AgentCore:
                 kind="locked-render-plan",
                 relative_path=f"plans/locked-render-plan-{revision:04d}.json",
                 value=locked_render_plan,
-            )
-            self._artifacts.write_json(
-                run_id=run_id,
-                run_workspace=run.workspace,
-                kind="locked-render-jobs",
-                relative_path=f"plans/locked-render-jobs-{revision:04d}.json",
-                value=locked_render_jobs,
             )
         self._store.transition(
             run_id,
@@ -293,7 +298,17 @@ class AgentCore:
         run = self._store.get(run_id)
         if run.status is not RunStatus.GENERATING:
             raise ValueError("只有 GENERATING 状态可以执行正式生成")
-        result = self._require_workflow().generate(run, self._load_plan(run))
+        try:
+            result = self._require_workflow().generate(run, self._load_plan(run))
+        except SkillPipelineError as error:
+            if error.status is SkillStatus.BLOCKED:
+                self._store.transition(
+                    run_id,
+                    expected={RunStatus.GENERATING},
+                    status=RunStatus.BLOCKED_SYSTEM,
+                    updated_at=self._now(),
+                )
+            raise
         return self._finish_generation(run, result)
 
     @staticmethod
@@ -364,6 +379,14 @@ class AgentCore:
 
     def resume(self, run_id: str) -> RunOutcome:
         run = self._store.get(run_id)
+        if run.status is RunStatus.BLOCKED_SYSTEM and run.plan_revision > 0:
+            self._store.transition(
+                run_id,
+                expected={RunStatus.BLOCKED_SYSTEM},
+                status=RunStatus.GENERATING,
+                updated_at=self._now(),
+            )
+            return self.generate(run_id)
         if run.status is RunStatus.GENERATING:
             return self.generate(run_id)
         steps = self._store.list_steps(run_id)

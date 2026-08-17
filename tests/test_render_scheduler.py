@@ -98,7 +98,7 @@ class RenderSchedulerTests(unittest.TestCase):
         self.assertEqual(result.metrics.total_tasks, 500)
         self.assertEqual(result.metrics.worker_sessions, 25)
         self.assertEqual(result.metrics.render_attempts, 500)
-        self.assertEqual(checkpoints.save_count, 25)
+        self.assertEqual(checkpoints.save_count, 500)
         self.assertTrue(all(step.status is StepStatus.PASSED for step in result.steps))
 
     def test_visual_failure_does_not_block_later_steps(self) -> None:

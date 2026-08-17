@@ -8,9 +8,14 @@ import math
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 from typing import Protocol
 
-from .framing_recovery import FramingRecoveryError, derive_zoom_for_subject_span
+from ..process_control import owned_process_creation_kwargs, terminate_process_tree
+from .framing_recovery import (
+    FramingRecoveryError,
+    derive_zoom_for_subject_span,
+)
 from .render_scheduler import RenderAttempt, RenderPlan, RenderTask
 from .render_validation import (
     DeterministicNativeRenderValidator,
@@ -23,12 +28,21 @@ from .screen_centering import (
     activity_focus_center,
     measure_screen_pan_response,
     plan_screen_center_probes,
+    project_lower_left_anchored_zoom_center,
     solve_with_screen_pan_response,
     update_screen_pan_response,
 )
 
 
-CENTERING_FAILURES = frozenset({"ACTIVITY_NOT_CENTERED", "ARROW_NOT_CENTERED"})
+CENTERING_FAILURES = frozenset(
+    {
+        "ACTIVITY_NOT_CENTERED",
+        "ARROW_NOT_CENTERED",
+        "ARROW_NOT_VISIBLE",
+        "ARROW_CLIPPED",
+    }
+)
+MAX_FRAMING_RASTERS_PER_TASK = 6
 
 
 class CommandRunner(Protocol):
@@ -40,15 +54,36 @@ class SubprocessCommandRunner:
         self.timeout_seconds = timeout_seconds
 
     def run(self, command: list[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=self.timeout_seconds,
-            check=False,
-        )
+        # Pipes are unsafe for the persistent Creo launcher: Creo descendants
+        # can inherit a pipe handle after the direct PowerShell process exits,
+        # making subprocess.run(..., capture_output=True) wait for the worker's
+        # five-minute idle shutdown before it observes EOF. Temporary files let
+        # us wait only for the direct process while retaining bounded diagnostics.
+        with tempfile.TemporaryFile(
+            mode="w+", encoding="utf-8", errors="replace"
+        ) as stdout_file, tempfile.TemporaryFile(
+            mode="w+", encoding="utf-8", errors="replace"
+        ) as stderr_file:
+            process = subprocess.Popen(
+                command,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                text=True,
+                **owned_process_creation_kwargs(),
+            )
+            try:
+                return_code = process.wait(timeout=self.timeout_seconds)
+            except subprocess.TimeoutExpired:
+                terminate_process_tree(process)
+                raise
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            return subprocess.CompletedProcess(
+                command,
+                return_code,
+                stdout=stdout_file.read(),
+                stderr=stderr_file.read(),
+            )
 
 
 @dataclass
@@ -56,9 +91,12 @@ class CreoSession:
     output_directory: Path
     internal_directory: Path | None = None
     prepared_models_root: Path | None = None
+    native_worker_root: Path | None = None
+    native_worker_active: bool = False
     presentation_variant_by_task: dict[str, int] = field(default_factory=dict)
     attempted_presentation_variants: dict[str, set[int]] = field(default_factory=dict)
     screen_pan_responses: dict[str, ScreenPanResponse] = field(default_factory=dict)
+    render_frames_by_task: dict[str, int] = field(default_factory=dict)
 
 
 class PowerShellCreoWorker:
@@ -152,6 +190,10 @@ class AgentNativeCreoWorker:
         r"^\[AGENT_RENDER\]\s+prepared_models\s+(.+?)\s*$",
         re.MULTILINE,
     )
+    _WORKER_PATTERN = re.compile(
+        r"^\[AGENT_RENDER\]\s+worker_generation\s+(.+?)\s*$",
+        re.MULTILINE,
+    )
 
     def __init__(
         self,
@@ -160,6 +202,7 @@ class AgentNativeCreoWorker:
         batch_script: Path,
         models_root: Path,
         render_plan_json: Path,
+        stop_script: Path | None = None,
         runner: CommandRunner | None = None,
         validator: DeterministicNativeRenderValidator | None = None,
     ) -> None:
@@ -167,6 +210,9 @@ class AgentNativeCreoWorker:
         self.batch_script = batch_script
         self.models_root = models_root
         self.render_plan_json = render_plan_json
+        self.stop_script = stop_script or batch_script.with_name(
+            "stop_agent_native_worker.ps1"
+        )
         self.runner = runner or SubprocessCommandRunner()
         self.validator = validator or DeterministicNativeRenderValidator()
 
@@ -180,6 +226,7 @@ class AgentNativeCreoWorker:
         session = CreoSession(
             output_directory=output_directory,
             internal_directory=internal_directory,
+            native_worker_root=run_workspace / "internal" / "native-worker",
         )
         session.screen_pan_responses.update(_load_screen_pan_responses(internal_directory))
         return session
@@ -208,9 +255,10 @@ class AgentNativeCreoWorker:
             start_index=plan_index,
             count=1,
             variant_index=variant_index,
+            budget_task_id=task.task_id,
         )
         if execution_error is not None:
-            return RenderAttempt.retryable(execution_error)
+            return _batch_failure(execution_error)
         image_path = session.output_directory / f"{task.task_id}.jpg"
         audit_path = session.output_directory / f"{task.task_id}.arrow.json"
         report = self.validator.validate(
@@ -262,9 +310,11 @@ class AgentNativeCreoWorker:
             variant = variant_override or presentation["variants"][variant_index]
             target = tuple(float(value) for value in contract["target_pixel"])
             probe_delta = float(contract["probe_delta"])
-            max_abs_pan = float(contract["max_abs_pan"])
-            max_rounds = int(contract["max_probe_rounds"])
             zoom = float(variant["zoom"])
+            max_abs_pan = _effective_pan_bound(
+                float(contract["max_abs_pan"]), zoom
+            )
+            max_rounds = int(contract["max_probe_rounds"])
             camera_id = str(variant["camera_id"])
             base_pan = tuple(float(value) for value in variant["pan"])
             subject_only = not _has_arrow_center(base_report)
@@ -281,6 +331,48 @@ class AgentNativeCreoWorker:
 
         response = session.screen_pan_responses.get(cache_key)
         if response is not None:
+            combined = self._render_combined_zoom(
+                session,
+                task,
+                report=base_report,
+                camera_id=camera_id,
+                zoom=zoom,
+                pan=base_pan,
+                focus_center=base_center,
+                response=response,
+                target=target,
+                zoom_round=zoom_round,
+            )
+            if isinstance(combined, RenderAttempt):
+                return combined
+            if combined is not None:
+                combined_report, combined_pan, combined_zoom = combined
+                if combined_report.passed:
+                    return _passed_image(
+                        session.output_directory / f"{task.task_id}.jpg"
+                    )
+                if CENTERING_FAILURES.intersection(combined_report.failures):
+                    return self._recover_screen_centering(
+                        session,
+                        task,
+                        variant_index=variant_index,
+                        base_report=combined_report,
+                        variant_override={
+                            "camera_id": camera_id,
+                            "zoom": combined_zoom,
+                            "pan": [combined_pan[0], combined_pan[1]],
+                        },
+                        zoom_round=zoom_round + 1,
+                    )
+                return self._recover_centered_zoom(
+                    session,
+                    task,
+                    report=combined_report,
+                    camera_id=camera_id,
+                    zoom=combined_zoom,
+                    pan=combined_pan,
+                    zoom_round=zoom_round + 1,
+                )
             try:
                 cached_pan = _solve_pan(
                     target, base_pan, base_center, response, max_abs_pan
@@ -367,6 +459,52 @@ class AgentNativeCreoWorker:
                 )
             except ScreenCenteringError:
                 return RenderAttempt.failed("SCREEN_CENTERING_UNSOLVABLE")
+            session.screen_pan_responses[cache_key] = response
+            _save_screen_pan_responses(
+                session.internal_directory, session.screen_pan_responses
+            )
+            combined = self._render_combined_zoom(
+                session,
+                task,
+                report=base_report,
+                camera_id=camera_id,
+                zoom=zoom,
+                pan=base_pan,
+                focus_center=base_center,
+                response=response,
+                target=target,
+                zoom_round=zoom_round,
+            )
+            if isinstance(combined, RenderAttempt):
+                return combined
+            if combined is not None:
+                combined_report, combined_pan, combined_zoom = combined
+                if combined_report.passed:
+                    return _passed_image(
+                        session.output_directory / f"{task.task_id}.jpg"
+                    )
+                if CENTERING_FAILURES.intersection(combined_report.failures):
+                    return self._recover_screen_centering(
+                        session,
+                        task,
+                        variant_index=variant_index,
+                        base_report=combined_report,
+                        variant_override={
+                            "camera_id": camera_id,
+                            "zoom": combined_zoom,
+                            "pan": [combined_pan[0], combined_pan[1]],
+                        },
+                        zoom_round=zoom_round + 1,
+                    )
+                return self._recover_centered_zoom(
+                    session,
+                    task,
+                    report=combined_report,
+                    camera_id=camera_id,
+                    zoom=combined_zoom,
+                    pan=combined_pan,
+                    zoom_round=zoom_round + 1,
+                )
             corrected = self._render_centered_variant(
                 session,
                 task,
@@ -451,6 +589,74 @@ class AgentNativeCreoWorker:
             return RenderAttempt.failed(secant_report.failures[0])
         return RenderAttempt.failed(base_report.failures[0])
 
+    def _render_combined_zoom(
+        self,
+        session: CreoSession,
+        task: RenderTask,
+        *,
+        report: NativeRenderGateReport,
+        camera_id: str,
+        zoom: float,
+        pan: tuple[float, float],
+        focus_center: tuple[float, float],
+        response: ScreenPanResponse,
+        target: tuple[float, float],
+        zoom_round: int,
+    ):
+        if "SUBJECT_TOO_SMALL" not in report.failures:
+            return None
+        try:
+            contract = task.payload["presentation"]["zoom_recovery"]
+            if zoom_round >= int(contract["max_rounds"]):
+                return None
+            if report.composition is None:
+                raise FramingRecoveryError("subject metrics are unavailable")
+            derived_zoom = derive_zoom_for_subject_span(
+                current_zoom=zoom,
+                observed_span=report.composition.max_span_fraction,
+                target_span=float(contract["target_subject_span"]),
+                min_zoom=float(contract["min_zoom"]),
+                max_zoom=float(contract["max_zoom"]),
+            )
+            if derived_zoom <= zoom + 1.0e-6:
+                raise FramingRecoveryError("derived Zoom does not increase")
+            projected_center = project_lower_left_anchored_zoom_center(
+                current_center=focus_center,
+                current_zoom=zoom,
+                target_zoom=derived_zoom,
+                frame_pixels=(1600, 1600),
+            )
+            derived_pan = _solve_pan(
+                target,
+                pan,
+                projected_center,
+                response,
+                _effective_pan_bound(
+                    float(task.payload["presentation"]["centering"]["max_abs_pan"]),
+                    derived_zoom,
+                ),
+            )
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            FramingRecoveryError,
+            ScreenCenteringError,
+        ):
+            return None
+        rendered = self._render_centered_variant(
+            session,
+            task,
+            camera_id=camera_id,
+            zoom=derived_zoom,
+            pan=derived_pan,
+            label=f"combined-zoom-{zoom_round + 1}",
+        )
+        if isinstance(rendered, RenderAttempt):
+            return rendered
+        rendered_report, rendered_pan = rendered
+        return rendered_report, rendered_pan, derived_zoom
+
     def _recover_centered_zoom(
         self,
         session: CreoSession,
@@ -471,6 +677,22 @@ class AgentNativeCreoWorker:
                 return RenderAttempt.failed("SUBJECT_TOO_SMALL")
             if report.composition is None:
                 raise FramingRecoveryError("subject metrics are unavailable")
+            cache_key = _screen_pan_response_key(
+                task.payload, camera_id=camera_id, zoom=zoom
+            )
+            if cache_key not in session.screen_pan_responses:
+                return self._recover_screen_centering(
+                    session,
+                    task,
+                    variant_index=0,
+                    base_report=report,
+                    variant_override={
+                        "camera_id": camera_id,
+                        "zoom": zoom,
+                        "pan": [pan[0], pan[1]],
+                    },
+                    zoom_round=zoom_round,
+                )
             derived_zoom = derive_zoom_for_subject_span(
                 current_zoom=zoom,
                 observed_span=report.composition.max_span_fraction,
@@ -555,9 +777,10 @@ class AgentNativeCreoWorker:
             start_index=0,
             count=2,
             variant_index=0,
+            budget_task_id=task.task_id,
         )
         if error is not None:
-            return RenderAttempt.retryable(error)
+            return _batch_failure(error)
         reports = tuple(
             self.validator.validate(
                 probe_directory / f"{task_id}.jpg",
@@ -603,9 +826,10 @@ class AgentNativeCreoWorker:
             start_index=0,
             count=1,
             variant_index=0,
+            budget_task_id=task.task_id,
         )
         if error is not None:
-            return RenderAttempt.retryable(error)
+            return _batch_failure(error)
         report = self.validator.validate(
             session.output_directory / f"{task.task_id}.jpg",
             session.output_directory / f"{task.task_id}.arrow.json",
@@ -623,7 +847,12 @@ class AgentNativeCreoWorker:
         start_index: int,
         count: int,
         variant_index: int,
+        budget_task_id: str,
     ) -> str | None:
+        used = session.render_frames_by_task.get(budget_task_id, 0)
+        if used + count > MAX_FRAMING_RASTERS_PER_TASK:
+            return "FRAMING_FRAME_BUDGET_EXCEEDED"
+        session.render_frames_by_task[budget_task_id] = used + count
         command = [
             self.powershell,
             "-NoProfile",
@@ -644,6 +873,8 @@ class AgentNativeCreoWorker:
             "-RunWorkspaceRoot",
             str(session.output_directory.parent),
         ]
+        if session.native_worker_root is not None:
+            command.extend(["-WorkerRoot", str(session.native_worker_root)])
         if session.prepared_models_root is not None:
             command.extend(["-PreparedModelsRoot", str(session.prepared_models_root)])
         try:
@@ -655,12 +886,31 @@ class AgentNativeCreoWorker:
         prepared_match = self._PREPARED_PATTERN.search(result.stdout or "")
         if prepared_match is not None:
             session.prepared_models_root = Path(prepared_match.group(1).strip())
+        if self._WORKER_PATTERN.search(result.stdout or "") is not None:
+            session.native_worker_active = True
         if result.returncode != 0:
             return "CREO_RENDER_FAILED"
         return None
 
     def close_session(self, session: CreoSession) -> None:
-        del session
+        if not session.native_worker_active or session.native_worker_root is None:
+            return
+        command = [
+            self.powershell,
+            "-NoProfile",
+            "-File",
+            str(self.stop_script),
+            "-RunWorkspaceRoot",
+            str(session.output_directory.parent),
+            "-WorkerRoot",
+            str(session.native_worker_root),
+        ]
+        try:
+            self.runner.run(command)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        finally:
+            session.native_worker_active = False
 
 
 def _report_focus_center(
@@ -712,12 +962,12 @@ def _screen_pan_response_key(
     camera = payload.get("camera_catalog", {}).get(camera_id)
     if not isinstance(camera, dict):
         raise ScreenCenteringError("camera basis is unavailable")
+    del zoom
     value = {
-        "schema_version": "screen-pan-response-key/v1",
+        "schema_version": "screen-pan-response-key/v2",
         "camera_id": camera_id,
         "position_direction_root": camera.get("position_direction_root"),
         "up_reference_root": camera.get("up_reference_root"),
-        "zoom": zoom,
         "frame_pixels": [1600, 1600],
         "export_contract": "creo-native-jpeg/v1",
     }
@@ -725,6 +975,23 @@ def _screen_pan_response_key(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return f"sha256:{sha256(encoded).hexdigest()}"
+
+
+def _effective_pan_bound(base_bound: float, zoom: float) -> float:
+    """Scale the normalized PAN envelope with Creo's native Zoom.
+
+    ``ScreenTransform`` Zoom is anchored at a screen corner, so preserving the
+    same visible centre can require proportionally more PAN as Zoom increases.
+    The render contract supplies the Zoom=1 envelope; this derivation keeps the
+    bound product-neutral while remaining limited by the contract's bounded
+    Zoom range and the final image hard gates.
+    """
+
+    if not all(math.isfinite(value) for value in (base_bound, zoom)):
+        raise ScreenCenteringError("PAN bound inputs must be finite")
+    if base_bound <= 0.0 or zoom <= 0.0:
+        raise ScreenCenteringError("PAN bound inputs must be positive")
+    return base_bound * max(1.0, zoom)
 
 
 def _write_transient_render_plan(
@@ -847,6 +1114,12 @@ def _passed_image(path: Path) -> RenderAttempt:
     if not path.is_file() or path.stat().st_size == 0:
         return RenderAttempt.retryable("RENDER_OUTPUT_MISSING")
     return RenderAttempt.passed(f"sha256:{sha256(path.read_bytes()).hexdigest()}")
+
+
+def _batch_failure(error_code: str) -> RenderAttempt:
+    if error_code == "FRAMING_FRAME_BUDGET_EXCEEDED":
+        return RenderAttempt.failed(error_code)
+    return RenderAttempt.retryable(error_code)
 
 
 def _next_presentation_variant(

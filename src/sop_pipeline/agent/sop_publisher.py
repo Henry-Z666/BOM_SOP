@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 import re
 import shutil
@@ -94,7 +95,13 @@ class SopPublisher:
         filename = "SOP_待确认.xlsx" if pending else "SOP.xlsx"
         target = delivery_directory / filename
         temporary = delivery_directory / f".{filename}.tmp.xlsx"
-        workbook.save(temporary)
+        try:
+            workbook.save(temporary)
+        finally:
+            # openpyxl keeps image streams on the workbook until it is closed.
+            # Explicit closure is required for long Agent runs and for Windows
+            # delivery directories that may be replaced immediately afterward.
+            workbook.close()
         self.verifier.verify(temporary)
         temporary.replace(target)
         self._verify_delivery_whitelist(delivery_directory, pending=pending)
@@ -223,9 +230,13 @@ class SopPublisher:
         for block_index, step in enumerate(steps):
             top = 4 + block_index * 20
             publication_image = _publication_image(step, pending)
-            worksheet_image = WorksheetImage(
+            # Keep openpyxl away from long-lived Windows file handles.  The
+            # workbook owns an in-memory stream until save completes, so the
+            # delivery image can be atomically replaced or cleaned afterward.
+            image_bytes = (
                 image_directory / copied[publication_image.image_id]
-            )
+            ).read_bytes()
+            worksheet_image = WorksheetImage(BytesIO(image_bytes))
             scale = min(480 / worksheet_image.width, 285 / worksheet_image.height)
             worksheet_image.width *= scale
             worksheet_image.height *= scale

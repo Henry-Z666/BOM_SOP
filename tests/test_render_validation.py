@@ -37,7 +37,7 @@ def _native_payload(**changes) -> dict:
                 "initial_estimate": "cad_activity_origin/v1",
                 "focus_center": "midpoint_subject_arrow/v1",
                 "probe_policy": "on_gate_failure/v1",
-                "response_cache_scope": "camera_zoom_frame_environment/v1",
+                "response_cache_scope": "camera_frame_environment/v2",
                 "max_probe_rounds": 2,
                 "target_pixel": [800, 800],
                 "probe_delta": 0.1,
@@ -262,6 +262,49 @@ class RenderValidationTests(unittest.TestCase):
         self.assertFalse(report.passed)
         self.assertIn("ACTIVITY_NOT_CENTERED", report.failures)
         self.assertIn("ARROW_NOT_CENTERED", report.failures)
+
+    def test_balanced_subject_arrow_midpoint_is_the_centering_hard_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            image, audit = _write_native_files(root, None)
+            frame = Image.new("RGB", (1600, 1600), "white")
+            draw = ImageDraw.Draw(frame)
+            # The individual centres are deliberately outside the 120 px
+            # limits, while their declared focus midpoint is exactly centred.
+            draw.rectangle((360, 500, 1240, 1360), fill=(80, 100, 120))
+            draw.line((650, 670, 950, 670), fill=(0, 150, 0), width=12)
+            frame.save(image)
+
+            report = DeterministicNativeRenderValidator().validate(
+                image, audit, _native_payload()
+            )
+
+        self.assertTrue(report.passed, report.failures)
+
+    def test_creo_lower_left_status_text_is_excluded_from_subject_measurement(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            clean, audit = _write_native_files(root, (400, 300, 1250, 1150))
+            validator = DeterministicNativeRenderValidator()
+            clean_report = validator.validate(clean, audit, _native_payload())
+
+            with Image.open(clean) as source:
+                noisy_frame = source.convert("RGB")
+            draw = ImageDraw.Draw(noisy_frame)
+            # Connected blocks mimic Creo's lower-left Simp Rep status label.
+            draw.rectangle((8, 1320, 440, 1345), fill=(80, 80, 80))
+            noisy = root / "native-with-status.jpg"
+            noisy_frame.save(noisy)
+            noisy_report = validator.validate(noisy, audit, _native_payload())
+
+        self.assertEqual(
+            noisy_report.composition.subject_bbox,
+            clean_report.composition.subject_bbox,
+        )
+        self.assertEqual(
+            noisy_report.composition.center_pixel,
+            clean_report.composition.center_pixel,
+        )
 
 
 if __name__ == "__main__":

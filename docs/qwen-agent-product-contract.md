@@ -88,18 +88,18 @@ Skill 是稳定的批量能力，不是每个 BOM 步骤的一段提示词。正
 
 | Skill | 唯一职责 | 主要产物 |
 | --- | --- | --- |
-| `intake-preflight` | 验证两项输入、运行环境和批次隔离 | `input-manifest.json` |
+| `intake-preflight` | 验证两项输入、运行环境和批次隔离 | `preflight-report/v1`、`input-manifest/v1` |
 | `normalize-bom` | 解析列、层级、数量、工艺和来源 | `normalized-bom.json` |
-| `lock-assembly` | 自动识别并锁定最终总装及版本 | `assembly-manifest.json` |
-| `discover-cad` | 递归抽取 occurrence、变换和约束 | `cad-graph.json` |
-| `map-bom-cad` | 建立带证据的 BOM/occurrence 映射 | `occurrence-map.json` |
-| `plan-assembly` | 生成全部原子安装步骤及依赖图 | `step-plan.json` |
+| `lock-assembly` | 自动识别并锁定最终总装及版本 | `model-inventory/v1`、`assembly-lock/v1` |
+| `discover-cad` | 递归抽取 occurrence、变换和约束 | `creo-cad-graph/v3` |
+| `map-bom-cad` | 建立带证据的 BOM/occurrence 映射 | `bom-cad-map/v1` |
+| `plan-assembly` | 生成全部原子安装步骤及依赖图 | `draft-plan/v1`、`formal-render-plan/v2` |
 | `clarify-plan` | 汇总生成前确认项并锁定推荐选择 | `clarification-packet.json` |
-| `compile-render-jobs` | 生成状态增量、双视角、爆炸和箭头合同 | `render-plan.json` |
+| `compile-render-jobs` | 生成状态增量、双视角、爆炸和箭头合同 | `render-plan/v2` |
 | `render-batch` | 以受控 Creo worker 批量出图 | Creo 原生箭头图、箭头审计 |
-| `validate-repair` | 执行硬门、视觉门和有界局部重试 | `acceptance-report.json` |
-| `publish-delivery` | 动态分页、写入模板并封装交付 | `SOP.xlsx`、交付清单 |
-| `resolve-step` | 接收普通语言、候选编号或标注图，释疑并局部再生成 | 新步骤修订和更新后的 SOP |
+| `validate-repair` | 执行硬门、视觉门和有界局部重试 | `validation-result/v1`、`candidate-set/v1` |
+| `publish-delivery` | 动态分页、写入模板并封装交付 | `publication-result/v1`、SOP交付 |
+| `resolve-step` | 接收普通语言或候选编号并计算局部失效 | `step-revision/v1`、`invalidation-set/v1` |
 
 每个 Skill 必须支持独立调用和调试，并使用统一信封：
 
@@ -108,7 +108,7 @@ Skill 是稳定的批量能力，不是每个 BOM 步骤的一段提示词。正
   "schema_version": "agent-skill-result/v1",
   "skill": "normalize-bom",
   "run_id": "...",
-  "status": "passed | retryable | blocked",
+  "status": "passed | retryable | questioned | blocked",
   "input_fingerprint": "sha256:...",
   "artifacts": [{"kind": "normalized-bom", "path": "...", "sha256": "..."}],
   "diagnostics": [],
@@ -151,8 +151,9 @@ resolve(运行标识, 步骤编号, 用户释疑) -> 更新后的SOP与步骤图
 - `formal-render-plan/v2` 必须记录 scope-local 可见态增量、完整态哈希、结构依赖、受影响后代、固定相机集合和同 CAD 点锚点证据；
 - 生成前确认把语义答案锁定为版本化 `locked-render-plan`，生成阶段不得重新解释同一问题；
 - 锁定计划编译为 `render-plan/v2`；正式任务只能声明 `creo_display_list/v1`，像素合成只可作为显式诊断适配器；
-- Creo worker 在一个准备好的只读模型副本上执行一批任务，不能每张图复制整套模型；
-- 并发由 Creo 许可证和稳定性控制，默认 1～2 个 worker；worker 执行有限任务后重启；
+- Creo worker 在一个准备好的只读模型副本上执行一批任务，不能每张图复制整套模型；同一会话内每张图结束后必须关闭窗口、删除临时箭头并擦除未显示模型；
+- Python 与 J-Link Worker 只通过运行工作区内的版本化原子命令、结果、就绪和心跳文件通信；Worker 最多接收 20 个渲染命令，空闲 5 分钟退出，进程消失、心跳陈旧或命令超时后必须换新代次；
+- 并发由 Creo 许可证和稳定性控制，默认 1 个 worker；只有完成真实许可证与稳定性验证后才能配置为 2 个；
 - 单步骤失败只重算受影响子图；上游事实变化才使相应下游失效；
 - 出版按数据动态分组、分页，不允许硬编码 8 个工作表或固定两位编号。
 
@@ -293,21 +294,21 @@ BOM 文本和渲染图片是否允许发送到 DashScope，必须由部署方确
 - 用户选择候选后只重跑最小受影响子图，不受影响图片哈希不变；
 - 全部疑惑解决后，用户目录中只剩 `SOP.xlsx` 和正式步骤图片。
 
-## 11. 当前实现状态与剩余差距（2026-08-14）
+## 11. 当前实现状态与剩余差距（2026-08-17）
 
 | 目标 | 当前证据 | 结论 |
 | --- | --- | --- |
 | 用户只提供 BOM + CAD 文件夹 | `AgentCore` 已真实启动 J-Link，锁定总装并导出 87 个 occurrence、182 条约束；56 个实体 BOM 行全部映射 | discovery 与映射已通过真实水箱输入 |
-| Agent 自动走完全流程 | 持久接口、独立 worker 进程和桌面确认页已实现；通用两输入分析可运行 | 真实通用 CAD 规划到渲染的组合尚未通过阶段七 |
+| Agent 自动走完全流程 | GUI正式入口已统一为 `AgentCore → PipelineOrchestrator → SkillRuntime`；Fake Adapter已走通分析、确认、渲染、候选、文字释疑和出版；真实 Agent 单步骤已从两项输入经 Skill 链生成并通过硬门 | 单步骤阶段门通过；42步全量迁移仍待验收 |
 | Qwen 正式运行 | 官方 DashScope 文本与视觉真实调用均通过；错误 Schema 使用最多 3 次有界纠正 | 已实现并完成最小真实调用 |
-| 受控 Skill 接口 | 12 个仓库 Skill、统一信封、状态白名单和任意输出路径拒绝已实现 | 已实现并单测 |
-| 大规模批处理 | 500 任务、每 20 步检查点、25 个有界会话和现有 42 任务合同编译已测试 | 调度内核已实现；真实 Creo 压测待阶段七 |
-| 自动恢复 | SQLite WAL、产物哈希、原子写、磁盘检查点和恢复不重渲染已实现 | 内核已实现；真实强杀验收待阶段七 |
-| 步骤隔离与候选图 | 表现失败继续、结构失败仅等待后代、2～4 候选与 StepRevision 最小失效图已测试 | 内核已实现；真实图片链待阶段七 |
+| 受控 Skill 接口 | 12个Skill均有可执行Handler、统一Runtime、独立CLI、执行指纹、Artifact哈希复核、SQLite执行记录和Qwen可用的中立JSON Schema | 已实现并通过合同/闭环测试 |
+| 大规模批处理 | 500任务逐步骤原子检查点、每20任务重启、25个有界调度会话和现有42任务合同编译已测试 | 调度与执行协议已实现；真实Creo压测待阶段七 |
+| 自动恢复 | SQLite WAL、产物哈希、磁盘检查点及 Creo Worker 原子结果/心跳/失效换代已实现；真实单步验证命令完成先刷新心跳、退出后无残留 Creo/Java | 正常退出已通过；真实强杀验收待阶段七 |
+| 步骤隔离与候选图 | 表现失败继续、结构失败仅等待后代、2～4 候选与 StepRevision 最小失效图已测试；真实单步已由Agent入口依次通过render、validate和publish | 单步真实图片链已实现；真实多分支故障仍待阶段七 |
 | 动态出版 | Python 动态分页通过 8/42 与 100/100 测试；64 位 pywin32 已真实驱动 Excel 只读打开并导出临时 PDF | 已实现；真实 100 工序 Excel COM 压测仍待阶段七 |
 | 桌面 Agent | PySide6 页面、首次配置、统一确认、后台进程、暂停/续跑、历史任务和候选/文字释疑入口已实现；确定性构建的 64 位 v3d EXE 已真实启动 Creo discovery | 已实现；真实 Creo 正式出图仍待阶段七 |
-| 正式计划与生成前释疑 | 真实 v3 图谱编译出 53 个几何候选（41 ready、12 questioned）；全图拓扑排序消除 6 个晚接收件漏边；Qwen 对 6 个子装配范围给出受限推荐，v4 确认锁定后为 50 个步骤（39 ready、11 questioned），连续 10 次候选/锁定指纹均唯一 | 产品无关计划编译、语义推荐缓存和 `PlanRevision` 锁定已实现；正式 Creo 出图待接入 |
-| 干净迁移验收 | 隔离安装、两输入、CAD 哈希、Excel、Qwen 文本/视觉、冻结 EXE、真实 Creo v3 discovery 和正式计划编译已通过 | 正式出图仍未完成 |
+| 正式计划与生成前释疑 | 真实 v3 图谱编译出 53 个几何候选（41 ready、12 questioned）；全图拓扑排序消除 6 个晚接收件漏边；Qwen 对 6 个子装配范围给出受限推荐，v4 确认锁定后为 50 个步骤（39 ready、11 questioned），连续 10 次候选/锁定指纹均唯一 | 产品无关计划、`PlanRevision` 和正式 Worker 已接入；批量真实出图待验收 |
+| 干净迁移验收 | 隔离安装、两输入、CAD 哈希、Excel、Qwen 文本/视觉、冻结 EXE、真实 Creo v3 discovery、正式计划编译及一个正式步骤出图已通过；本次核对108个源CAD文件哈希均未变化 | 单步骤通过；完整设备全量仍未完成 |
 
 旧产品脚本继续只作为对照和真实 Creo 适配基础，不能替代阶段七的清洁迁移证据。
 

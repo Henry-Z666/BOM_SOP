@@ -14,6 +14,7 @@ from sop_pipeline.agent.formal_render_planner import compile_formal_render_plan
 from sop_pipeline.agent.qwen_adapter import PlanChoiceRecommendation
 from tests.test_agent_analysis import _xlsx
 from tests.test_formal_render_planner import fixture as planning_fixture
+from tests.test_pipeline_orchestrator import _fixture as pipeline_fixture
 
 
 class DesktopWorkflowTests(unittest.TestCase):
@@ -159,7 +160,7 @@ class DesktopWorkflowTests(unittest.TestCase):
                     / f"locked-render-plan-{revision.revision:04d}.json"
                 ).is_file()
             )
-            self.assertTrue(
+            self.assertFalse(
                 (
                     run.workspace
                     / "plans"
@@ -170,26 +171,18 @@ class DesktopWorkflowTests(unittest.TestCase):
     def test_unproven_geometry_delivers_pending_sop_instead_of_crashing_or_guessing(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            bom = root / "BOM.xlsx"
-            _xlsx(
-                bom,
-                [(
-                    "BOM",
-                    [
-                        ["层级", "物料编码", "图号", "名称", "数量", "单位", "装配步骤"],
-                        ["30", "ROOT", "ROOT-ASM", "设备总装", "1", "件", "第2步：检查"],
-                        ["30.1", "A", "PART-A", "底座", "1", "件", "第1步：固定底座"],
-                    ],
-                )],
-            )
-            cad = root / "cad"
-            cad.mkdir()
-            assembly = cad / "root-asm.asm.1"
-            part = cad / "part-a.prt.1"
-            assembly.write_bytes(b"root")
-            part.write_bytes(b"part")
+            bom, cad, graph = pipeline_fixture(root)
+            graph["constraints"][1]["assembly_reference"]["geometry"] = {
+                "status": "unavailable"
+            }
+            graph["constraints"][1]["component_reference"]["geometry"] = {
+                "status": "unavailable"
+            }
             before = {path.name: sha256(path.read_bytes()).hexdigest() for path in cad.iterdir()}
-            core = AgentCore(root / "workspace", DesktopWorkflow())
+            core = AgentCore(
+                root / "workspace",
+                DesktopWorkflow(StaticCreoDiscovery(graph)),
+            )
 
             run_id = core.create_run(bom, cad)
             packet = core.analyze(run_id)

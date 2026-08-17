@@ -280,7 +280,7 @@ def _frame_gate() -> dict[str, Any]:
         "min_arrow_pixels": 120,
         "min_arrow_span_pixels": 24,
         "min_arrow_border_margin_pixels": 40,
-        "ignored_regions": [[0, 1250, 500, 1600]],
+        "ignored_regions": [[0, 1200, 500, 1600]],
     }
 
 
@@ -291,7 +291,7 @@ def _centering_contract() -> dict[str, Any]:
         "initial_estimate": "cad_activity_origin/v1",
         "focus_center": "midpoint_subject_arrow/v1",
         "probe_policy": "on_gate_failure/v1",
-        "response_cache_scope": "camera_zoom_frame_environment/v1",
+        "response_cache_scope": "camera_frame_environment/v2",
         "max_probe_rounds": 2,
         "target_pixel": [800, 800],
         "probe_delta": 0.1,

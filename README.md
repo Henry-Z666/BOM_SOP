@@ -22,6 +22,18 @@ Creo 安装目录、许可证文件、普通版 Excel 和 DashScope Key；正式
 仓库自有的 12 个 Agent Skill 位于 `skills/`，正式接口和状态机实现位于
 `src/sop_pipeline/agent/`，桌面入口位于 `src/sop_pipeline/desktop/`。
 
+GUI 不直接调用这些能力。正式调用链为 `GUI → AgentCore → PipelineOrchestrator →
+SkillRuntime → Skill Handler → Creo/Qwen/Excel Adapter`。单个Skill可在既有运行批次中
+独立调试，仍会接受状态机、Artifact哈希和输出路径约束：
+
+```powershell
+qwen-creo-sop-skill `
+  --workspace <Agent工作区> `
+  --run-id <运行标识> `
+  --skill normalize-bom `
+  --input-ref analysis/input-manifest.json
+```
+
 `pywin32` 是 Windows API/COM 绑定的项目名，不表示只能运行在 32 位系统。安装包使用
 64 位 Python 时会安装 64 位扩展，可在 64 位 Windows 上驱动普通版 Excel；构建机、
 目标机 Python 和 Excel 的位数仍应保持一致。

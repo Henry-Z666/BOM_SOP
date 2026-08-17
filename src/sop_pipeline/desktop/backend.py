@@ -4,9 +4,12 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import threading
 from typing import Any
 from uuid import uuid4
+
+from ..process_control import owned_process_creation_kwargs, terminate_process_tree
 
 
 class SubprocessAgentBackend:
@@ -52,7 +55,7 @@ class SubprocessAgentBackend:
             if process is None or process.poll() is not None:
                 return False
             self._pause_requested = True
-            process.terminate()
+            terminate_process_tree(process)
             return True
 
     def _call(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -92,33 +95,44 @@ class SubprocessAgentBackend:
                 action,
             ]
         )
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL if frozen else subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        with self._process_lock:
-            self._current_process = process
-            self._pause_requested = False
-        try:
-            stdout, stderr = process.communicate(
-                input=None if frozen else json.dumps(payload, ensure_ascii=False),
-                timeout=self.timeout_seconds,
+        with tempfile.TemporaryFile(
+            mode="w+", encoding="utf-8", errors="replace"
+        ) as stdout_file, tempfile.TemporaryFile(
+            mode="w+", encoding="utf-8", errors="replace"
+        ) as stderr_file:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL if frozen else subprocess.PIPE,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                **owned_process_creation_kwargs(),
             )
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.communicate()
-            raise RuntimeError("Agent worker timed out")
-        finally:
             with self._process_lock:
-                paused = self._pause_requested
-                self._current_process = None
+                self._current_process = process
                 self._pause_requested = False
+            try:
+                process.communicate(
+                    input=None
+                    if frozen
+                    else json.dumps(payload, ensure_ascii=False),
+                    timeout=self.timeout_seconds,
+                )
+            except subprocess.TimeoutExpired as error:
+                terminate_process_tree(process)
+                process.communicate()
+                raise RuntimeError("Agent worker timed out") from error
+            finally:
+                with self._process_lock:
+                    paused = self._pause_requested
+                    self._current_process = None
+                    self._pause_requested = False
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            stdout = stdout_file.read()
+            stderr = stderr_file.read()
         if paused:
             _remove_ipc_files(request_file, response_file)
             return {

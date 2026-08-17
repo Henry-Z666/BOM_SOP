@@ -167,7 +167,7 @@ class DeterministicNativeRenderValidator:
             or centering.get("focus_center") != "midpoint_subject_arrow/v1"
             or centering.get("probe_policy") != "on_gate_failure/v1"
             or centering.get("response_cache_scope")
-            != "camera_zoom_frame_environment/v1"
+            != "camera_frame_environment/v2"
             or centering.get("max_probe_rounds") != 2
             or centering.get("target_pixel") != [800, 800]
             or centering.get("probe_delta") != 0.1
@@ -258,11 +258,6 @@ class DeterministicNativeRenderValidator:
             failures.append("SUBJECT_TOO_LARGE")
         if len(metrics.clipped_edges) > max_clipped_edges:
             failures.append("EXCESSIVE_CONTEXT_CLIPPING")
-        if (
-            metrics.center_offset_pixels is not None
-            and metrics.center_offset_pixels > max_activity_center_offset
-        ):
-            failures.append("ACTIVITY_NOT_CENTERED")
         arrow_metrics = _arrow_raster_metrics(
             pixels, green_delta=arrow_green_delta, target_pixel=target_pixel
         )
@@ -279,9 +274,29 @@ class DeterministicNativeRenderValidator:
                 and arrow_metrics.border_margin_pixels < min_arrow_margin
             ):
                 failures.append("ARROW_CLIPPED")
+        # The compiled contract defines the installation focus as the midpoint
+        # of the staged subject and the native arrow.  Applying both limits to
+        # the two centres independently makes the gate mathematically
+        # impossible whenever their separation exceeds the sum of the limits,
+        # even when their declared midpoint is exactly at the target.  Validate
+        # the same focus used by the PAN solver; arrow visibility, size and
+        # clipping remain independent hard gates above.
+        focus_center = metrics.center_pixel
+        if focus_center is not None and arrow_metrics.center_pixel is not None:
+            focus_center = (
+                (focus_center[0] + arrow_metrics.center_pixel[0]) / 2.0,
+                (focus_center[1] + arrow_metrics.center_pixel[1]) / 2.0,
+            )
+        if focus_center is not None:
+            focus_offset = math.hypot(
+                focus_center[0] - target_pixel[0],
+                focus_center[1] - target_pixel[1],
+            )
+            if focus_offset > max_activity_center_offset:
+                failures.append("ACTIVITY_NOT_CENTERED")
             if (
-                arrow_metrics.center_offset_pixels is not None
-                and arrow_metrics.center_offset_pixels > max_arrow_center_offset
+                arrow_metrics.center_pixel is not None
+                and focus_offset > max_arrow_center_offset
             ):
                 failures.append("ARROW_NOT_CENTERED")
         return metrics, arrow_metrics

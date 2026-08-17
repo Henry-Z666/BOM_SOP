@@ -7,6 +7,12 @@ param(
   [ValidateRange(0, 3)][int]$VariantIndex = 0,
   [string]$PreparedModelsRoot = '',
   [string]$RunWorkspaceRoot = '',
+  [string]$WorkerRoot = '',
+  # This is an internal render-command failsafe.  The Python scheduler owns
+  # the product contract and restarts the Worker after 20 formal tasks; one
+  # formal task may legitimately consume many probe/correction commands.
+  [ValidateRange(1, 100)][int]$MaxWorkerCommands = 100,
+  [ValidateRange(10, 3600)][int]$WorkerIdleSeconds = 300,
   [ValidateRange(10, 3600)][int]$TimeoutSeconds = 600,
   [ValidateRange(1, 30)][int]$CompletionGraceSeconds = 4
 )
@@ -123,7 +129,7 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   if ([string]$presentation.centering.initial_estimate -ne 'cad_activity_origin/v1') { throw "Task $taskId has an invalid centering initial estimate." }
   if ([string]$presentation.centering.focus_center -ne 'midpoint_subject_arrow/v1') { throw "Task $taskId has an invalid centering focus definition." }
   if ([string]$presentation.centering.probe_policy -ne 'on_gate_failure/v1') { throw "Task $taskId has an invalid centering probe policy." }
-  if ([string]$presentation.centering.response_cache_scope -ne 'camera_zoom_frame_environment/v1') { throw "Task $taskId has an invalid PAN response cache scope." }
+  if ([string]$presentation.centering.response_cache_scope -ne 'camera_frame_environment/v2') { throw "Task $taskId has an invalid PAN response cache scope." }
   if ([int]$presentation.centering.max_probe_rounds -ne 2) { throw "Task $taskId has an invalid PAN probe round limit." }
   if ([string]$presentation.zoom_recovery.schema_version -ne 'centered-span-zoom/v1') { throw "Task $taskId has no supported Zoom recovery contract." }
   if ([double]$presentation.zoom_recovery.target_subject_span -ne 0.55) { throw "Task $taskId has an invalid Zoom target span." }
@@ -154,8 +160,12 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   $panY = [double]$pan[1]
   $maxPan = [double]$presentation.centering.max_abs_pan
   if ($maxPan -ne 1.0) { throw "Task $taskId has an unsupported PAN bound." }
-  if ([double]::IsNaN($panX) -or [double]::IsInfinity($panX) -or [Math]::Abs($panX) -gt $maxPan -or
-      [double]::IsNaN($panY) -or [double]::IsInfinity($panY) -or [Math]::Abs($panY) -gt $maxPan) {
+  # max_abs_pan is the Zoom=1 envelope.  Creo's corner-anchored native Zoom
+  # requires proportionally more normalized PAN to preserve the same screen
+  # centre; this must match AgentNativeCreoWorker._effective_pan_bound.
+  $effectiveMaxPan = $maxPan * [Math]::Max(1.0, $zoom)
+  if ([double]::IsNaN($panX) -or [double]::IsInfinity($panX) -or [Math]::Abs($panX) -gt $effectiveMaxPan -or
+      [double]::IsNaN($panY) -or [double]::IsInfinity($panY) -or [Math]::Abs($panY) -gt $effectiveMaxPan) {
     throw "Task $taskId has a pan offset outside the compiled repair bounds."
   }
   $cameraSpec += ',PAN:' + $panX.ToString('G17', $culture) + ':' + $panY.ToString('G17', $culture)
@@ -182,23 +192,16 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
 & (Join-Path $here 'test_license_binding.ps1') -LicenseFile $runtime.LicenseFile -CreoLoadpoint $runtime.CreoLoadpoint
 $nativeClass = Join-Path $here 'build\NativeArrowBatch.class'
 $nativeSource = Join-Path $here 'src\NativeArrowBatch.java'
-if (-not (Test-Path -LiteralPath $nativeClass) -or (Get-Item $nativeSource).LastWriteTimeUtc -gt (Get-Item $nativeClass).LastWriteTimeUtc) {
+$workerClass = Join-Path $here 'build\NativeArrowWorker.class'
+$workerSource = Join-Path $here 'src\NativeArrowWorker.java'
+if (-not (Test-Path -LiteralPath $nativeClass) -or -not (Test-Path -LiteralPath $workerClass) -or
+    (Get-Item $nativeSource).LastWriteTimeUtc -gt (Get-Item $nativeClass).LastWriteTimeUtc -or
+    (Get-Item $workerSource).LastWriteTimeUtc -gt (Get-Item $workerClass).LastWriteTimeUtc) {
   & (Join-Path $here 'build.ps1')
   if ($LASTEXITCODE -ne 0) { throw 'J-Link build failed.' }
 }
 $manifest = Join-Path $internalRoot ('native-arrow-' + [guid]::NewGuid().ToString('N') + '.tsv')
 [IO.File]::WriteAllLines($manifest, $manifestRows, [Text.UTF8Encoding]::new($false))
-$log = Join-Path $output 'native-arrow-jlink.log'
-$errorLog = $log + '.err'
-$launcher = Join-Path $here 'invoke_agent_native_jlink.ps1'
-$launcherArguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $launcher + '"'
-$launcherArguments += ' -ProjectRoot "' + $projectRoot + '"'
-$launcherArguments += ' -PreparedModelsRoot "' + $prepared + '"'
-$launcherArguments += ' -PreparedAssembly "' + $preparedAssembly + '"'
-$launcherArguments += ' -Manifest "' + $manifest + '"'
-$hostExecutable = (Get-Process -Id $PID).Path
-$process = Start-Process -FilePath $hostExecutable -ArgumentList $launcherArguments -PassThru `
-  -RedirectStandardOutput $log -RedirectStandardError $errorLog -WindowStyle Hidden
 
 function Test-NativeArtifactsReady {
   for ($artifactIndex = 0; $artifactIndex -lt $renderedFiles.Count; $artifactIndex++) {
@@ -212,27 +215,162 @@ function Test-NativeArtifactsReady {
   return $true
 }
 
-$deadline = (Get-Date).AddSeconds($TimeoutSeconds)
 $ready = $false
-while ((Get-Date) -lt $deadline) {
-  if (Test-NativeArtifactsReady) {
+if ($WorkerRoot) {
+  $worker = [IO.Path]::GetFullPath($WorkerRoot)
+  if (-not $worker.StartsWith($runRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'WorkerRoot must stay inside the current Agent run workspace.'
+  }
+  New-Item -ItemType Directory -Force -Path $worker | Out-Null
+  $current = Join-Path $worker 'current-worker.tsv'
+  $generation = $null
+  $workerPid = 0
+  if (Test-Path -LiteralPath $current -PathType Leaf) {
+    $currentFields = (Get-Content -Raw -LiteralPath $current).Trim().Split("`t")
+    if ($currentFields.Count -eq 4 -and $currentFields[0] -eq 'native-arrow-worker-current/v1' -and
+        [int]::TryParse($currentFields[2], [ref]$workerPid)) {
+      $candidate = [IO.Path]::GetFullPath($currentFields[1])
+      if ($candidate.StartsWith($worker + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -and
+          $currentFields[3] -eq $preparedAssembly) {
+        $candidateProcess = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
+        $candidateHeartbeat = Join-Path $candidate 'heartbeat.tsv'
+        # A synchronous Creo render cannot update the periodic heartbeat while
+        # it is inside J-Link.  Command completion refreshes the heartbeat, and
+        # reuse is bounded by the configured idle lifetime instead of an
+        # invalid five-second device-specific window.
+        $heartbeatFresh = (Test-Path -LiteralPath $candidateHeartbeat -PathType Leaf) -and
+          ((Get-Item -LiteralPath $candidateHeartbeat).LastWriteTimeUtc -ge
+            (Get-Date).ToUniversalTime().AddSeconds(-($WorkerIdleSeconds + $CompletionGraceSeconds)))
+        if ($null -ne $candidateProcess -and $heartbeatFresh -and
+            (Test-Path -LiteralPath (Join-Path $candidate 'ready.tsv') -PathType Leaf)) {
+          $generation = $candidate
+        }
+        elseif ($null -ne $candidateProcess) {
+          Stop-Process -Id $workerPid -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+  }
+  if ($null -eq $generation) {
+    $generation = Join-Path $worker ('generation-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $generation | Out-Null
+    $log = Join-Path $generation 'native-arrow-worker.log'
+    $errorLog = $log + '.err'
+    $launcher = Join-Path $here 'invoke_agent_native_worker.ps1'
+    $launcherArguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $launcher + '"'
+    $launcherArguments += ' -ProjectRoot "' + $projectRoot + '"'
+    $launcherArguments += ' -PreparedModelsRoot "' + $prepared + '"'
+    $launcherArguments += ' -PreparedAssembly "' + $preparedAssembly + '"'
+    $launcherArguments += ' -WorkerGenerationRoot "' + $generation + '"'
+    $launcherArguments += ' -MaxCommands ' + $MaxWorkerCommands
+    $launcherArguments += ' -IdleSeconds ' + $WorkerIdleSeconds
+    $hostExecutable = (Get-Process -Id $PID).Path
+    $launcherProcess = Start-Process -FilePath $hostExecutable -ArgumentList $launcherArguments -PassThru `
+      -RedirectStandardOutput $log -RedirectStandardError $errorLog -WindowStyle Hidden
+    $startDeadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $readyMarker = Join-Path $generation 'ready.tsv'
+    while ((Get-Date) -lt $startDeadline -and -not (Test-Path -LiteralPath $readyMarker -PathType Leaf)) {
+      $launcherProcess.Refresh()
+      if ($launcherProcess.HasExited) { break }
+      Start-Sleep -Milliseconds 200
+    }
+    if (-not (Test-Path -LiteralPath $readyMarker -PathType Leaf)) {
+      $details = @()
+      if (Test-Path -LiteralPath $log) { $details += Get-Content -Raw -LiteralPath $log }
+      if (Test-Path -LiteralPath $errorLog) { $details += Get-Content -Raw -LiteralPath $errorLog }
+      throw ("NativeArrowWorker did not become ready.`n" + ($details -join "`n"))
+    }
+    $readyFields = (Get-Content -Raw -LiteralPath $readyMarker).Trim().Split("`t")
+    if ($readyFields.Count -ne 3 -or $readyFields[0] -ne 'native-arrow-worker/v1' -or
+        -not [int]::TryParse($readyFields[1], [ref]$workerPid)) {
+      throw 'NativeArrowWorker wrote an invalid readiness marker.'
+    }
+    $temporaryCurrent = $current + '.tmp'
+    [IO.File]::WriteAllText(
+      $temporaryCurrent,
+      ((@('native-arrow-worker-current/v1',$generation,$workerPid,$preparedAssembly) -join "`t") + "`n"),
+      [Text.UTF8Encoding]::new($false)
+    )
+    Move-Item -LiteralPath $temporaryCurrent -Destination $current -Force
+  }
+  Write-Output ("[AGENT_RENDER] worker_generation {0}" -f $generation)
+
+  $commandId = [guid]::NewGuid().ToString('N')
+  $commands = Join-Path $generation 'commands'
+  $manifests = Join-Path $generation 'manifests'
+  $results = Join-Path $generation 'results'
+  New-Item -ItemType Directory -Force -Path $commands,$manifests,$results | Out-Null
+  $workerManifest = Join-Path $manifests ($commandId + '.tsv')
+  $temporaryManifest = $workerManifest + '.tmp'
+  [IO.File]::WriteAllBytes($temporaryManifest, [IO.File]::ReadAllBytes($manifest))
+  Move-Item -LiteralPath $temporaryManifest -Destination $workerManifest
+  $request = Join-Path $commands ($commandId + '.request')
+  $temporaryRequest = $request + '.tmp'
+  [IO.File]::WriteAllText(
+    $temporaryRequest,
+    ("RENDER`t" + [IO.Path]::GetFileName($workerManifest) + "`n"),
+    [Text.UTF8Encoding]::new($false)
+  )
+  Move-Item -LiteralPath $temporaryRequest -Destination $request
+  $resultMarker = Join-Path $results ($commandId + '.result')
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while ((Get-Date) -lt $deadline -and -not (Test-Path -LiteralPath $resultMarker -PathType Leaf)) {
+    if ($null -eq (Get-Process -Id $workerPid -ErrorAction SilentlyContinue)) { break }
+    Start-Sleep -Milliseconds 200
+  }
+  if (Test-Path -LiteralPath $resultMarker -PathType Leaf) {
+    $resultFields = (Get-Content -Raw -LiteralPath $resultMarker).Trim().Split("`t")
+    if ($resultFields.Count -ge 2 -and $resultFields[0] -eq 'passed') {
+      $ready = Test-NativeArtifactsReady
+    }
+    elseif ($resultFields.Count -ge 2) {
+      throw ("NativeArrowWorker command failed: " + ($resultFields -join ' '))
+    }
+  }
+  if ($ready) {
     Start-Sleep -Seconds $CompletionGraceSeconds
-    if (Test-NativeArtifactsReady) { $ready = $true; break }
+    $ready = Test-NativeArtifactsReady
+  }
+  if (-not $ready) {
+    Stop-Process -Id $workerPid -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $generation 'ready.tsv') -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $current -Force -ErrorAction SilentlyContinue
+    throw 'NativeArrowWorker did not produce complete JPEG and arrow audit artifacts.'
+  }
+}
+else {
+  $log = Join-Path $output 'native-arrow-jlink.log'
+  $errorLog = $log + '.err'
+  $launcher = Join-Path $here 'invoke_agent_native_jlink.ps1'
+  $launcherArguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $launcher + '"'
+  $launcherArguments += ' -ProjectRoot "' + $projectRoot + '"'
+  $launcherArguments += ' -PreparedModelsRoot "' + $prepared + '"'
+  $launcherArguments += ' -PreparedAssembly "' + $preparedAssembly + '"'
+  $launcherArguments += ' -Manifest "' + $manifest + '"'
+  $hostExecutable = (Get-Process -Id $PID).Path
+  $process = Start-Process -FilePath $hostExecutable -ArgumentList $launcherArguments -PassThru `
+    -RedirectStandardOutput $log -RedirectStandardError $errorLog -WindowStyle Hidden
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while ((Get-Date) -lt $deadline) {
+    if (Test-NativeArtifactsReady) {
+      Start-Sleep -Seconds $CompletionGraceSeconds
+      if (Test-NativeArtifactsReady) { $ready = $true; break }
+    }
+    $process.Refresh()
+    if ($process.HasExited) { break }
+    Start-Sleep -Milliseconds 250
   }
   $process.Refresh()
-  if ($process.HasExited) { break }
-  Start-Sleep -Milliseconds 250
-}
-$process.Refresh()
-if (-not $process.HasExited) {
-  Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
-  $process.WaitForExit()
-}
-if (-not $ready) {
-  $details = @()
-  if (Test-Path -LiteralPath $log) { $details += Get-Content -Raw -LiteralPath $log }
-  if (Test-Path -LiteralPath $errorLog) { $details += Get-Content -Raw -LiteralPath $errorLog }
-  throw ("NativeArrowBatch did not produce complete JPEG and arrow audit artifacts.`n" + ($details -join "`n"))
+  if (-not $process.HasExited) {
+    Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    $process.WaitForExit()
+  }
+  if (-not $ready) {
+    $details = @()
+    if (Test-Path -LiteralPath $log) { $details += Get-Content -Raw -LiteralPath $log }
+    if (Test-Path -LiteralPath $errorLog) { $details += Get-Content -Raw -LiteralPath $errorLog }
+    throw ("NativeArrowBatch did not produce complete JPEG and arrow audit artifacts.`n" + ($details -join "`n"))
+  }
 }
 
 foreach ($image in $renderedFiles) {
