@@ -5,6 +5,8 @@ description: Map normalized BOM items and quantities to final-assembly Creo occu
 
 # Map BOM to CAD
 
+Invoke `map-bom-cad` through `SkillRuntime`; consume only registered BOM, inventory and CAD-graph artifact references. It emits `bom-cad-map/v1`.
+
 Accept `normalized-bom/v1`, `model-inventory/v1`, `draft-plan/v1` and `creo-cad-graph/v3`
 artifact references for one `run_id`. Match normalized drawing number, model number or material
 code exactly; never use substring similarity.

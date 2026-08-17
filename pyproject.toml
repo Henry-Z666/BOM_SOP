@@ -17,6 +17,7 @@ build = ["pyinstaller>=6.10"]
 
 [project.scripts]
 qwen-creo-sop-agent = "sop_pipeline.desktop.app:main"
+qwen-creo-sop-skill = "sop_pipeline.agent.skill_cli:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

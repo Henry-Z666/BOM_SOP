@@ -11,7 +11,11 @@ from .formal_render_planner import (
     formal_render_plan_from_dict,
     lock_formal_render_plan,
 )
-from .framing_recovery import FramingRecoveryError, derive_zoom_for_subject_span
+from .framing_recovery import (
+    FramingRecoveryError,
+    derive_progressive_zoom_for_subject_span,
+    derive_zoom_for_subject_span,
+)
 from .models import RunRecord, RunStatus, SkillStatus, StepStatus
 from .models import (
     AnalysisResult,
@@ -26,6 +30,7 @@ from .models import (
     StepResult,
 )
 from .ports import WorkflowPort
+from .pipeline_orchestrator import PipelineOrchestrator, SkillPipelineError
 from .qwen_adapter import (
     DashScopeTransport,
     PlanChoiceRecommendation,
@@ -73,6 +78,12 @@ from .skill_registry import (
     SkillInvocation,
     SkillRegistry,
 )
+from .skill_runtime import (
+    SkillArtifactValue,
+    SkillContext,
+    SkillHandlerOutput,
+    SkillRuntime,
+)
 from .step_revision import (
     RevisionKind,
     StepDependencyGraph,
@@ -116,6 +127,7 @@ __all__ = [
     "OpenpyxlWorkbookVerifier",
     "PlanRevision",
     "PlanChoiceRecommendation",
+    "PipelineOrchestrator",
     "PlanningDiagnostic",
     "lock_formal_render_plan",
     "PowerShellCreoWorker",
@@ -149,6 +161,11 @@ __all__ = [
     "SkillDefinition",
     "SkillInvocation",
     "SkillRegistry",
+    "SkillArtifactValue",
+    "SkillContext",
+    "SkillHandlerOutput",
+    "SkillPipelineError",
+    "SkillRuntime",
     "AGENT_SKILL_DEFINITIONS",
     "StepStatus",
     "SopImage",
@@ -161,6 +178,7 @@ __all__ = [
     "WorkflowPort",
     "validate_revision",
     "derive_zoom_for_subject_span",
+    "derive_progressive_zoom_for_subject_span",
     "activity_focus_center",
     "measure_screen_pan_response",
     "plan_screen_center_probes",

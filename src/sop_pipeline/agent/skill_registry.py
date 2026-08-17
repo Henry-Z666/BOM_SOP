@@ -33,7 +33,7 @@ def _definition(
 
 
 _ANALYZING = (RunStatus.ANALYZING,)
-_GENERATING = (RunStatus.GENERATING,)
+_GENERATING = (RunStatus.GENERATING, RunStatus.NEEDS_REVIEW)
 
 AGENT_SKILL_DEFINITIONS: dict[str, SkillDefinition] = {
     "intake-preflight": _definition("intake-preflight", _ANALYZING, ("normalize-bom",)),
@@ -43,18 +43,24 @@ AGENT_SKILL_DEFINITIONS: dict[str, SkillDefinition] = {
     "map-bom-cad": _definition("map-bom-cad", _ANALYZING, ("plan-assembly",)),
     "plan-assembly": _definition("plan-assembly", _ANALYZING, ("clarify-plan",)),
     "clarify-plan": _definition("clarify-plan", _ANALYZING, ("compile-render-jobs",)),
-    "compile-render-jobs": _definition("compile-render-jobs", _GENERATING, ("render-batch",)),
-    "render-batch": _definition("render-batch", _GENERATING, ("validate-repair",)),
-    "validate-repair": _definition("validate-repair", _GENERATING, ("render-batch", "publish-delivery")),
+    "compile-render-jobs": _definition(
+        "compile-render-jobs", _GENERATING, ("compile-render-jobs", "render-batch")
+    ),
+    "render-batch": _definition(
+        "render-batch", _GENERATING, ("render-batch", "validate-repair")
+    ),
+    "validate-repair": _definition(
+        "validate-repair", _GENERATING, ("validate-repair", "render-batch", "publish-delivery")
+    ),
     "publish-delivery": _definition(
         "publish-delivery",
         (RunStatus.GENERATING, RunStatus.NEEDS_REVIEW),
-        ("resolve-step",),
+        ("publish-delivery", "resolve-step"),
     ),
     "resolve-step": _definition(
         "resolve-step",
         (RunStatus.NEEDS_REVIEW,),
-        ("render-batch", "validate-repair", "publish-delivery"),
+        ("resolve-step", "render-batch", "validate-repair", "publish-delivery"),
     ),
 }
 

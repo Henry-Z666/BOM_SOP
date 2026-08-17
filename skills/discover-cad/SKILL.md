@@ -5,6 +5,8 @@ description: Inventory Creo ASM and PRT versions and extract occurrence or const
 
 # Discover CAD
 
+Invoke `discover-cad` through `SkillRuntime` with the locked assembly artifact. It emits `creo-cad-graph/v3`.
+
 Accept only `run_id` plus the locked CAD-directory and final-assembly artifact references. Run
 official asynchronous J-Link on a fresh disposable model copy. Return `creo-cad-graph/v3` with:
 

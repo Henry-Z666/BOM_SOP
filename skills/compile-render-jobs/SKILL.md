@@ -5,6 +5,8 @@ description: Compile a locked assembly plan into deterministic Creo render jobs 
 
 # Compile render jobs
 
+Invoke `compile-render-jobs` through `SkillRuntime` only after `PlanRevision` is locked. It emits `render-plan/v2` as the locked render-jobs artifact.
+
 Use only the locked `PlanRevision`, `formal-render-plan/v1` and authoritative assembly artifact.
 Do not accept caller-selected output paths.
 

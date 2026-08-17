@@ -57,6 +57,9 @@ class ArtifactStore:
         target = self._target(run_workspace, relative_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         payload = (json.dumps(_jsonable(value), ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        existing = self._store.find_artifact(run_id, relative_path)
+        if existing is not None and target.is_file() and target.read_bytes() == payload:
+            return existing
         temporary = target.with_name(f".{target.name}.tmp-{uuid4().hex}")
         try:
             with temporary.open("xb") as output:
@@ -82,4 +85,3 @@ class ArtifactStore:
     def read_json(self, run_workspace: Path, relative_path: str) -> dict[str, Any]:
         target = self._target(run_workspace, relative_path)
         return json.loads(target.read_text(encoding="utf-8"))
-

@@ -5,6 +5,8 @@ description: Build a scalable assembly dependency graph with state deltas, compl
 
 # Plan assembly
 
+Invoke `plan-assembly` through `SkillRuntime`. It emits `draft-plan/v1` and the repository's latest `formal-render-plan` schema.
+
 Accept only one run's `normalized-bom/v1`, `draft-plan/v1`, `bom-cad-map/v1` and
 `creo-cad-graph/v3` artifact references. Return `formal-render-plan/v1`.
 
