@@ -14,10 +14,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** Deterministic same-CAD-point install arrows rendered by Creo itself. */
 public final class ArrowProjection {
   private ArrowProjection() {}
+  private static final AtomicInteger NEXT_DISPLAY_LIST_ID = new AtomicInteger(73101);
 
   private static final class Candidate {
     final int surfaceId; final String source; final double[] local; final intseq anchorPath; double[] completeRoot;
@@ -118,13 +120,24 @@ public final class ArrowProjection {
   }
 
   public static MovingOccurrence prepare(Session session,Assembly root, intseq ids) throws jxthrowable {
+    return prepare(session, root, ids, null);
+  }
+
+  public static MovingOccurrence prepare(Session session,Assembly root, intseq ids,double[] preferredCompleteRoot) throws jxthrowable {
     ComponentPath componentPath=pfcAssembly.CreateComponentPath(root,ids);
     Solid leaf=componentPath.GetLeaf(); Transform3D complete=componentPath.GetTransform(true);
     List<Candidate> candidates=new ArrayList<>();
     int[] probeFailures=new int[]{0};
-    collectSolidCandidates(leaf,ids,"model_surface",candidates,probeFailures);
-    if(candidates.isEmpty() && leaf instanceof Assembly)
-      collectDescendantAnchor(session,(Assembly)leaf,ids,candidates,probeFailures);
+    if(preferredCompleteRoot!=null){
+      if(preferredCompleteRoot.length!=3) throw new IllegalArgumentException("planned arrow anchor must have three coordinates");
+      Transform3D inverse=pfcBase.Transform3D_Create(complete.GetMatrix()); inverse.Invert();
+      Candidate planned=new Candidate(-2,"planned_constraint_anchor",transform(inverse,preferredCompleteRoot),ids);
+      planned.completeRoot=preferredCompleteRoot.clone(); candidates.add(planned);
+    } else {
+      collectSolidCandidates(leaf,ids,"model_surface",candidates,probeFailures);
+      if(candidates.isEmpty() && leaf instanceof Assembly)
+        collectDescendantAnchor(session,(Assembly)leaf,ids,candidates,probeFailures);
+    }
     candidates.sort(Comparator.comparingInt(c->c.surfaceId));
     List<Candidate> unique=new ArrayList<>();
     for(Candidate candidate:candidates){boolean duplicate=false;for(Candidate prior:unique)if(norm(sub(candidate.local,prior.local))<1e-5){duplicate=true;break;}if(!duplicate)unique.add(candidate);}
@@ -139,7 +152,7 @@ public final class ArrowProjection {
       System.err.println("[RENDER] arrow_anchor_fallback occurrence="+pathId(ids)+" source=occurrence_origin");
     }
     System.err.println("[RENDER] arrow_anchor_candidates occurrence="+pathId(ids)+" count="+unique.size()+" surface_probe_failures="+probeFailures[0]);
-    for(Candidate candidate:unique) candidate.completeRoot=transform(pfcAssembly.CreateComponentPath(root,candidate.anchorPath).GetTransform(true),candidate.local);
+    for(Candidate candidate:unique) if(candidate.completeRoot==null) candidate.completeRoot=transform(pfcAssembly.CreateComponentPath(root,candidate.anchorPath).GetTransform(true),candidate.local);
     return new MovingOccurrence(pathId(ids),ids,complete,unique);
   }
 
@@ -193,7 +206,7 @@ public final class ArrowProjection {
   }
 
   public static DisplayList3D display(Session session,Result result) throws jxthrowable {
-    DisplayList3D list=session.CreateDisplayList3D(73101,new Listener(result));
+    DisplayList3D list=session.CreateDisplayList3D(NEXT_DISPLAY_LIST_ID.getAndIncrement(),new Listener(result));
     Matrix3D m=Matrix3D.create();for(int r=0;r<4;r++)for(int c=0;c<4;c++)m.set(r,c,r==c?1.0:0.0);
     list.Display(pfcBase.Transform3D_Create(m)); return list;
   }

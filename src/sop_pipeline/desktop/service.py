@@ -12,6 +12,8 @@ class AgentBackend(Protocol):
     def resolve(self, run_id: str, resolution: dict[str, Any]) -> dict[str, Any]: ...
     def resume(self, run_id: str) -> dict[str, Any]: ...
     def pause(self) -> bool: ...
+    def progress_snapshot(self, run_id: str | None = None) -> dict[str, Any]: ...
+    def review_packet(self, run_id: str) -> dict[str, Any]: ...
 
 
 class DesktopAgentService:
@@ -75,6 +77,18 @@ class DesktopAgentService:
     def pause(self) -> bool:
         pause = getattr(self.backend, "pause", None)
         return bool(pause and pause())
+
+    def progress_snapshot(self, run_id: str | None = None) -> dict[str, Any]:
+        snapshot = getattr(self.backend, "progress_snapshot", None)
+        if snapshot is None:
+            return {"available": False, "percent": 0, "stage": "正在处理"}
+        return dict(snapshot(run_id))
+
+    def review_packet(self, run_id: str) -> dict[str, Any]:
+        packet = getattr(self.backend, "review_packet", None)
+        if packet is None:
+            return {"run_id": run_id, "items": [], "message": "无法读取待处理步骤。"}
+        return dict(packet(run_id))
 
     def close(self) -> None:
         self._executor.shutdown(wait=True, cancel_futures=False)

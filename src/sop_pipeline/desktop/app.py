@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from concurrent.futures import Future
+from datetime import datetime, timezone
+import json
 import os
 from pathlib import Path
 import sys
 
-from PySide6.QtCore import QObject, QSettings, QSize, Signal, Qt
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QObject, QSettings, Signal, Qt, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
@@ -21,6 +24,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QProgressBar,
     QScrollArea,
     QStackedWidget,
     QTextEdit,
@@ -52,9 +56,15 @@ class MainWindow(QMainWindow):
         self.service = service
         self.settings = QSettings("QwenCreoSopAgent", "QwenCreoSopAgent")
         self.current_run_id: str | None = None
+        self.progress_started_at = ""
+        self.operation_active = False
+        self.progress_previous_page: QWidget | None = None
         self.confirmation_boxes: dict[str, QComboBox] = {}
         self.bridge = FutureBridge(self)
         self.bridge.failed.connect(self._show_error)
+        self.progress_timer = QTimer(self)
+        self.progress_timer.setInterval(750)
+        self.progress_timer.timeout.connect(self._refresh_progress)
         self.setWindowTitle("Qwen Creo SOP Agent")
         self.resize(920, 680)
         self.setAcceptDrops(True)
@@ -82,10 +92,19 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("拖入 BOM，选择 CAD 文件夹。生成前只需确认一次。"))
 
         setup = QGroupBox("首次配置")
+        self.setup_group = setup
         setup_form = QFormLayout(setup)
-        self.creo_path = QLineEdit(self.settings.value("creo_path", ""))
+        runtime_defaults = _runtime_config_defaults()
+        self.creo_path = QLineEdit(
+            self.settings.value("creo_path", runtime_defaults["creo_loadpoint"])
+        )
         self.license_path = QLineEdit(
-            self.settings.value("license_path", self.settings.value("jlink_path", ""))
+            self.settings.value(
+                "license_path",
+                self.settings.value(
+                    "jlink_path", runtime_defaults["license_file"]
+                ),
+            )
         )
         self.excel_path = QLineEdit(self.settings.value("excel_path", ""))
         self.dashscope_key = QLineEdit()
@@ -95,8 +114,31 @@ class MainWindow(QMainWindow):
         setup_form.addRow("Creo 许可证文件", self.license_path)
         setup_form.addRow("J-Link", QLabel("随 Agent 提供，通过已安装 Creo 的官方接口运行"))
         setup_form.addRow("Excel 路径", self.excel_path)
-        setup_form.addRow("DashScope Key", self.dashscope_key)
+
+        environment_ready = _environment_paths_are_ready(
+            self.creo_path.text(), self.license_path.text()
+        )
+        environment_row = QHBoxLayout()
+        self.environment_status = QLabel(
+            "运行环境已配置" if environment_ready else "运行环境尚未完整配置"
+        )
+        self.environment_status.setStyleSheet(
+            "color: #26734d; font-weight: 600;"
+            if environment_ready
+            else "color: #9c4a00; font-weight: 600;"
+        )
+        environment_row.addWidget(self.environment_status)
+        environment_row.addStretch()
+        toggle_setup = QPushButton(
+            "查看/修改首次配置" if environment_ready else "收起首次配置"
+        )
+        toggle_setup.clicked.connect(
+            lambda: self._toggle_setup_group(toggle_setup)
+        )
+        environment_row.addWidget(toggle_setup)
+        layout.addLayout(environment_row)
         layout.addWidget(setup)
+        setup.setVisible(not environment_ready)
 
         inputs = QGroupBox("本次任务")
         form = QFormLayout(inputs)
@@ -114,6 +156,14 @@ class MainWindow(QMainWindow):
         cad_row.addWidget(choose_cad)
         form.addRow("BOM", bom_row)
         form.addRow("CAD 文件夹", cad_row)
+        form.addRow("DashScope Key（本次会话）", self.dashscope_key)
+        self.experience_mode = QCheckBox(
+            "体验模式：离线语义复核（默认仍生成全部步骤）"
+        )
+        self.experience_mode.setChecked(
+            os.environ.get("QWEN_CREO_EXPERIENCE_MODE") == "1"
+        )
+        form.addRow("开发验收", self.experience_mode)
         layout.addWidget(inputs)
         start = QPushButton("分析 BOM 与装配方案")
         start.setMinimumHeight(42)
@@ -131,6 +181,11 @@ class MainWindow(QMainWindow):
         layout.addStretch()
         return page
 
+    def _toggle_setup_group(self, button: QPushButton) -> None:
+        visible = not self.setup_group.isVisible()
+        self.setup_group.setVisible(visible)
+        button.setText("收起首次配置" if visible else "查看/修改首次配置")
+
     def _build_confirm_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -146,10 +201,15 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setWidget(self.questions_widget)
         layout.addWidget(scroll)
+        actions = QHBoxLayout()
+        back = QPushButton("返回上一步")
+        back.clicked.connect(lambda: self.pages.setCurrentWidget(self.input_page))
+        actions.addWidget(back)
         confirm = QPushButton("确认并开始生成")
         confirm.setMinimumHeight(42)
         confirm.clicked.connect(self._confirm_and_generate)
-        layout.addWidget(confirm)
+        actions.addWidget(confirm, 1)
+        layout.addLayout(actions)
         return page
 
     def _build_progress_page(self) -> QWidget:
@@ -159,39 +219,83 @@ class MainWindow(QMainWindow):
         self.progress_title.setStyleSheet("font-size: 22px; font-weight: 600;")
         self.progress_detail = QLabel("任务会在后台独立进程执行，可以安全续跑。")
         self.progress_detail.setWordWrap(True)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("%p%")
         layout.addWidget(self.progress_title)
         layout.addWidget(self.progress_detail)
+        layout.addWidget(self.progress_bar)
+        self.progress_back_button = QPushButton("返回上一步")
+        self.progress_back_button.clicked.connect(self._back_from_progress)
+        layout.addWidget(self.progress_back_button)
         resume = QPushButton("继续当前任务")
         resume.clicked.connect(self._resume)
         layout.addWidget(resume)
         pause = QPushButton("暂停（保留检查点）")
         pause.clicked.connect(self._pause)
         layout.addWidget(pause)
-        review = QPushButton("处理疑惑步骤")
-        review.clicked.connect(lambda: self.pages.setCurrentWidget(self.review_page))
-        layout.addWidget(review)
+        self.review_button = QPushButton("处理疑惑步骤")
+        self.review_button.setEnabled(False)
+        self.review_button.clicked.connect(lambda: self.pages.setCurrentWidget(self.review_page))
+        layout.addWidget(self.review_button)
         layout.addStretch()
         return page
 
     def _build_review_page(self) -> QWidget:
         page = QWidget()
-        layout = QFormLayout(page)
-        self.review_step = QLineEdit()
-        self.review_candidate = QLineEdit()
+        layout = QVBoxLayout(page)
+        heading = QLabel("处理待确认步骤")
+        heading.setStyleSheet("font-size: 22px; font-weight: 600;")
+        layout.addWidget(heading)
+        self.review_guidance = QLabel()
+        self.review_guidance.setWordWrap(True)
+        layout.addWidget(self.review_guidance)
+        body = QHBoxLayout()
         self.candidate_gallery = QListWidget()
-        self.candidate_gallery.setIconSize(QSize(220, 160))
+        self.candidate_gallery.setMinimumWidth(300)
         self.candidate_gallery.itemClicked.connect(self._candidate_clicked)
+        body.addWidget(self.candidate_gallery, 1)
+        preview_column = QVBoxLayout()
+        self.review_preview = QLabel("请选择左侧步骤或候选图")
+        self.review_preview.setAlignment(Qt.AlignCenter)
+        self.review_preview.setMinimumSize(480, 300)
+        self.review_preview.setStyleSheet("border: 1px solid #666; background: #111;")
+        preview_column.addWidget(self.review_preview, 1)
+        self.review_reason = QLabel("选中后显示检查结果。")
+        self.review_reason.setWordWrap(True)
+        preview_column.addWidget(self.review_reason)
+        self.review_image_path = QLineEdit()
+        self.review_image_path.setReadOnly(True)
+        self.review_image_path.setPlaceholderText("选中后显示图片完整路径")
+        preview_column.addWidget(self.review_image_path)
+        body.addLayout(preview_column, 2)
+        layout.addLayout(body, 1)
         self.review_instruction = QTextEdit()
-        layout.addRow("步骤 ID", self.review_step)
-        layout.addRow("候选图片", self.candidate_gallery)
-        layout.addRow("候选图 ID", self.review_candidate)
-        layout.addRow("或输入修正", self.review_instruction)
-        choose = QPushButton("按候选图重新生成")
-        choose.clicked.connect(self._resolve_candidate)
-        instruct = QPushButton("按文字说明重新生成")
-        instruct.clicked.connect(self._resolve_instruction)
-        layout.addRow(choose)
-        layout.addRow(instruct)
+        self.review_instruction.setPlaceholderText(
+            "例如：以安装部位为中心放大；箭头指向右侧接口；改用正视图。"
+        )
+        self.review_instruction.setMaximumHeight(100)
+        layout.addWidget(QLabel("对当前步骤的修正说明（普通语言即可）"))
+        layout.addWidget(self.review_instruction)
+        actions = QHBoxLayout()
+        back = QPushButton("返回上一步")
+        back.clicked.connect(lambda: self.pages.setCurrentWidget(self.progress_page))
+        self.choose_candidate_button = QPushButton("采用选中的候选图")
+        self.choose_candidate_button.setEnabled(False)
+        self.choose_candidate_button.clicked.connect(self._resolve_candidate)
+        self.instruct_button = QPushButton("按说明重新生成当前步骤")
+        self.instruct_button.setEnabled(False)
+        self.instruct_button.clicked.connect(self._resolve_instruction)
+        self.open_delivery_button = QPushButton("打开交付目录")
+        self.open_delivery_button.clicked.connect(self._open_delivery_directory)
+        actions.addWidget(back)
+        actions.addWidget(self.choose_candidate_button)
+        actions.addWidget(self.instruct_button)
+        actions.addWidget(self.open_delivery_button)
+        layout.addLayout(actions)
+        self.current_review_item: dict | None = None
+        self.review_delivery_directory = ""
         return page
 
     def _choose_bom(self) -> None:
@@ -212,6 +316,8 @@ class MainWindow(QMainWindow):
         if not bom.is_file() or not cad.is_dir():
             self._show_error("请选择有效的 BOM 文件和 CAD 文件夹。")
             return
+        self.current_run_id = None
+        self.progress_started_at = datetime.now(timezone.utc).isoformat()
         creo_path = self.creo_path.text().strip()
         license_path = self.license_path.text().strip()
         if not creo_path or not license_path:
@@ -220,7 +326,7 @@ class MainWindow(QMainWindow):
         dashscope_key = self.dashscope_key.text().strip() or os.environ.get(
             "DASHSCOPE_API_KEY", ""
         ).strip()
-        if not dashscope_key:
+        if not dashscope_key and not self.experience_mode.isChecked():
             self._show_error("首次使用请填写 DashScope Key，用于 Qwen 工艺理解和图片复核。")
             return
         self.settings.setValue("creo_path", self.creo_path.text().strip())
@@ -228,13 +334,25 @@ class MainWindow(QMainWindow):
         self.settings.setValue("excel_path", self.excel_path.text().strip())
         os.environ["QWEN_CREO_LOADPOINT"] = creo_path
         os.environ["QWEN_CREO_LICENSE_FILE"] = license_path
-        os.environ["DASHSCOPE_API_KEY"] = dashscope_key
+        if dashscope_key:
+            os.environ["DASHSCOPE_API_KEY"] = dashscope_key
+        if self.experience_mode.isChecked():
+            os.environ["QWEN_CREO_EXPERIENCE_MODE"] = "1"
+        else:
+            os.environ.pop("QWEN_CREO_EXPERIENCE_MODE", None)
         self.progress_title.setText("正在理解 BOM 与 CAD")
+        self.progress_bar.setValue(0)
+        self.progress_previous_page = self.input_page
+        self._set_operation_active(True)
         self.pages.setCurrentWidget(self.progress_page)
+        self.review_button.setEnabled(False)
+        self.progress_timer.start()
         self.bridge.succeeded.connect(self._analysis_ready, Qt.SingleShotConnection)
         self.bridge.watch(self.service.start_analysis(bom, cad))
 
     def _analysis_ready(self, result: dict) -> None:
+        self._set_operation_active(False)
+        self.progress_timer.stop()
         self.current_run_id = result["run_id"]
         recent = [self.current_run_id] + [
             self.history_runs.itemText(index)
@@ -282,60 +400,94 @@ class MainWindow(QMainWindow):
         }
         self.progress_title.setText("正在生成 SOP")
         self.progress_detail.setText("单个步骤失败不会停止无关步骤。")
+        self.progress_previous_page = self.confirm_page
+        self._set_operation_active(True)
         self.pages.setCurrentWidget(self.progress_page)
+        self.progress_timer.start()
         self.bridge.succeeded.connect(self._generation_ready, Qt.SingleShotConnection)
         self.bridge.watch(
             self.service.confirm_and_generate(self.current_run_id, answers)
         )
 
     def _generation_ready(self, outcome: dict) -> None:
+        self._set_operation_active(False)
+        self.progress_timer.stop()
         status = outcome.get("status", "")
         if status == "COMPLETED":
             self.progress_title.setText("生成完成")
+            self.progress_bar.setValue(100)
             self.progress_detail.setText(
                 f"交付结果：{outcome.get('delivery_directory', '')}"
             )
+            self.review_button.setEnabled(False)
         else:
             self.progress_title.setText("部分步骤需要确认")
             self.progress_detail.setText("其他步骤已继续生成，请处理疑惑步骤。")
             self._load_candidate_gallery(outcome)
+            self.review_button.setEnabled(True)
+            self.pages.setCurrentWidget(self.review_page)
 
     def _load_candidate_gallery(self, outcome: dict) -> None:
         self.candidate_gallery.clear()
-        delivery = outcome.get("delivery_directory")
-        if not delivery:
+        self.current_review_item = None
+        self.choose_candidate_button.setEnabled(False)
+        self.instruct_button.setEnabled(False)
+        if not self.current_run_id:
+            self.review_guidance.setText("当前没有可处理的任务。")
             return
-        image_directory = Path(delivery) / "步骤图片"
-        questioned = {
-            str(step.get("step_id"))
-            for step in outcome.get("steps", [])
-            if step.get("status") in {"QUESTIONED", "FAILED"}
-        }
-        if not image_directory.is_dir():
-            return
-        for image_path in sorted(image_directory.iterdir()):
-            if not image_path.is_file():
-                continue
-            for step_id in questioned:
-                marker = f"-{step_id}-"
-                if marker not in image_path.stem:
-                    continue
-                candidate_id = image_path.stem.split(marker, 1)[1]
-                item = QListWidgetItem(QIcon(str(image_path)), f"{step_id} · {candidate_id}")
-                item.setData(Qt.UserRole, (step_id, candidate_id))
-                self.candidate_gallery.addItem(item)
-                break
+        packet = self.service.review_packet(self.current_run_id)
+        self.review_guidance.setText(str(packet.get("message", "")))
+        self.review_delivery_directory = str(
+            packet.get("delivery_directory", outcome.get("delivery_directory", ""))
+        )
+        self.open_delivery_button.setEnabled(bool(self.review_delivery_directory))
+        for entry in packet.get("items", []):
+            item = QListWidgetItem(str(entry.get("label", entry.get("step_id", ""))))
+            item.setData(Qt.UserRole, dict(entry))
+            self.candidate_gallery.addItem(item)
+        if self.candidate_gallery.count():
+            self.candidate_gallery.setCurrentRow(0)
+            self._candidate_clicked(self.candidate_gallery.item(0))
+        else:
+            self.review_preview.setText("没有待处理步骤")
+            self.review_image_path.clear()
+            self.review_reason.setText("本任务没有可供选择或重新生成的步骤。")
 
     def _candidate_clicked(self, item: QListWidgetItem) -> None:
-        step_id, candidate_id = item.data(Qt.UserRole)
-        self.review_step.setText(step_id)
-        self.review_candidate.setText(candidate_id)
+        entry = dict(item.data(Qt.UserRole) or {})
+        self.current_review_item = entry
+        image_path = str(entry.get("image_path", ""))
+        self.review_image_path.setText(image_path)
+        issues = entry.get("issues", [])
+        self.review_reason.setText(
+            "检查说明：" + ("；".join(str(issue) for issue in issues) if issues else "需要人工确认图片表现。")
+        )
+        pixmap = QPixmap(image_path) if image_path else QPixmap()
+        if pixmap.isNull():
+            self.review_preview.setPixmap(QPixmap())
+            self.review_preview.setText("图片文件不存在，请按说明重新生成此步骤。")
+        else:
+            self.review_preview.setText("")
+            self.review_preview.setPixmap(
+                pixmap.scaled(
+                    self.review_preview.size(),
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation,
+                )
+            )
+        is_candidate = entry.get("kind") == "candidate"
+        self.choose_candidate_button.setEnabled(is_candidate)
+        self.instruct_button.setEnabled(bool(entry.get("step_id")))
 
     def _resume(self) -> None:
         if not self.current_run_id:
             self._show_error("没有可继续的任务。")
             return
+        if self.progress_previous_page is None:
+            self.progress_previous_page = self.input_page
+        self._set_operation_active(True)
         self.bridge.succeeded.connect(self._generation_ready, Qt.SingleShotConnection)
+        self.progress_timer.start()
         self.bridge.watch(self.service.resume(self.current_run_id))
 
     def _resume_history(self) -> None:
@@ -344,44 +496,96 @@ class MainWindow(QMainWindow):
             self._show_error("没有历史任务。")
             return
         self.current_run_id = run_id
+        self.progress_previous_page = self.input_page
         self.pages.setCurrentWidget(self.progress_page)
         self._resume()
 
     def _pause(self) -> None:
         if self.service.pause():
+            self._set_operation_active(False)
             self.progress_title.setText("正在安全暂停")
             self.progress_detail.setText("已请求停止后台进程；下次继续将从检查点恢复。")
         else:
             self.progress_detail.setText("当前没有正在执行的后台任务。")
 
     def _resolve_candidate(self) -> None:
-        if not self.current_run_id:
+        entry = self.current_review_item or {}
+        if not self.current_run_id or entry.get("kind") != "candidate":
+            self._show_error("请先从左侧选择一张候选图。")
             return
+        self.progress_previous_page = self.review_page
+        self._set_operation_active(True)
         self.bridge.succeeded.connect(self._generation_ready, Qt.SingleShotConnection)
+        self.progress_timer.start()
         self.bridge.watch(
             self.service.resolve_candidate(
                 self.current_run_id,
-                self.review_step.text().strip(),
-                self.review_candidate.text().strip(),
+                str(entry.get("step_id", "")),
+                str(entry.get("candidate_id", "")),
             )
         )
         self.pages.setCurrentWidget(self.progress_page)
 
     def _resolve_instruction(self) -> None:
-        if not self.current_run_id:
+        entry = self.current_review_item or {}
+        instruction = self.review_instruction.toPlainText().strip()
+        if not self.current_run_id or not entry.get("step_id"):
+            self._show_error("请先从左侧选择要重新生成的步骤。")
             return
+        if not instruction:
+            self._show_error("请先输入对当前步骤的修正说明。")
+            return
+        self.progress_previous_page = self.review_page
+        self._set_operation_active(True)
         self.bridge.succeeded.connect(self._generation_ready, Qt.SingleShotConnection)
+        self.progress_timer.start()
         self.bridge.watch(
             self.service.resolve_instruction(
                 self.current_run_id,
-                self.review_step.text().strip(),
-                self.review_instruction.toPlainText().strip(),
+                str(entry.get("step_id", "")),
+                instruction,
             )
         )
         self.pages.setCurrentWidget(self.progress_page)
 
+    def _open_delivery_directory(self) -> None:
+        if self.review_delivery_directory:
+            QDesktopServices.openUrl(
+                QUrl.fromLocalFile(self.review_delivery_directory)
+            )
+
     def _show_error(self, message: str) -> None:
+        self._set_operation_active(False)
+        self.progress_timer.stop()
         QMessageBox.critical(self, "Qwen Creo SOP Agent", message)
+
+    def _set_operation_active(self, active: bool) -> None:
+        self.operation_active = active
+        if hasattr(self, "progress_back_button"):
+            self.progress_back_button.setEnabled(not active)
+            self.progress_back_button.setToolTip(
+                "" if not active else "后台任务运行中；请先暂停，再返回上一步。"
+            )
+
+    def _back_from_progress(self) -> None:
+        if self.operation_active:
+            return
+        self.pages.setCurrentWidget(self.progress_previous_page or self.input_page)
+
+    def _refresh_progress(self) -> None:
+        snapshot = self.service.progress_snapshot(self.current_run_id)
+        if (
+            self.current_run_id is None
+            and self.progress_started_at
+            and str(snapshot.get("updated_at", "")) < self.progress_started_at
+        ):
+            return
+        percent = max(0, min(100, int(snapshot.get("percent", 0))))
+        self.progress_bar.setValue(percent)
+        stage = str(snapshot.get("stage", "正在处理"))
+        detail = str(snapshot.get("detail", ""))
+        self.progress_title.setText(stage)
+        self.progress_detail.setText(detail)
 
     def dragEnterEvent(self, event) -> None:
         if event.mimeData().hasUrls():
@@ -407,12 +611,36 @@ def main() -> int:
         return worker_main(worker_args)
     app = QApplication(sys.argv)
     app.setApplicationName("Qwen Creo SOP Agent")
-    local_data = Path(os.environ.get("LOCALAPPDATA", Path.home()))
-    workspace = local_data / "QwenCreoSopAgent"
+    workspace_override = os.environ.get("QWEN_CREO_AGENT_WORKSPACE", "").strip()
+    if workspace_override:
+        workspace = Path(workspace_override).expanduser().resolve()
+    else:
+        local_data = Path(os.environ.get("LOCALAPPDATA", Path.home()))
+        workspace = local_data / "QwenCreoSopAgent"
     service = DesktopAgentService(SubprocessAgentBackend(workspace))
     window = MainWindow(service)
     window.show()
     return app.exec()
+
+
+def _runtime_config_defaults() -> dict[str, str]:
+    defaults = {"creo_loadpoint": "", "license_file": ""}
+    config_path = os.environ.get("QWEN_CREO_RUNTIME_CONFIG", "").strip()
+    if not config_path:
+        return defaults
+    try:
+        payload = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return defaults
+    for key in defaults:
+        value = payload.get(key)
+        if isinstance(value, str):
+            defaults[key] = value.strip()
+    return defaults
+
+
+def _environment_paths_are_ready(creo_path: str, license_path: str) -> bool:
+    return Path(creo_path.strip()).is_dir() and Path(license_path.strip()).is_file()
 
 
 if __name__ == "__main__":

@@ -13,6 +13,8 @@ import time
 from typing import Any, Protocol
 from uuid import uuid4
 
+from .bundle_paths import bundled_creo_script
+
 
 SUPPORTED_SCHEMA = "creo-cad-graph/v3"
 
@@ -166,10 +168,7 @@ class PowerShellCreoDiscovery:
 
 
 def bundled_discovery_script() -> Path:
-    frozen_root = getattr(sys, "_MEIPASS", None)
-    if frozen_root:
-        return Path(frozen_root) / "creo_java" / "run_input_discovery.ps1"
-    return Path(__file__).resolve().parents[3] / "creo_java" / "run_input_discovery.ps1"
+    return bundled_creo_script("run_input_discovery.ps1")
 
 
 def powershell_command() -> str:

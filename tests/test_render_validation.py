@@ -195,6 +195,25 @@ class RenderValidationTests(unittest.TestCase):
         self.assertGreater(report.composition.max_span_fraction, 0.54)
         self.assertGreater(report.arrow_raster.pixels, 120)
 
+    def test_native_gate_does_not_treat_arrowhead_fragments_as_extra_arrows(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            image, audit = _write_native_files(root, (250, 300, 1200, 1150))
+            with Image.open(image) as source:
+                frame = source.convert("RGB")
+            draw = ImageDraw.Draw(frame)
+            draw.line((675, 600, 925, 600), fill=(0, 150, 0), width=8)
+            draw.line((675, 1000, 925, 1000), fill=(0, 150, 0), width=8)
+            frame.save(image)
+
+            report = DeterministicNativeRenderValidator().validate(
+                image, audit, _native_payload()
+            )
+
+        self.assertNotIn("ARROW_RASTER_AUDIT_MISMATCH", report.failures)
+        self.assertTrue(report.passed, report.failures)
+        self.assertEqual(report.arrow_raster.significant_components, 3)
+
     def test_native_gate_distinguishes_missing_and_small_subjects(self) -> None:
         validator = DeterministicNativeRenderValidator()
         with tempfile.TemporaryDirectory() as folder:

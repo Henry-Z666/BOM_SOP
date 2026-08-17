@@ -45,6 +45,7 @@ def compile_locked_render_jobs(plan: FormalRenderPlan) -> RenderPlan:
                 ),
             },
             "plan_index": index,
+            "title": step.title,
             "execution_mode": mode,
             "stage_scope_occurrence": step.stage_scope_occurrence,
             "moving_occurrences": list(step.moving_occurrences),
@@ -65,8 +66,9 @@ def compile_locked_render_jobs(plan: FormalRenderPlan) -> RenderPlan:
             "repair_space": {
                 "camera_ids": list(step.allowed_camera_ids),
                 "explosion_scales": [0.85, 1.0, 1.15],
-                "pan_offsets": [[0, 0], [-80, 0], [80, 0], [0, -80], [0, 80]],
-                "zoom_scales": [0.8, 0.85, 1.0, 1.5, 2.1],
+                "pan_offsets": [[0, 0]],
+                "zoom_scales": [1.0],
+                "framing_repairs": "frozen_pending_scale_derivation/v1",
             },
         }
         tasks.append(
@@ -187,6 +189,7 @@ def _compile_presentation(step: FormalRenderStep) -> dict[str, Any]:
             "focus_context": "stage_visible_bbox/v1",
             "framing_priority": "installation_activity/v1",
             "zoom_anchor": "installation_activity_center/v1",
+            "framing_profile": _framing_profile_contract(),
             "centering": _centering_contract(),
             "zoom_recovery": _zoom_recovery_contract(),
             "variants": [],
@@ -197,21 +200,16 @@ def _compile_presentation(step: FormalRenderStep) -> dict[str, Any]:
         "focus_context": "stage_visible_bbox/v1",
         "framing_priority": "installation_activity/v1",
         "zoom_anchor": "installation_activity_center/v1",
+        "framing_profile": _framing_profile_contract(),
         "centering": _centering_contract(),
         "zoom_recovery": _zoom_recovery_contract(),
         "variants": [
             {
-                "variant_id": variant_id,
+                "variant_id": "base",
                 "camera_id": step.camera_id,
-                "zoom": zoom,
+                "zoom": 1.0,
                 "pan": [0.0, 0.0],
             }
-            for variant_id, zoom in (
-                ("base", 1.0),
-                ("zoom-in-50", 1.5),
-                ("zoom-in-110", 2.1),
-                ("zoom-out-15", 0.85),
-            )
         ],
         "frame_gate": _frame_gate(),
     }
@@ -248,6 +246,17 @@ def _centering_contract() -> dict[str, Any]:
         "max_abs_pan": 1.0,
         "max_activity_center_offset_pixels": 120,
         "max_arrow_center_offset_pixels": 120,
+    }
+
+
+def _framing_profile_contract() -> dict[str, Any]:
+    return {
+        "schema_version": "frozen-framing-profile-policy/v1",
+        "policy": "default_refit/v1",
+        "scale_signature": "default/v1",
+        "probe_interface_status": "frozen_pending_scale_derivation/v1",
+        "on_mismatch": "question_step/v1",
+        "future_scale_buckets_supported": True,
     }
 
 

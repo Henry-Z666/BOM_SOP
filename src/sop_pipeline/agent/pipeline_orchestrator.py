@@ -16,6 +16,7 @@ from .models import (
     StepResult,
     StepStatus,
 )
+from .progress import write_progress
 from .skill_handlers import default_skill_handlers
 from .skill_runtime import SkillRuntime
 from .store import RunStore
@@ -31,8 +32,14 @@ class SkillPipelineError(RuntimeError):
 class PipelineOrchestrator:
     """Deterministic Agent pipeline; models advise but never choose transitions."""
 
-    def __init__(self, *, adapters: Mapping[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        adapters: Mapping[str, Any] | None = None,
+        experience_step_limit: int | None = None,
+    ) -> None:
         self.adapters = dict(adapters or {})
+        self.experience_step_limit = experience_step_limit
         self.runtime: SkillRuntime | None = None
 
     def bind(
@@ -109,10 +116,23 @@ class PipelineOrchestrator:
             "compile-render-jobs",
             (f"plans/locked-render-plan-{plan.revision:04d}.json",),
         )
+        render_parameters: dict[str, Any] | None = None
+        if self.experience_step_limit is not None:
+            jobs = self._runtime().artifacts.read_json(
+                run.workspace,
+                f"plans/locked-render-jobs-{plan.revision:04d}.json",
+            )
+            render_parameters = {
+                "step_ids": _representative_formal_step_ids(
+                    jobs, self.experience_step_limit
+                ),
+                "result_scope_contract": "requested/v1",
+            }
         self._run(
             run.run_id,
             "render-batch",
             (f"plans/locked-render-jobs-{plan.revision:04d}.json",),
+            render_parameters,
         )
         self._run(
             run.run_id,
@@ -218,7 +238,32 @@ class PipelineOrchestrator:
         refs: tuple[str, ...] = (),
         parameters: dict[str, Any] | None = None,
     ):
-        result = self._runtime().execute(run_id, skill, refs, parameters)
+        runtime = self._runtime()
+        run = runtime.store.get(run_id)
+        write_progress(
+            run.workspace,
+            run_id=run_id,
+            skill=skill,
+            state="RUNNING",
+        )
+        try:
+            result = runtime.execute(run_id, skill, refs, parameters)
+        except Exception as error:
+            write_progress(
+                run.workspace,
+                run_id=run_id,
+                skill=skill,
+                state="ERROR",
+                message=str(error),
+            )
+            raise
+        write_progress(
+            run.workspace,
+            run_id=run_id,
+            skill=skill,
+            state="COMPLETED",
+            skill_status=result.status.value,
+        )
         if result.status in {SkillStatus.BLOCKED, SkillStatus.RETRYABLE}:
             message = "; ".join(item.message for item in result.diagnostics)
             raise SkillPipelineError(skill, result.status, message or "Skill执行失败")
@@ -266,6 +311,41 @@ def _artifact_path(result, kind: str) -> str:
         if artifact.kind == kind:
             return artifact.relative_path
     raise KeyError(f"Skill结果缺少产物：{kind}")
+
+
+def _representative_formal_step_ids(payload: dict[str, Any], limit: int) -> list[str]:
+    if limit < 1:
+        raise ValueError("experience step limit must be positive")
+    formal = [
+        task
+        for task in payload.get("tasks", [])
+        if task.get("payload", {}).get("execution_mode") == "formal"
+    ]
+    if not formal:
+        raise ValueError("experience mode found no formal render steps")
+    by_camera: dict[str, list[dict[str, Any]]] = {}
+    for task in formal:
+        camera_id = str(task.get("payload", {}).get("camera_id", ""))
+        by_camera.setdefault(camera_id, []).append(task)
+    primary_camera, primary = max(
+        by_camera.items(), key=lambda item: (len(item[1]), item[0])
+    )
+    primary.sort(key=lambda task: (bool(task.get("depends_on")), formal.index(task)))
+    selected = primary[: min(2, limit)]
+    secondary = [
+        task
+        for task in formal
+        if str(task.get("payload", {}).get("camera_id", "")) != primary_camera
+    ]
+    secondary.sort(key=lambda task: (bool(task.get("depends_on")), formal.index(task)))
+    if len(selected) < limit and secondary:
+        selected.append(secondary[0])
+    for task in formal:
+        if len(selected) >= min(limit, len(formal)):
+            break
+        if task not in selected:
+            selected.append(task)
+    return [str(task["step_id"]) for task in selected]
 
 
 def _clarification_packet(payload: dict[str, Any]) -> ClarificationPacket:

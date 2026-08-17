@@ -331,6 +331,31 @@ def _native_task() -> RenderTask:
 
 
 class AgentNativeCreoWorkerTests(unittest.TestCase):
+    def test_native_arrow_display_is_unique_and_cleanup_failure_is_not_ignored(self) -> None:
+        root = Path(__file__).resolve().parents[1] / "creo_java" / "src"
+        projection = (root / "ArrowProjection.java").read_text(encoding="utf-8")
+        renderer = (root / "RenderAssemblyImage.java").read_text(encoding="utf-8")
+
+        self.assertNotIn("CreateDisplayList3D(73101", projection)
+        self.assertIn("AtomicInteger", projection)
+        self.assertNotIn(
+            "if (arrowDisplay != null) try { arrowDisplay.Delete(); } catch (Throwable ignored) {}",
+            renderer,
+        )
+        self.assertIn("ARROW_DISPLAY_CLEANUP_FAILED", renderer)
+
+    def test_native_powershell_chain_propagates_runtime_config(self) -> None:
+        root = Path(__file__).resolve().parents[1] / "creo_java"
+        batch = (root / "run_agent_native_batch.ps1").read_text(encoding="utf-8")
+        worker = (root / "invoke_agent_native_worker.ps1").read_text(encoding="utf-8")
+        legacy = (root / "invoke_agent_native_jlink.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("Get-CreoRuntime -ProjectRoot $projectRoot -ConfigPath $RuntimeConfig", batch)
+        self.assertIn("build.ps1') -RuntimeConfig $runtime.ConfigPath", batch)
+        self.assertEqual(batch.count("-RuntimeConfig \"' + $runtime.ConfigPath + '\"'"), 2)
+        self.assertIn("Get-CreoRuntime -ProjectRoot $ProjectRoot -ConfigPath $RuntimeConfig", worker)
+        self.assertIn("Get-CreoRuntime -ProjectRoot $ProjectRoot -ConfigPath $RuntimeConfig", legacy)
+
     def test_native_framing_has_a_six_raster_hard_budget(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             workspace = Path(folder)
@@ -423,6 +448,32 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         self.assertIn("stop_agent_native_worker.ps1", str(stop_command))
         self.assertFalse(session.native_worker_active)
 
+    def test_native_worker_passes_durable_runtime_config_to_render_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            runtime_config = workspace / "internal" / "creo-runtime.json"
+            runner = PersistentProtocolRunner(
+                workspace / "internal" / "prepared-models"
+            )
+            worker = AgentNativeCreoWorker(
+                powershell="pwsh",
+                batch_script=Path("creo_java/run_agent_native_batch.ps1"),
+                models_root=Path("cad"),
+                render_plan_json=Path("locked-render-jobs.json"),
+                runtime_config=runtime_config,
+                runner=runner,
+            )
+            plan = RenderPlan("render-plan/v2", (_native_task(),))
+
+            attempt = worker.render(worker.open_session(workspace, plan), plan.tasks[0], 1)
+
+        self.assertEqual(attempt.disposition, "passed")
+        command = runner.commands[0]
+        self.assertIn("-RuntimeConfig", command)
+        self.assertEqual(
+            Path(command[command.index("-RuntimeConfig") + 1]), runtime_config
+        )
+
     def test_native_worker_reuses_model_copy_and_validates_arrow_audit(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             workspace = Path(folder)
@@ -496,7 +547,57 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         ]
         self.assertEqual(indexes, ["0", "1"])
 
-    def test_center_failure_batches_probes_and_reuses_persisted_response(self) -> None:
+    def test_default_refit_policy_never_probes_zooms_or_writes_framing_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            task = _native_task()
+            payload = deepcopy(task.payload)
+            payload["presentation"]["framing_profile"] = {
+                "schema_version": "frozen-framing-profile-policy/v1",
+                "policy": "default_refit/v1",
+                "scale_signature": "default/v1",
+                "probe_interface_status": "frozen_pending_scale_derivation/v1",
+            }
+            payload["presentation"]["variants"] = [
+                {
+                    "variant_id": "base",
+                    "camera_id": "fixed_123",
+                    "zoom": 1.0,
+                    "pan": [0.0, 0.0],
+                }
+            ]
+            task = replace(task, payload=payload)
+            runner = NativeRecordingRunner(
+                workspace / "internal" / "prepared-models",
+                first_variant_tiny=True,
+            )
+            worker = AgentNativeCreoWorker(
+                powershell="pwsh",
+                batch_script=Path("native.ps1"),
+                models_root=Path("cad"),
+                render_plan_json=Path("plan.json"),
+                runner=runner,
+            )
+
+            result = worker.render(
+                worker.open_session(workspace, RenderPlan("render-plan/v2", (task,))),
+                task,
+                1,
+            )
+            profile_written = (
+                workspace
+                / "internal"
+                / "screen-centering"
+                / "frozen-framing-profiles.json"
+            ).exists()
+
+        self.assertEqual(result.disposition, "questioned")
+        self.assertEqual(result.error_code, "SUBJECT_TOO_SMALL")
+        self.assertTrue(result.output_hash)
+        self.assertEqual(len(runner.commands), 1)
+        self.assertFalse(profile_written)
+
+    def test_first_camera_calibration_freezes_profile_for_later_steps(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             workspace = Path(folder)
             first_task = _native_task()
@@ -539,17 +640,26 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
                 / "screen-pan-responses.json"
             )
             cache_written = cache_file.is_file()
+            profile_file = (
+                workspace
+                / "internal"
+                / "screen-centering"
+                / "frozen-framing-profiles.json"
+            )
+            profile_written = profile_file.is_file()
             reopened = worker.open_session(workspace, plan)
             second = worker.render(reopened, second_task, 1)
 
         self.assertEqual(first.disposition, "passed")
         self.assertEqual(second.disposition, "passed")
         self.assertTrue(cache_written)
+        self.assertTrue(profile_written)
         counts = [
             command[command.index("-Count") + 1] for command in runner.commands
         ]
-        self.assertEqual(counts, ["1", "2", "1", "1", "1"])
+        self.assertEqual(counts, ["1", "2", "1", "1"])
         self.assertEqual(len(reopened.screen_pan_responses), 1)
+        self.assertEqual(len(reopened.framing_profiles), 1)
 
     def test_offscreen_audited_arrow_enters_bounded_center_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

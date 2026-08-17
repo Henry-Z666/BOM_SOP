@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import tempfile
 import unittest
 
+from sop_pipeline.desktop.backend import SubprocessAgentBackend
 from sop_pipeline.desktop.service import DesktopAgentService
 
 
@@ -46,8 +48,31 @@ class FakeBackend:
         self.calls.append(("pause",))
         return True
 
+    def progress_snapshot(self, run_id=None):
+        return {"available": True, "run_id": run_id, "percent": 62, "stage": "正在出图"}
+
+    def review_packet(self, run_id):
+        return {"run_id": run_id, "items": [{"step_id": "step-2"}]}
+
 
 class DesktopAgentServiceTests(unittest.TestCase):
+    def test_backend_persists_bounded_worker_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            backend = SubprocessAgentBackend(Path(folder))
+            path = backend._persist_worker_log(
+                call_token="abc123",
+                action="generate",
+                run_id="run-1",
+                returncode=1,
+                stdout="normal output",
+                stderr="failure detail",
+            )
+            payload = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["schema_version"], "desktop-agent-worker-log/v1")
+        self.assertEqual(payload["run_id"], "run-1")
+        self.assertEqual(payload["stderr_tail"], "failure detail")
+
     def test_analysis_and_confirm_generate_run_off_the_ui_call_surface(self) -> None:
         backend = FakeBackend()
         service = DesktopAgentService(backend)
@@ -81,6 +106,19 @@ class DesktopAgentServiceTests(unittest.TestCase):
         self.assertTrue(service.pause())
         service.close()
         self.assertEqual(backend.calls, [("pause",)])
+
+    def test_progress_snapshot_is_a_small_synchronous_read_model(self) -> None:
+        service = DesktopAgentService(FakeBackend())
+        snapshot = service.progress_snapshot("run-1")
+        service.close()
+        self.assertEqual(snapshot["percent"], 62)
+        self.assertEqual(snapshot["run_id"], "run-1")
+
+    def test_review_packet_is_loaded_without_manual_ids(self) -> None:
+        service = DesktopAgentService(FakeBackend())
+        packet = service.review_packet("run-1")
+        service.close()
+        self.assertEqual(packet["items"], [{"step_id": "step-2"}])
 
 
 if __name__ == "__main__":

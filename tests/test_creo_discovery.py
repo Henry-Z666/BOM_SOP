@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from sop_pipeline.agent.creo_discovery import (
     PowerShellCreoDiscovery,
     SubprocessDiscoveryRunner,
+    resolve_runtime_config,
 )
 
 
@@ -88,6 +91,21 @@ class FakeDiscoveryRunner:
 
 
 class CreoDiscoveryTests(unittest.TestCase):
+    def test_runtime_config_records_the_active_python_command(self) -> None:
+        with tempfile.TemporaryDirectory() as folder, patch.dict(
+            os.environ,
+            {
+                "QWEN_CREO_LOADPOINT": r"C:\Creo",
+                "QWEN_CREO_LICENSE_FILE": r"C:\Creo\license.dat",
+            },
+            clear=True,
+        ):
+            path = resolve_runtime_config(Path(folder))
+            assert path is not None
+            payload = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["python_command"], sys.executable)
+
     def test_completion_marker_bounds_a_hung_outer_process(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

@@ -66,6 +66,7 @@ class RasterCompositionMetrics:
 class ArrowRasterMetrics:
     bbox: tuple[int, int, int, int] | None
     pixels: int
+    significant_components: int
     max_span_pixels: int
     border_margin_pixels: int | None
     center_pixel: tuple[float, float] | None
@@ -250,7 +251,10 @@ class DeterministicNativeRenderValidator:
         if metrics.subject_bbox is None:
             failures.append("SUBJECT_NOT_DETECTED")
             return metrics, _arrow_raster_metrics(
-                pixels, green_delta=arrow_green_delta, target_pixel=target_pixel
+                pixels,
+                green_delta=arrow_green_delta,
+                target_pixel=target_pixel,
+                min_component_pixels=max(16, min_arrow_pixels // 4),
             )
         if metrics.max_span_fraction < min_span:
             failures.append("SUBJECT_TOO_SMALL")
@@ -259,7 +263,10 @@ class DeterministicNativeRenderValidator:
         if len(metrics.clipped_edges) > max_clipped_edges:
             failures.append("EXCESSIVE_CONTEXT_CLIPPING")
         arrow_metrics = _arrow_raster_metrics(
-            pixels, green_delta=arrow_green_delta, target_pixel=target_pixel
+            pixels,
+            green_delta=arrow_green_delta,
+            target_pixel=target_pixel,
+            min_component_pixels=max(16, min_arrow_pixels // 4),
         )
         if arrow_metrics.bbox is None:
             failures.append("ARROW_NOT_VISIBLE")
@@ -334,29 +341,29 @@ class DeterministicNativeRenderValidator:
         audit_file: Path,
         payload: dict[str, Any],
         failures: list[str],
-    ) -> None:
+    ) -> int | None:
         try:
             audit = json.loads(audit_file.read_text(encoding="utf-8"))
         except (OSError, ValueError, json.JSONDecodeError):
             failures.append("ARROW_AUDIT_INVALID")
-            return
+            return None
         if not isinstance(audit, dict) or (
             audit.get("schema_version") != "arrow-projection/v1"
             or audit.get("policy") != "same_cad_point/v1"
             or audit.get("status") != "passed"
         ):
             failures.append("ARROW_AUDIT_INVALID")
-            return
+            return None
         arrows = audit.get("arrows")
         if not isinstance(arrows, list) or not arrows:
             failures.append("ARROW_COVERAGE_INVALID")
-            return
+            return None
         expected_translation = payload.get("translation_vector_root")
         if not isinstance(expected_translation, (list, tuple)) or len(
             expected_translation
         ) != 3:
             failures.append("TRANSLATION_AUDIT_INVALID")
-            return
+            return None
         covered: list[str] = []
         for arrow in arrows:
             if not isinstance(arrow, dict):
@@ -403,6 +410,7 @@ class DeterministicNativeRenderValidator:
             str(value) for value in payload.get("moving_occurrences", [])
         ):
             failures.append("ARROW_COVERAGE_INVALID")
+        return len(arrows)
 
 
 class DeterministicRenderValidator:
@@ -623,6 +631,7 @@ def _arrow_raster_metrics(
     *,
     green_delta: int,
     target_pixel: tuple[int, int],
+    min_component_pixels: int,
 ) -> ArrowRasterMetrics:
     values = pixels.astype(np.int16)
     red, green, blue = values[:, :, 0], values[:, :, 1], values[:, :, 2]
@@ -633,7 +642,10 @@ def _arrow_raster_metrics(
     )
     y_values, x_values = np.nonzero(mask)
     if not len(x_values):
-        return ArrowRasterMetrics(None, 0, 0, None, None, None)
+        return ArrowRasterMetrics(None, 0, 0, 0, None, None, None)
+    significant_components = len(
+        _significant_components(mask, min_component_pixels)
+    )
     x0, x1 = int(x_values.min()), int(x_values.max())
     y0, y1 = int(y_values.min()), int(y_values.max())
     height, width, _ = pixels.shape
@@ -644,6 +656,7 @@ def _arrow_raster_metrics(
     return ArrowRasterMetrics(
         bbox=(x0, y0, x1, y1),
         pixels=int(len(x_values)),
+        significant_components=significant_components,
         max_span_pixels=max(x1 - x0 + 1, y1 - y0 + 1),
         border_margin_pixels=min(x0, y0, width - 1 - x1, height - 1 - y1),
         center_pixel=center_pixel,

@@ -8,6 +8,7 @@ param(
   [string]$PreparedModelsRoot = '',
   [string]$RunWorkspaceRoot = '',
   [string]$WorkerRoot = '',
+  [string]$RuntimeConfig = '',
   # This is an internal render-command failsafe.  The Python scheduler owns
   # the product contract and restarts the Worker after 20 formal tasks; one
   # formal task may legitimately consume many probe/correction commands.
@@ -21,7 +22,7 @@ $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 $projectRoot = Split-Path -Parent $here
 . (Join-Path $here 'RuntimeConfig.ps1')
-$runtime = Get-CreoRuntime -ProjectRoot $projectRoot
+$runtime = Get-CreoRuntime -ProjectRoot $projectRoot -ConfigPath $RuntimeConfig
 
 $sourceRoot = (Resolve-Path -LiteralPath $ModelsRoot).Path
 $planPath = (Resolve-Path -LiteralPath $RenderPlanJson).Path
@@ -170,6 +171,18 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   }
   $cameraSpec += ',PAN:' + $panX.ToString('G17', $culture) + ':' + $panY.ToString('G17', $culture)
   $focusOccurrences = @($moving + $receivers | Sort-Object -Unique)
+  $anchorRows = New-Object Collections.Generic.List[string]
+  foreach ($anchor in @($payload.arrow_anchors)) {
+    $anchorOccurrence = [string]$anchor.occurrence_id
+    $anchorPoint = @($anchor.complete_point_root)
+    if ($moving -notcontains $anchorOccurrence -or $anchorPoint.Count -ne 3) {
+      throw "Task $taskId has an invalid planned arrow anchor."
+    }
+    $anchorRows.Add($anchorOccurrence + '=' + (& $formatVector $anchorPoint))
+  }
+  if ($anchorRows.Count -ne $moving.Count) {
+    throw "Task $taskId does not have one planned arrow anchor per moving occurrence."
+  }
   $image = Join-Path $output ($taskId + '.jpg')
   $audit = Join-Path $output ($taskId + '.arrow.json')
   Remove-Item -LiteralPath $image,$audit -Force -ErrorAction SilentlyContinue
@@ -182,7 +195,8 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
     ($visible -join ';'),
     $cameraSpec,
     $audit,
-    ($focusOccurrences -join ';')
+    ($focusOccurrences -join ';'),
+    ($anchorRows -join ';')
   ) -join "`t"))
   $renderedFiles.Add($image)
   $auditFiles.Add($audit)
@@ -197,7 +211,7 @@ $workerSource = Join-Path $here 'src\NativeArrowWorker.java'
 if (-not (Test-Path -LiteralPath $nativeClass) -or -not (Test-Path -LiteralPath $workerClass) -or
     (Get-Item $nativeSource).LastWriteTimeUtc -gt (Get-Item $nativeClass).LastWriteTimeUtc -or
     (Get-Item $workerSource).LastWriteTimeUtc -gt (Get-Item $workerClass).LastWriteTimeUtc) {
-  & (Join-Path $here 'build.ps1')
+  & (Join-Path $here 'build.ps1') -RuntimeConfig $runtime.ConfigPath
   if ($LASTEXITCODE -ne 0) { throw 'J-Link build failed.' }
 }
 $manifest = Join-Path $internalRoot ('native-arrow-' + [guid]::NewGuid().ToString('N') + '.tsv')
@@ -259,6 +273,7 @@ if ($WorkerRoot) {
     $launcher = Join-Path $here 'invoke_agent_native_worker.ps1'
     $launcherArguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $launcher + '"'
     $launcherArguments += ' -ProjectRoot "' + $projectRoot + '"'
+    $launcherArguments += ' -RuntimeConfig "' + $runtime.ConfigPath + '"'
     $launcherArguments += ' -PreparedModelsRoot "' + $prepared + '"'
     $launcherArguments += ' -PreparedAssembly "' + $preparedAssembly + '"'
     $launcherArguments += ' -WorkerGenerationRoot "' + $generation + '"'
@@ -344,6 +359,7 @@ else {
   $launcher = Join-Path $here 'invoke_agent_native_jlink.ps1'
   $launcherArguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $launcher + '"'
   $launcherArguments += ' -ProjectRoot "' + $projectRoot + '"'
+  $launcherArguments += ' -RuntimeConfig "' + $runtime.ConfigPath + '"'
   $launcherArguments += ' -PreparedModelsRoot "' + $prepared + '"'
   $launcherArguments += ' -PreparedAssembly "' + $preparedAssembly + '"'
   $launcherArguments += ' -Manifest "' + $manifest + '"'

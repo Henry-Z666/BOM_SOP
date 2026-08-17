@@ -280,8 +280,13 @@ class QwenAdvisor:
         minimized_context: dict[str, Any],
     ) -> SemanticReview:
         prompt = (
-            "Evaluate whether the moving item, receiving location, and installation "
-            "boundary are readable. Do not infer hidden geometry. Return JSON as "
+            "The deterministic geometry gate has already verified the model occurrences, "
+            "visibility set, camera, pure translation, and native-arrow endpoint math. "
+            "Review only whether the shown installation action is visually readable for "
+            "an SOP reader. Do not fail merely because occurrence IDs, receiver outlines, "
+            "or installation-boundary labels are not printed on the image. Question the "
+            "image only when the moving part/arrow/receiver relationship is visibly "
+            "occluded, contradictory, or genuinely ambiguous. Return JSON as "
             '{"passed": boolean, "issues": [short strings]}. Context: '
             + json.dumps(minimized_context, ensure_ascii=False, sort_keys=True)
         )

@@ -54,16 +54,43 @@ class CandidateWorker(ImageWorker):
         return RenderAttempt.questioned(tuple(hashes))
 
 
+class PresentationWarningWorker(ImageWorker):
+    def render(self, session, task, attempt):
+        del attempt
+        self.calls.append(task.step_id)
+        image = session / f"{task.task_id}.jpg"
+        Image.new("RGB", (1600, 1600), "white").save(image)
+        return RenderAttempt.reviewable(
+            "sha256:" + sha256(image.read_bytes()).hexdigest(),
+            "SUBJECT_TOO_SMALL",
+        )
+
+
 class RecoveringWorker(ImageWorker):
     def __init__(self) -> None:
         super().__init__()
         self.fail = True
+        self.failed_step: str | None = None
 
     def render(self, session, task, attempt):
         self.calls.append(task.step_id)
-        if self.fail:
-            return RenderAttempt.retryable("CREO_TEST_FAILURE")
+        if self.failed_step is None:
+            self.failed_step = task.step_id
+        if self.fail and task.step_id == self.failed_step:
+            hashes = []
+            for index, shade in enumerate((225, 205), start=1):
+                image = session / f"{task.task_id}-candidate-{index}.jpg"
+                Image.new("RGB", (1600, 1600), (shade, shade, shade)).save(image)
+                hashes.append("sha256:" + sha256(image.read_bytes()).hexdigest())
+            return RenderAttempt.questioned(tuple(hashes), "CREO_TEST_FAILURE")
         return super().render(session, task, attempt)
+
+
+class AlwaysFailingWorker(ImageWorker):
+    def render(self, session, task, attempt):
+        del session
+        self.calls.append(task.step_id)
+        return RenderAttempt.retryable("CREO_RUNTIME_CONFIG_MISSING")
 
 
 class FakeAdvisor:
@@ -77,7 +104,7 @@ class FakeAdvisor:
             revision,
             step_id,
             RevisionKind.PRESENTATION,
-            {"zoom": 1.1},
+            {"arrow_layout": "spread"},
         )
 
 
@@ -179,6 +206,70 @@ def _fixture(root: Path):
 
 
 class PipelineOrchestratorTests(unittest.TestCase):
+    def test_qwen_can_accept_real_image_with_only_presentation_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            bom, cad, graph = _fixture(root)
+            worker = PresentationWarningWorker()
+            core = AgentCore(
+                root / "workspace",
+                PipelineOrchestrator(
+                    adapters={
+                        "creo_discovery": StaticCreoDiscovery(graph),
+                        "render_worker": worker,
+                        "qwen_advisor": FakeAdvisor(),
+                    }
+                ),
+            )
+            run_id = core.create_run(bom, cad)
+            packet = core.analyze(run_id)
+            core.confirm(
+                run_id,
+                {
+                    item.item_id: item.recommended_option
+                    for item in packet.items
+                    if item.category == "CONFIRMATION"
+                },
+            )
+
+            outcome = core.generate(run_id)
+
+        self.assertEqual(outcome.status, RunStatus.COMPLETED)
+        self.assertTrue(worker.calls)
+
+    def test_zero_success_render_batch_blocks_before_placeholder_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            bom, cad, graph = _fixture(root)
+            worker = AlwaysFailingWorker()
+            core = AgentCore(
+                root / "workspace",
+                PipelineOrchestrator(
+                    adapters={
+                        "creo_discovery": StaticCreoDiscovery(graph),
+                        "render_worker": worker,
+                        "qwen_advisor": FakeAdvisor(),
+                    }
+                ),
+            )
+            run_id = core.create_run(bom, cad)
+            packet = core.analyze(run_id)
+            core.confirm(
+                run_id,
+                {
+                    item.item_id: item.recommended_option
+                    for item in packet.items
+                    if item.category == "CONFIRMATION"
+                },
+            )
+
+            with self.assertRaisesRegex(SkillPipelineError, "零张"):
+                core.generate(run_id)
+
+            run = core.get_run(run_id)
+            self.assertEqual(run.status, RunStatus.BLOCKED_SYSTEM)
+            self.assertFalse((run.workspace / "delivery" / "SOP.xlsx").exists())
+
     def test_agent_executes_real_skill_chain_through_public_interface(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -294,12 +385,12 @@ class PipelineOrchestratorTests(unittest.TestCase):
 
             completed = core.resolve(
                 run_id,
-                StepResolution(step_id=target.step_id, instruction="主体稍微放大"),
+                StepResolution(step_id=target.step_id, instruction="调整箭头布局"),
             )
 
             self.assertEqual(pending.status, RunStatus.NEEDS_REVIEW)
             self.assertEqual(completed.status, RunStatus.COMPLETED)
-            self.assertEqual(worker.calls.count(target.step_id), 5)
+            self.assertEqual(worker.calls.count(target.step_id), 3)
 
     def test_qwen_review_outage_is_retryable_and_reuses_render(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

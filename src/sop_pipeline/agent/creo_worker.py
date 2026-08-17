@@ -87,6 +87,16 @@ class SubprocessCommandRunner:
 
 
 @dataclass
+class FrozenFramingProfile:
+    camera_id: str
+    zoom: float
+    pan: tuple[float, float]
+    scale_signature: str
+    source_task_id: str
+    subject_span_fraction: float
+
+
+@dataclass
 class CreoSession:
     output_directory: Path
     internal_directory: Path | None = None
@@ -96,6 +106,7 @@ class CreoSession:
     presentation_variant_by_task: dict[str, int] = field(default_factory=dict)
     attempted_presentation_variants: dict[str, set[int]] = field(default_factory=dict)
     screen_pan_responses: dict[str, ScreenPanResponse] = field(default_factory=dict)
+    framing_profiles: dict[str, FrozenFramingProfile] = field(default_factory=dict)
     render_frames_by_task: dict[str, int] = field(default_factory=dict)
 
 
@@ -118,6 +129,7 @@ class AgentNativeCreoWorker:
         batch_script: Path,
         models_root: Path,
         render_plan_json: Path,
+        runtime_config: Path | None = None,
         stop_script: Path | None = None,
         runner: CommandRunner | None = None,
         validator: DeterministicNativeRenderValidator | None = None,
@@ -126,11 +138,17 @@ class AgentNativeCreoWorker:
         self.batch_script = batch_script
         self.models_root = models_root
         self.render_plan_json = render_plan_json
+        self.runtime_config = runtime_config
         self.stop_script = stop_script or batch_script.with_name(
             "stop_agent_native_worker.ps1"
         )
         self.runner = runner or SubprocessCommandRunner()
         self.validator = validator or DeterministicNativeRenderValidator()
+        self._diagnostics_by_task: dict[str, dict[str, object]] = {}
+
+    def diagnostic_for(self, task_id: str) -> dict[str, object] | None:
+        value = self._diagnostics_by_task.get(task_id)
+        return dict(value) if value is not None else None
 
     def open_session(self, run_workspace: Path, plan: RenderPlan) -> CreoSession:
         if plan.schema_version != "render-plan/v2":
@@ -145,6 +163,7 @@ class AgentNativeCreoWorker:
             native_worker_root=run_workspace / "internal" / "native-worker",
         )
         session.screen_pan_responses.update(_load_screen_pan_responses(internal_directory))
+        session.framing_profiles.update(_load_framing_profiles(internal_directory))
         return session
 
     def render(
@@ -164,6 +183,43 @@ class AgentNativeCreoWorker:
         session.attempted_presentation_variants.setdefault(task.task_id, set()).add(
             variant_index
         )
+        try:
+            variant = task.payload["presentation"]["variants"][variant_index]
+            camera_id = str(variant["camera_id"])
+            profile_contract = task.payload["presentation"].get(
+                "framing_profile", {}
+            )
+            profile_policy = str(profile_contract.get("policy", "freeze_per_camera/v1"))
+            default_refit = profile_policy == "default_refit/v1"
+            profile_key = (
+                None
+                if default_refit
+                else _framing_profile_key(task.payload, camera_id=camera_id)
+            )
+            if default_refit and (
+                variant_index != 0
+                or not math.isclose(float(variant["zoom"]), 1.0)
+                or tuple(float(value) for value in variant["pan"]) != (0.0, 0.0)
+            ):
+                raise ScreenCenteringError("default view must use Zoom=1 and PAN=0")
+        except (KeyError, IndexError, TypeError, ValueError, ScreenCenteringError):
+            return RenderAttempt.failed("FRAMING_PROFILE_CONTRACT_INVALID")
+        frozen = session.framing_profiles.get(profile_key) if profile_key else None
+        if frozen is not None:
+            rendered = self._render_centered_variant(
+                session,
+                task,
+                camera_id=frozen.camera_id,
+                zoom=frozen.zoom,
+                pan=frozen.pan,
+                label="frozen-profile",
+            )
+            if isinstance(rendered, RenderAttempt):
+                return rendered
+            frozen_report, _ = rendered
+            if frozen_report.passed:
+                return _passed_image(session.output_directory / f"{task.task_id}.jpg")
+            return RenderAttempt.failed(frozen_report.failures[0])
         execution_error = self._run_batch(
             session,
             plan_path=self.render_plan_json,
@@ -183,8 +239,19 @@ class AgentNativeCreoWorker:
             task.payload,
             variant_index=variant_index,
         )
+        self._record_gate_diagnostic(
+            session,
+            task,
+            attempt=attempt,
+            variant_index=variant_index,
+            report=report,
+        )
         if not report.passed:
             error = report.failures[0]
+            if default_refit:
+                if set(report.failures).issubset(PRESENTATION_FAILURES):
+                    return _reviewable_image(image_path, error)
+                return RenderAttempt.failed(error)
             if (
                 CENTERING_FAILURES.intersection(report.failures)
                 and report.composition is not None
@@ -206,6 +273,15 @@ class AgentNativeCreoWorker:
                 session.presentation_variant_by_task[task.task_id] = next_variant
                 return RenderAttempt.retryable(error)
             return RenderAttempt.failed(error)
+        if not default_refit:
+            _freeze_framing_profile(
+                session,
+                task,
+                camera_id=camera_id,
+                zoom=float(variant["zoom"]),
+                pan=tuple(float(value) for value in variant["pan"]),
+                report=report,
+            )
         return RenderAttempt.passed(f"sha256:{sha256(image_path.read_bytes()).hexdigest()}")
 
     def _recover_screen_centering(
@@ -752,6 +828,15 @@ class AgentNativeCreoWorker:
             payload,
             variant_index=0,
         )
+        if report.passed:
+            _freeze_framing_profile(
+                session,
+                task,
+                camera_id=camera_id,
+                zoom=zoom,
+                pan=pan,
+                report=report,
+            )
         return report, pan
 
     def _run_batch(
@@ -789,15 +874,29 @@ class AgentNativeCreoWorker:
             "-RunWorkspaceRoot",
             str(session.output_directory.parent),
         ]
+        if self.runtime_config is not None:
+            command.extend(["-RuntimeConfig", str(self.runtime_config)])
         if session.native_worker_root is not None:
             command.extend(["-WorkerRoot", str(session.native_worker_root)])
         if session.prepared_models_root is not None:
             command.extend(["-PreparedModelsRoot", str(session.prepared_models_root)])
         try:
             result = self.runner.run(command)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as error:
+            self._record_batch_diagnostic(
+                session,
+                budget_task_id,
+                "CREO_TIMEOUT",
+                message=str(error),
+            )
             return "CREO_TIMEOUT"
-        except OSError:
+        except OSError as error:
+            self._record_batch_diagnostic(
+                session,
+                budget_task_id,
+                "CREO_PROCESS_ERROR",
+                message=str(error),
+            )
             return "CREO_PROCESS_ERROR"
         prepared_match = self._PREPARED_PATTERN.search(result.stdout or "")
         if prepared_match is not None:
@@ -805,8 +904,97 @@ class AgentNativeCreoWorker:
         if self._WORKER_PATTERN.search(result.stdout or "") is not None:
             session.native_worker_active = True
         if result.returncode != 0:
+            self._record_batch_diagnostic(
+                session,
+                budget_task_id,
+                "CREO_RENDER_FAILED",
+                returncode=result.returncode,
+                stdout=result.stdout or "",
+                stderr=result.stderr or "",
+            )
             return "CREO_RENDER_FAILED"
         return None
+
+    def _record_batch_diagnostic(
+        self,
+        session: CreoSession,
+        task_id: str,
+        error_code: str,
+        *,
+        message: str = "",
+        returncode: int | None = None,
+        stdout: str = "",
+        stderr: str = "",
+    ) -> None:
+        def tail(value: str) -> str:
+            return value.replace("\x00", "")[-4000:]
+
+        payload: dict[str, object] = {
+            "schema_version": "creo-render-diagnostic/v1",
+            "task_id": task_id,
+            "error_code": error_code,
+            "message": tail(message),
+            "returncode": returncode,
+            "stdout_tail": tail(stdout),
+            "stderr_tail": tail(stderr),
+        }
+        self._diagnostics_by_task[task_id] = payload
+        root = session.output_directory.parent / "internal" / "render-diagnostics"
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / f"{_safe_name(task_id)}.json"
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+
+    def _record_gate_diagnostic(
+        self,
+        session: CreoSession,
+        task: RenderTask,
+        *,
+        attempt: int,
+        variant_index: int,
+        report: NativeRenderGateReport,
+    ) -> None:
+        payload: dict[str, object] = {
+            "schema_version": "creo-render-diagnostic/v2",
+            "task_id": task.task_id,
+            "step_id": task.step_id,
+            "phase": "deterministic_render_gate",
+            "attempt": attempt,
+            "variant_index": variant_index,
+            "framing_policy": task.payload.get("presentation", {})
+            .get("framing_profile", {})
+            .get("policy", "freeze_per_camera/v1"),
+            "error_code": report.failures[0] if report.failures else None,
+            "message": (
+                "确定性图片硬门通过"
+                if report.passed
+                else "确定性图片硬门失败：" + ", ".join(report.failures)
+            ),
+            "failures": list(report.failures),
+            "composition": (
+                asdict(report.composition) if report.composition is not None else None
+            ),
+            "arrow_raster": (
+                asdict(report.arrow_raster) if report.arrow_raster is not None else None
+            ),
+            "expected_arrow_count": len(task.payload.get("arrow_anchors", [])),
+            "image_path": f"rendered/{task.task_id}.jpg",
+            "audit_path": f"rendered/{task.task_id}.arrow.json",
+        }
+        self._diagnostics_by_task[task.task_id] = payload
+        root = session.output_directory.parent / "internal" / "render-diagnostics"
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / f"{_safe_name(task.task_id)}.json"
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
 
     def close_session(self, session: CreoSession) -> None:
         if not session.native_worker_active or session.native_worker_root is None:
@@ -893,6 +1081,60 @@ def _screen_pan_response_key(
     return f"sha256:{sha256(encoded).hexdigest()}"
 
 
+def _framing_profile_key(payload: dict, *, camera_id: str) -> str:
+    camera = payload.get("camera_catalog", {}).get(camera_id)
+    if not isinstance(camera, dict):
+        raise ScreenCenteringError("camera basis is unavailable")
+    contract = payload.get("presentation", {}).get("framing_profile", {})
+    if not isinstance(contract, dict):
+        raise ScreenCenteringError("framing profile contract is invalid")
+    policy = str(contract.get("policy", "freeze_per_camera/v1"))
+    if policy != "freeze_per_camera/v1":
+        raise ScreenCenteringError("framing profile policy is unsupported")
+    scale_signature = str(contract.get("scale_signature", "default/v1"))
+    if not scale_signature:
+        raise ScreenCenteringError("framing scale signature is missing")
+    value = {
+        "schema_version": "frozen-framing-profile-key/v1",
+        "camera_id": camera_id,
+        "position_direction_root": camera.get("position_direction_root"),
+        "up_reference_root": camera.get("up_reference_root"),
+        "frame_pixels": [1600, 1600],
+        "export_contract": "creo-native-jpeg/v1",
+        "scale_signature": scale_signature,
+    }
+    encoded = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return f"sha256:{sha256(encoded).hexdigest()}"
+
+
+def _freeze_framing_profile(
+    session: CreoSession,
+    task: RenderTask,
+    *,
+    camera_id: str,
+    zoom: float,
+    pan: tuple[float, float],
+    report: NativeRenderGateReport,
+) -> None:
+    if session.internal_directory is None or report.composition is None:
+        return
+    key = _framing_profile_key(task.payload, camera_id=camera_id)
+    if key in session.framing_profiles:
+        return
+    contract = task.payload.get("presentation", {}).get("framing_profile", {})
+    session.framing_profiles[key] = FrozenFramingProfile(
+        camera_id=camera_id,
+        zoom=float(zoom),
+        pan=(float(pan[0]), float(pan[1])),
+        scale_signature=str(contract.get("scale_signature", "default/v1")),
+        source_task_id=task.task_id,
+        subject_span_fraction=float(report.composition.max_span_fraction),
+    )
+    _save_framing_profiles(session.internal_directory, session.framing_profiles)
+
+
 def _effective_pan_bound(base_bound: float, zoom: float) -> float:
     """Scale the normalized PAN envelope with Creo's native Zoom.
 
@@ -960,6 +1202,73 @@ def _write_transient_render_plan(
 
 def _screen_pan_response_file(internal_directory: Path) -> Path:
     return internal_directory / "screen-pan-responses.json"
+
+
+def _framing_profile_file(internal_directory: Path) -> Path:
+    return internal_directory / "frozen-framing-profiles.json"
+
+
+def _load_framing_profiles(
+    internal_directory: Path,
+) -> dict[str, FrozenFramingProfile]:
+    path = _framing_profile_file(internal_directory)
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("schema_version") != "frozen-framing-profile-cache/v1":
+            return {}
+        profiles: dict[str, FrozenFramingProfile] = {}
+        for key, value in payload.get("profiles", {}).items():
+            profile = FrozenFramingProfile(
+                camera_id=str(value["camera_id"]),
+                zoom=float(value["zoom"]),
+                pan=tuple(float(item) for item in value["pan"]),
+                scale_signature=str(value["scale_signature"]),
+                source_task_id=str(value["source_task_id"]),
+                subject_span_fraction=float(value["subject_span_fraction"]),
+            )
+            if (
+                len(profile.pan) != 2
+                or not profile.camera_id
+                or not profile.scale_signature
+                or not all(
+                    math.isfinite(item)
+                    for item in (
+                        profile.zoom,
+                        *profile.pan,
+                        profile.subject_span_fraction,
+                    )
+                )
+                or profile.zoom <= 0.0
+            ):
+                return {}
+            profiles[str(key)] = profile
+        return profiles
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return {}
+
+
+def _save_framing_profiles(
+    internal_directory: Path,
+    profiles: dict[str, FrozenFramingProfile],
+) -> None:
+    path = _framing_profile_file(internal_directory)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(
+            {
+                "schema_version": "frozen-framing-profile-cache/v1",
+                "profiles": {
+                    key: asdict(value) for key, value in sorted(profiles.items())
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    temporary.replace(path)
 
 
 def _load_screen_pan_responses(
@@ -1030,6 +1339,14 @@ def _passed_image(path: Path) -> RenderAttempt:
     if not path.is_file() or path.stat().st_size == 0:
         return RenderAttempt.retryable("RENDER_OUTPUT_MISSING")
     return RenderAttempt.passed(f"sha256:{sha256(path.read_bytes()).hexdigest()}")
+
+
+def _reviewable_image(path: Path, error_code: str) -> RenderAttempt:
+    if not path.is_file() or path.stat().st_size == 0:
+        return RenderAttempt.retryable("RENDER_OUTPUT_MISSING")
+    return RenderAttempt.reviewable(
+        f"sha256:{sha256(path.read_bytes()).hexdigest()}", error_code
+    )
 
 
 def _batch_failure(error_code: str) -> RenderAttempt:

@@ -3,6 +3,7 @@ param(
   [Parameter(Mandatory=$true)][string]$PreparedModelsRoot,
   [Parameter(Mandatory=$true)][string]$PreparedAssembly,
   [Parameter(Mandatory=$true)][string]$WorkerGenerationRoot,
+  [string]$RuntimeConfig = '',
   [ValidateRange(1, 100)][int]$MaxCommands = 100,
   [ValidateRange(10, 3600)][int]$IdleSeconds = 300
 )
@@ -10,7 +11,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 . (Join-Path $here 'RuntimeConfig.ps1')
-$runtime = Get-CreoRuntime -ProjectRoot $ProjectRoot
+$runtime = Get-CreoRuntime -ProjectRoot $ProjectRoot -ConfigPath $RuntimeConfig
 Set-CreoRuntimeEnvironment -Runtime $runtime
 $classpath = (Join-Path $here 'build') + ';' + `
   (Join-Path $runtime.CommonFiles 'text\java\pfcasync.jar') + ';' + `

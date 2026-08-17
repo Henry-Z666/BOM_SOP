@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import tempfile
 import unittest
@@ -16,6 +17,7 @@ from sop_pipeline.agent import (
 from sop_pipeline.agent.artifacts import ArtifactStore
 from sop_pipeline.agent.skill_handlers import default_skill_handlers
 from sop_pipeline.agent.skill_cli import execute as execute_skill_cli
+from sop_pipeline.agent.skill_registry import AGENT_SKILL_DEFINITIONS, SkillRegistry
 from sop_pipeline.agent.store import RunStore
 from tests.test_agent_analysis import _xlsx
 
@@ -41,6 +43,38 @@ def _inputs(root: Path) -> tuple[Path, Path]:
 
 
 class SkillRuntimeTests(unittest.TestCase):
+    def test_contract_version_changes_execution_fingerprint(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            bom, cad = _inputs(root)
+            workspace = root / "workspace"
+            core = AgentCore(workspace)
+            run_id = core.create_run(bom, cad)
+            store = RunStore(workspace / "agent.sqlite3")
+            run = store.get(run_id)
+            invocation = SkillInvocation(
+                "skill-invocation/v1", run_id, "plan-assembly", (), {}
+            )
+            current = SkillRuntime(
+                store, ArtifactStore(store), default_skill_handlers()
+            )
+            old_definitions = dict(AGENT_SKILL_DEFINITIONS)
+            old_definitions["plan-assembly"] = replace(
+                old_definitions["plan-assembly"],
+                contract_version="agent-skill/v1",
+            )
+            old = SkillRuntime(
+                store,
+                ArtifactStore(store),
+                default_skill_handlers(),
+                registry=SkillRegistry(old_definitions),
+            )
+
+            current_fingerprint = current._fingerprint(run, invocation, ())
+            old_fingerprint = old._fingerprint(run, invocation, ())
+
+        self.assertNotEqual(current_fingerprint, old_fingerprint)
+
     def test_all_twelve_skills_have_executable_handlers(self) -> None:
         self.assertEqual(
             set(default_skill_handlers()),

@@ -28,8 +28,9 @@ def _definition(
     name: str,
     states: tuple[RunStatus, ...],
     next_skills: tuple[str, ...],
+    contract_version: str = "agent-skill/v1",
 ) -> SkillDefinition:
-    return SkillDefinition(name, "agent-skill/v1", frozenset(states), next_skills)
+    return SkillDefinition(name, contract_version, frozenset(states), next_skills)
 
 
 _ANALYZING = (RunStatus.ANALYZING,)
@@ -39,18 +40,28 @@ AGENT_SKILL_DEFINITIONS: dict[str, SkillDefinition] = {
     "intake-preflight": _definition("intake-preflight", _ANALYZING, ("normalize-bom",)),
     "normalize-bom": _definition("normalize-bom", _ANALYZING, ("lock-assembly", "discover-cad")),
     "lock-assembly": _definition("lock-assembly", _ANALYZING, ("discover-cad",)),
-    "discover-cad": _definition("discover-cad", _ANALYZING, ("map-bom-cad",)),
+    "discover-cad": _definition(
+        "discover-cad", _ANALYZING, ("map-bom-cad",), "agent-skill/v2"
+    ),
     "map-bom-cad": _definition("map-bom-cad", _ANALYZING, ("plan-assembly",)),
-    "plan-assembly": _definition("plan-assembly", _ANALYZING, ("clarify-plan",)),
+    "plan-assembly": _definition(
+        "plan-assembly", _ANALYZING, ("clarify-plan",), "agent-skill/v2"
+    ),
     "clarify-plan": _definition("clarify-plan", _ANALYZING, ("compile-render-jobs",)),
     "compile-render-jobs": _definition(
         "compile-render-jobs", _GENERATING, ("compile-render-jobs", "render-batch")
     ),
     "render-batch": _definition(
-        "render-batch", _GENERATING, ("render-batch", "validate-repair")
+        "render-batch",
+        _GENERATING,
+        ("render-batch", "validate-repair"),
+        "agent-skill/v2",
     ),
     "validate-repair": _definition(
-        "validate-repair", _GENERATING, ("validate-repair", "render-batch", "publish-delivery")
+        "validate-repair",
+        _GENERATING,
+        ("validate-repair", "render-batch", "publish-delivery"),
+        "agent-skill/v2",
     ),
     "publish-delivery": _definition(
         "publish-delivery",

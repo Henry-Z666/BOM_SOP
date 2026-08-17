@@ -71,6 +71,23 @@ class RenderAttempt:
         )
 
     @classmethod
+    def reviewable(
+        cls,
+        output_hash: str,
+        error_code: str = "PRESENTATION_REVIEW_REQUIRED",
+    ) -> RenderAttempt:
+        """Keep one structurally valid image for semantic/manual review.
+
+        Candidate sets still require 2--4 alternatives.  This disposition is
+        for a real Creo image which passed geometry/audit gates but triggered
+        one or more presentation warnings under a frozen camera policy.
+        """
+
+        if not output_hash:
+            raise ValueError("reviewable attempts require output_hash")
+        return cls("questioned", output_hash=output_hash, error_code=error_code)
+
+    @classmethod
     def failed(cls, error_code: str) -> RenderAttempt:
         return cls("failed", error_code=error_code)
 
@@ -178,6 +195,7 @@ class RenderMetrics:
 class RenderScheduleResult:
     steps: tuple[StepResult, ...]
     metrics: RenderMetrics
+    final_attempts: dict[str, RenderAttempt] = field(default_factory=dict)
 
 
 class RenderScheduler:
@@ -205,6 +223,7 @@ class RenderScheduler:
             for step_id, result in completed.items()
             if step_id in by_step
             and result.complete_state_hash == by_step[step_id].complete_state_hash
+            and result.status in {StepStatus.PASSED, StepStatus.QUESTIONED}
         }
         restored_steps = len(completed)
         session: Any | None = None
@@ -212,6 +231,7 @@ class RenderScheduler:
         rendered_tasks = 0
         render_attempts = 0
         worker_sessions = 0
+        final_attempts: dict[str, RenderAttempt] = {}
 
         try:
             for task in ordered:
@@ -241,6 +261,7 @@ class RenderScheduler:
                         break
 
                 assert final_attempt is not None
+                final_attempts[task.step_id] = final_attempt
                 completed[task.step_id] = _result_from_attempt(task, final_attempt)
                 rendered_tasks += 1
                 rendered_in_session += 1
@@ -265,6 +286,7 @@ class RenderScheduler:
                 worker_sessions=worker_sessions,
                 restored_steps=restored_steps,
             ),
+            final_attempts=final_attempts,
         )
 
 

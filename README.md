@@ -20,9 +20,10 @@ GUI 只是 Agent 的界面，不包含 Creo、Qwen 或 Excel 的业务逻辑。�
 - 自动识别 BOM 工作表、表头、层级、数量、工艺与控制文字。
 - 自动锁定最终总装版本与 SHA-256，并通过 J-Link 扫描完整 occurrence 和约束。
 - 生成依赖图、完整安装态和 `formal-render-plan/v2`。
+- 按共享 CAD 接口执行密封件→封闭件→保持件的物理顺序，并将跨安装层密封件拆成独立步骤组。
 - 在生成前统一展示一次确认页；用户不确定时可采用推荐方案。
 - 由 Creo/J-Link 原生 `DisplayList3D` 绘制同 CAD 锚点箭头，不使用后期像素箭头。
-- 使用 `fixed_123`、`fixed_456` 两个确定性视角；PAN、Zoom 和中心由版本化规则推导。
+- 使用 `fixed_123`、`fixed_456` 两个确定性视角；当前正式路径锁定 Creo Refit 后的默认 `Zoom=1/PAN=0`，尺度探针接口保留但冻结。
 - 一个常驻 Creo Worker 复用模型副本，逐步骤保存检查点，默认 20 个任务后重启。
 - 硬门校验、有限修复、候选图、局部释疑重跑和动态 SOP 出版。
 - Qwen 仅处理语义理解、受限推荐和图片语义复核；不能改变 CAD 事实、状态机或输出路径。
@@ -84,7 +85,7 @@ python -m pytest -q
 ```powershell
 python ./scripts/smoke_agent_single_step.py `
   --bom ./BOM.xlsx `
-  --cad-directory ./零件图 `
+  --cad ./零件图 `
   --step-count 3
 ```
 
@@ -136,6 +137,7 @@ python ./scripts/smoke_agent_single_step.py `
 - [实施计划](docs/qwen-agent-implementation-plan.md)
 - [运行状态与步骤隔离 ADR](docs/adr/0001-durable-run-state-and-step-isolation.md)
 - [安装图规划规则](docs/render-planning-rules.md)
+- [对话与旧水箱成果迁移审计](docs/rule-migration-audit.md)
 - [原生箭头与可迁移推导](docs/arrow-generation-and-portability.md)
 - [Zoom 推导机制](docs/zoom-derivation-and-portability.md)
 - [SOP 出版规则](docs/spreadsheet-sop-publication.md)

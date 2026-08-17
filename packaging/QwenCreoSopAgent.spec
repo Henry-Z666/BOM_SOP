@@ -16,6 +16,7 @@ datas = collect_data_files("dashscope")
 datas += [(str(root / "skills" / name), f"skills/{name}") for name in skill_names]
 datas += [
     (str(root / "creo_java" / "RuntimeConfig.ps1"), "creo_java"),
+    (str(root / "creo_java" / "build.ps1"), "creo_java"),
     (str(root / "creo_java" / "run_input_discovery.ps1"), "creo_java"),
     (str(root / "creo_java" / "run_agent_native_batch.ps1"), "creo_java"),
     (str(root / "creo_java" / "invoke_agent_native_jlink.ps1"), "creo_java"),

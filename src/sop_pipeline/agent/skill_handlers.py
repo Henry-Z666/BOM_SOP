@@ -12,9 +12,9 @@ from PIL import Image, ImageDraw, ImageFont
 
 from .bom_cad_mapper import BomCadMap, BomOccurrenceMapping, map_bom_to_occurrences
 from .bom_normalizer import NormalizedBom, NormalizedBomRow, normalize_bom
+from .bundle_paths import materialized_creo_script
 from .creo_discovery import (
     PowerShellCreoDiscovery,
-    bundled_discovery_script,
     powershell_command,
     resolve_runtime_config,
 )
@@ -45,6 +45,7 @@ from .render_scheduler import (
     RenderScheduler,
     RenderTask,
 )
+from .render_validation import PRESENTATION_FAILURES
 from .skill_contract import Diagnostic, RetryScope
 from .skill_registry import SkillInvocation
 from .skill_runtime import (
@@ -203,7 +204,9 @@ def discover_cad(
                 )
             discovery = PowerShellCreoDiscovery(
                 powershell=powershell_command(),
-                script=bundled_discovery_script(),
+                script=materialized_creo_script(
+                    context.run.workspace, "run_input_discovery.ps1"
+                ),
                 runtime_config=runtime_config,
             )
         graph = discovery.discover(
@@ -447,13 +450,23 @@ def render_batch(
         formal_plan = RenderPlan("render-plan/v2", formal_tasks)
         worker = context.adapters.get("render_worker")
         if formal_tasks and worker is None:
-            root = Path(__file__).resolve().parents[3]
+            runtime_config = resolve_runtime_config(context.run.workspace)
+            if runtime_config is None:
+                return _blocked(
+                    "CREO_RUNTIME_NOT_CONFIGURED",
+                    "正式渲染找不到当前运行批次的Creo运行时配置。",
+                )
             worker = AgentNativeCreoWorker(
                 powershell=powershell_command(),
-                batch_script=root / "creo_java" / "run_agent_native_batch.ps1",
-                stop_script=root / "creo_java" / "stop_agent_native_worker.ps1",
+                batch_script=materialized_creo_script(
+                    context.run.workspace, "run_agent_native_batch.ps1"
+                ),
+                stop_script=materialized_creo_script(
+                    context.run.workspace, "stop_agent_native_worker.ps1"
+                ),
                 models_root=context.run.cad_directory,
                 render_plan_json=context.run.workspace / jobs_ref.relative_path,
+                runtime_config=runtime_config,
             )
         if formal_tasks:
             scheduled = RenderScheduler(max_attempts=3, tasks_per_session=20).execute(
@@ -511,10 +524,32 @@ def render_batch(
                         "image_path": None,
                         "execution_mode": task.payload.get("execution_mode"),
                         "restored": False,
+                        "error_code": (
+                            next(iter(task.payload.get("diagnostics", [])), None)
+                            or "TASK_NOT_FORMAL"
+                        ),
+                        "error_message": (
+                            "该步骤尚未满足正式渲染条件："
+                            + ", ".join(task.payload.get("diagnostics", []))
+                        ),
                     }
                 )
                 continue
             image_path = context.run.workspace / "rendered" / f"{task.task_id}.jpg"
+            diagnostic = None
+            diagnostic_reader = getattr(worker, "diagnostic_for", None)
+            if callable(diagnostic_reader):
+                diagnostic = diagnostic_reader(task.task_id)
+            final_attempt = scheduled.final_attempts.get(task.step_id)
+            gate_failures = (
+                [str(value) for value in diagnostic.get("failures", ())]
+                if diagnostic
+                else (
+                    [str(final_attempt.error_code)]
+                    if final_attempt and final_attempt.error_code
+                    else []
+                )
+            )
             steps.append(
                 {
                     **asdict(result),
@@ -527,6 +562,28 @@ def render_batch(
                     ),
                     "execution_mode": "formal",
                     "restored": False,
+                    "error_code": (
+                        diagnostic.get("error_code")
+                        if diagnostic
+                        else (final_attempt.error_code if final_attempt else None)
+                    ),
+                    "error_message": (
+                        _render_diagnostic_message(diagnostic)
+                        if diagnostic
+                        else (
+                            f"渲染结束：{final_attempt.error_code}"
+                            if final_attempt and final_attempt.error_code
+                            else None
+                        )
+                    ),
+                    "gate_failures": gate_failures,
+                    "deterministic_geometry_passed": bool(
+                        gate_failures
+                        and all(
+                            str(failure) in PRESENTATION_FAILURES
+                            for failure in gate_failures
+                        )
+                    ),
                 }
             )
         payload = {
@@ -534,7 +591,39 @@ def render_batch(
             "plan_fingerprint": plan.fingerprint,
             "steps": steps,
             "metrics": metrics,
+            "failure_summary": _failure_summary(steps),
+            "diagnostics_directory": "internal/render-diagnostics",
         }
+        formal_step_payloads = [
+            item for item in steps if item.get("execution_mode") == "formal"
+        ]
+        if formal_step_payloads and not any(
+            item.get("status")
+            in {StepStatus.PASSED.value, StepStatus.QUESTIONED.value}
+            for item in formal_step_payloads
+        ):
+            first = next(
+                (
+                    item
+                    for item in formal_step_payloads
+                    if item.get("error_code") or item.get("error_message")
+                ),
+                formal_step_payloads[0],
+            )
+            error_code = str(first.get("error_code") or "FORMAL_RENDER_FAILED")
+            detail = str(first.get("error_message") or "没有生成任何真实Creo图片")
+            return SkillHandlerOutput(
+                status=SkillStatus.BLOCKED,
+                artifacts=(SkillArtifactValue("render-batch-result", payload),),
+                diagnostics=(
+                    Diagnostic(
+                        "RENDER_BATCH_ZERO_SUCCESS",
+                        f"正式渲染零张成功，已停止出版。首个错误 {error_code}：{detail}",
+                        tuple(str(item["step_id"]) for item in formal_step_payloads[:10]),
+                    ),
+                ),
+                allowed_next=("render-batch",),
+            )
     except (KeyError, OSError, RuntimeError, TypeError, ValueError) as error:
         return SkillHandlerOutput(
             status=SkillStatus.RETRYABLE,
@@ -543,6 +632,24 @@ def render_batch(
             allowed_next=("render-batch",),
         )
     return _passed(SkillArtifactValue("render-batch-result", payload))
+
+
+def _render_diagnostic_message(diagnostic: Mapping[str, object]) -> str:
+    for key in ("stderr_tail", "message", "stdout_tail"):
+        value = str(diagnostic.get(key) or "").strip()
+        if value:
+            return value[-1000:]
+    return "Creo渲染进程未返回详细错误信息"
+
+
+def _failure_summary(steps: list[dict[str, Any]]) -> dict[str, int]:
+    summary: dict[str, int] = {}
+    for item in steps:
+        status = str(item.get("status") or "UNKNOWN")
+        code = str(item.get("error_code") or status)
+        key = f"{status}:{code}"
+        summary[key] = summary.get(key, 0) + 1
+    return dict(sorted(summary.items()))
 
 
 def validate_repair(
@@ -568,19 +675,34 @@ def validate_repair(
                 else None
             )
             issues: list[str] = []
-            if status is StepStatus.PASSED and image_path is not None and image_path.is_file():
+            qwen_invoked = False
+            qwen_passed: bool | None = None
+            geometry_passed = status is StepStatus.PASSED or bool(
+                item.get("deterministic_geometry_passed", False)
+            )
+            if geometry_passed and image_path is not None and image_path.is_file():
                 if advisor is not None and not bool(item.get("restored", False)):
                     try:
+                        qwen_invoked = True
                         review = advisor.review_render(
                             image_path,
                             {
                                 "step_id": step_id,
+                                "title": task.payload.get("title", step_id),
                                 "moving_occurrences": task.payload.get("moving_occurrences", []),
                                 "receiver_occurrences": task.payload.get("receiver_occurrences", []),
                                 "camera_id": task.payload.get("camera_id"),
+                                "planning_diagnostics": task.payload.get("diagnostics", []),
+                                "deterministic_geometry_gate": "passed",
+                                "presentation_warnings": item.get(
+                                    "gate_failures", []
+                                ),
                             },
                         )
-                        if not review.passed:
+                        qwen_passed = review.passed
+                        if review.passed:
+                            status = StepStatus.PASSED
+                        else:
                             status = StepStatus.QUESTIONED
                             issues.extend(review.issues)
                     except (RuntimeError, ValueError) as error:
@@ -623,7 +745,7 @@ def validate_repair(
                     )
                     image_path = discovered_candidates[0]
                     status = StepStatus.QUESTIONED
-                else:
+                elif image_path is None or not image_path.is_file():
                     placeholder = (
                         context.run.workspace
                         / "internal"
@@ -632,6 +754,38 @@ def validate_repair(
                     )
                     _write_placeholder(placeholder, step_id)
                     image_path = placeholder
+            diagnostic_payload = {
+                "schema_version": "validation-diagnostic/v1",
+                "step_id": step_id,
+                "input_status": str(item["status"]),
+                "input_error_code": item.get("error_code"),
+                "input_error_message": item.get("error_message"),
+                "qwen_invoked": qwen_invoked,
+                "qwen_passed": qwen_passed,
+                "qwen_issues": issues,
+                "final_status": status.value,
+                "image_path": (
+                    str(image_path.relative_to(context.run.workspace))
+                    if image_path is not None
+                    else None
+                ),
+            }
+            diagnostic_root = (
+                context.run.workspace / "internal" / "validation-diagnostics"
+            )
+            diagnostic_root.mkdir(parents=True, exist_ok=True)
+            diagnostic_path = diagnostic_root / f"{_safe_id(step_id)}.json"
+            temporary_diagnostic = diagnostic_path.with_suffix(".json.tmp")
+            temporary_diagnostic.write_text(
+                json.dumps(
+                    diagnostic_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            temporary_diagnostic.replace(diagnostic_path)
             validated.append(
                 {
                     "step_id": step_id,
@@ -645,12 +799,19 @@ def validate_repair(
                         if image_path
                         else None
                     ),
+                    "error_code": (
+                        "QWEN_SEMANTIC_QUESTION"
+                        if qwen_passed is False
+                        else item.get("error_code")
+                    ),
                     "issues": issues,
                 }
             )
         validation = {
             "schema_version": "validation-result/v1",
             "steps": validated,
+            "failure_summary": _failure_summary(validated),
+            "diagnostics_directory": "internal/validation-diagnostics",
         }
         candidates = {
             "schema_version": "candidate-set/v1",
@@ -947,6 +1108,13 @@ def _apply_step_revision(plan: RenderPlan, payload: dict[str, Any]) -> RenderPla
             contract["camera_id"] = camera_id
             contract["camera"] = deepcopy(catalog[camera_id])
         presentation = dict(contract.get("presentation", {}))
+        framing_policy = str(
+            presentation.get("framing_profile", {}).get("policy", "")
+        )
+        if framing_policy == "default_refit/v1" and (
+            "zoom" in changes or "pan" in changes
+        ):
+            raise ValueError("当前默认视角策略已冻结，禁止修改PAN或Zoom")
         if "zoom" in changes:
             presentation["zoom"] = float(changes["zoom"])
         if "pan" in changes:

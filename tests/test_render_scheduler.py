@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from sop_pipeline.agent import StepStatus
+from sop_pipeline.agent import StepResult, StepStatus
 from sop_pipeline.agent.render_scheduler import (
     FileCheckpointStore,
     MemoryCheckpointStore,
@@ -40,6 +40,14 @@ class OneBrokenWorker(PassingWorker):
         return RenderAttempt.passed(f"sha256:{task.task_id}")
 
 
+class ReviewableWorker(PassingWorker):
+    def render(self, session, task, attempt):
+        self.calls.append((task.task_id, attempt))
+        return RenderAttempt.reviewable(
+            f"sha256:{task.task_id}", "SUBJECT_TOO_SMALL"
+        )
+
+
 def _task(index: int, *, depends_on=(), blocks=False) -> RenderTask:
     return RenderTask(
         task_id=f"task-{index:03d}",
@@ -52,6 +60,18 @@ def _task(index: int, *, depends_on=(), blocks=False) -> RenderTask:
 
 
 class RenderSchedulerTests(unittest.TestCase):
+    def test_single_real_image_can_be_kept_for_review_without_fake_candidates(self) -> None:
+        plan = RenderPlan("render-plan/v2", (_task(1),))
+        worker = ReviewableWorker()
+        with tempfile.TemporaryDirectory() as folder:
+            result = RenderScheduler().execute(
+                plan, worker, Path(folder), MemoryCheckpointStore()
+            )
+
+        self.assertEqual(result.steps[0].status, StepStatus.QUESTIONED)
+        self.assertEqual(result.steps[0].output_hash, "sha256:task-001")
+        self.assertEqual(result.final_attempts["step-001"].candidate_hashes, ())
+
     def test_disk_checkpoint_resumes_without_rerendering(self) -> None:
         plan = RenderPlan("render-plan/v1", tuple(_task(index) for index in range(1, 8)))
         worker = PassingWorker()
@@ -70,6 +90,32 @@ class RenderSchedulerTests(unittest.TestCase):
         self.assertEqual(resumed.metrics.restored_steps, 7)
         self.assertEqual(resumed.metrics.worker_sessions, 0)
         self.assertEqual(resumed_worker.calls, [])
+
+    def test_failed_checkpoint_is_retried_after_environment_recovery(self) -> None:
+        plan = RenderPlan("render-plan/v1", (_task(1),))
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            checkpoints = FileCheckpointStore(workspace / "checkpoint.json")
+            # Persist a failed checkpoint to model a broken Creo environment.
+            checkpoints.save(
+                plan.fingerprint,
+                {"step-001": StepResult(
+                    step_id="step-001",
+                    main_process_id="process-001",
+                    status=StepStatus.FAILED,
+                    depends_on=(),
+                    complete_state_hash="sha256:state-001",
+                    output_hash=None,
+                )},
+            )
+            recovered_worker = PassingWorker()
+            recovered = RenderScheduler(max_attempts=1).execute(
+                plan, recovered_worker, workspace, checkpoints
+            )
+
+        self.assertEqual(recovered.steps[0].status, StepStatus.PASSED)
+        self.assertEqual(recovered.metrics.restored_steps, 0)
+        self.assertEqual(recovered_worker.calls, [("task-001", 1)])
 
     def test_500_tasks_use_linear_checkpoints_and_25_bounded_sessions(self) -> None:
         plan = RenderPlan("render-plan/v1", tuple(_task(index) for index in range(1, 501)))
@@ -111,6 +157,10 @@ class RenderSchedulerTests(unittest.TestCase):
         self.assertEqual(statuses["step-002"], StepStatus.FAILED)
         self.assertEqual(statuses["step-003"], StepStatus.PASSED)
         self.assertEqual([attempt for task, attempt in worker.calls if task == "task-002"], [1, 2, 3])
+        self.assertEqual(
+            result.final_attempts["step-002"].error_code,
+            "RENDER_FAILED",
+        )
 
     def test_structural_failure_waits_only_its_dependency_descendants(self) -> None:
         plan = RenderPlan(

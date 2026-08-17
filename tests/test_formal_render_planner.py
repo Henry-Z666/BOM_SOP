@@ -325,9 +325,22 @@ class FormalRenderPlannerTests(unittest.TestCase):
         self.assertIn(task.payload["camera"]["id"], {"fixed_123", "fixed_456"})
         self.assertEqual(set(task.payload["camera_catalog"]), {"fixed_123", "fixed_456"})
         self.assertEqual(
-            [item["variant_id"] for item in task.payload["presentation"]["variants"]],
-            ["base", "zoom-in-50", "zoom-in-110", "zoom-out-15"],
+            task.payload["presentation"]["framing_profile"]["policy"],
+            "default_refit/v1",
         )
+        self.assertEqual(
+            task.payload["presentation"]["variants"],
+            [
+                {
+                    "variant_id": "base",
+                    "camera_id": task.payload["camera_id"],
+                    "zoom": 1.0,
+                    "pan": [0.0, 0.0],
+                }
+            ],
+        )
+        expected_step = next(item for item in locked.steps if item.step_id == task.step_id)
+        self.assertEqual(task.payload["title"], expected_step.title)
         self.assertEqual(
             task.payload["presentation"]["frame_gate"]["schema_version"],
             "raster-composition-gate/v2",

@@ -4,6 +4,7 @@ import argparse
 from dataclasses import asdict, is_dataclass
 from enum import Enum
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any
@@ -12,6 +13,20 @@ from .core import AgentCore
 from .excel_verifier import ExcelComVerifier
 from .models import StepResolution
 from .pipeline_orchestrator import PipelineOrchestrator
+from .qwen_adapter import SemanticReview
+from .sop_publisher import OpenpyxlWorkbookVerifier
+
+
+class _ExperienceAdvisor:
+    """Explicit GUI experience adapter; never active in production mode."""
+
+    def recommend_plan_choices(self, items):
+        del items
+        return ()
+
+    def review_render(self, image_file: Path, contract):
+        del image_file, contract
+        return SemanticReview(passed=True, issues=())
 
 
 def _json_value(value: Any) -> Any:
@@ -32,9 +47,21 @@ def execute(workspace: Path, action: str, payload: dict[str, Any]) -> Any:
     allowed_actions = {"start-analysis", "confirm", "generate", "resolve", "resume"}
     if action not in allowed_actions:
         raise ValueError(f"unsupported worker action: {action}")
+    experience_mode = os.environ.get("QWEN_CREO_EXPERIENCE_MODE") == "1"
+    experience_step_limit = _experience_step_limit() if experience_mode else None
+    adapters: dict[str, Any] = {
+        "workbook_verifier": (
+            OpenpyxlWorkbookVerifier() if experience_mode else ExcelComVerifier()
+        )
+    }
+    if experience_mode:
+        adapters["qwen_advisor"] = _ExperienceAdvisor()
     core = AgentCore(
         workspace,
-        PipelineOrchestrator(adapters={"workbook_verifier": ExcelComVerifier()}),
+        PipelineOrchestrator(
+            adapters=adapters,
+            experience_step_limit=experience_step_limit,
+        ),
     )
     if action == "start-analysis":
         run_id = core.create_run(
@@ -60,6 +87,16 @@ def execute(workspace: Path, action: str, payload: dict[str, Any]) -> Any:
     if action == "resume":
         return core.resume(run_id)
     raise AssertionError("unreachable worker action")
+
+
+def _experience_step_limit() -> int | None:
+    raw = os.environ.get("QWEN_CREO_EXPERIENCE_STEP_LIMIT", "").strip()
+    if not raw:
+        return None
+    value = int(raw)
+    if value < 1:
+        raise ValueError("QWEN_CREO_EXPERIENCE_STEP_LIMIT must be positive")
+    return value
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -293,6 +293,29 @@ public final class RenderAssemblyImage {
     return value.toString();
   }
 
+  /** Encodes only locked occurrence IDs and root-coordinate points; no paths leave the run. */
+  private static java.util.Map<String,double[]> parsePlannedAnchors(String encoded) {
+    java.util.Map<String,double[]> result = new java.util.HashMap<String,double[]>();
+    if (encoded == null || encoded.trim().isEmpty()) return result;
+    for (String raw : encoded.split(";")) {
+      int separator = raw.indexOf('=');
+      if (separator <= 0 || separator == raw.length() - 1)
+        throw new IllegalArgumentException("Malformed planned arrow anchor");
+      String occurrence = raw.substring(0, separator).trim();
+      String[] coordinates = raw.substring(separator + 1).split(":", -1);
+      if (coordinates.length != 3 || result.containsKey(occurrence))
+        throw new IllegalArgumentException("Invalid planned arrow anchor occurrence=" + occurrence);
+      double[] point = new double[3];
+      for (int index = 0; index < 3; index++) {
+        point[index] = Double.parseDouble(coordinates[index]);
+        if (!Double.isFinite(point[index]))
+          throw new IllegalArgumentException("Non-finite planned arrow anchor occurrence=" + occurrence);
+      }
+      result.put(occurrence, point);
+    }
+    return result;
+  }
+
   private static double[][] identityMatrix() { double[][] value = new double[4][4]; for (int i = 0; i < 4; i++) value[i][i] = 1.0; return value; }
   private static double[][] matrix(Transform3D value) throws jxthrowable {
     Matrix3D source = value.GetMatrix(); double[][] result = new double[4][4];
@@ -465,6 +488,14 @@ public final class RenderAssemblyImage {
       String occurrencePaths, double dx, double dy, double dz, String visiblePaths,
       String cameraSpec, String arrowAuditJson, String focusPaths,
       boolean drawNativeArrow) throws Throwable {
+    renderInSession(session, assemblyFile, outputJpeg, occurrencePaths, dx, dy, dz,
+        visiblePaths, cameraSpec, arrowAuditJson, focusPaths, "", drawNativeArrow);
+  }
+  /** Formal Agent path with constraint-backed same-CAD-point anchors. */
+  static void renderInSession(Session session, String assemblyFile, String outputJpeg,
+      String occurrencePaths, double dx, double dy, double dz, String visiblePaths,
+      String cameraSpec, String arrowAuditJson, String focusPaths,
+      String plannedAnchors, boolean drawNativeArrow) throws Throwable {
     Window window = null;
     DisplayList3D arrowDisplay = null;
     try {
@@ -508,16 +539,28 @@ public final class RenderAssemblyImage {
       if (!assembly.GetDynamicPositioning()) assembly.SetDynamicPositioning(true);
       if (!assembly.GetDynamicPositioning()) throw new IllegalStateException("Creo DynamicPositioning was not enabled");
       boolean useActivityLookAt = cameraSpec.toUpperCase(java.util.Locale.ROOT).contains("LOOKAT_ACTIVITY");
+      double[] framingTranslation = new double[] {0.0, 0.0, 0.0};
       if (useActivityLookAt) {
         double[] stageCenter = stageOccurrenceCenter(session, assembly, focusOccurrencePaths);
+        framingTranslation = new double[] {-stageCenter[0], -stageCenter[1], -stageCenter[2]};
         for (intseq ids : minimalOccurrenceRoots(visibleOccurrencePaths))
-          translateResolved(session, assembly, ids, -stageCenter[0], -stageCenter[1], -stageCenter[2]);
+          translateResolved(session, assembly, ids, framingTranslation[0], framingTranslation[1], framingTranslation[2]);
         System.err.println("[PERSISTENT] framing_activity_center=" + java.util.Arrays.toString(stageCenter)
-          + " translation=" + java.util.Arrays.toString(new double[] {-stageCenter[0], -stageCenter[1], -stageCenter[2]}));
+          + " translation=" + java.util.Arrays.toString(framingTranslation));
       }
 
+      java.util.Map<String,double[]> preferredAnchors = parsePlannedAnchors(plannedAnchors);
       java.util.List<ArrowProjection.MovingOccurrence> arrowMoving = new java.util.ArrayList<ArrowProjection.MovingOccurrence>();
-      for (intseq ids : requestedOccurrences) arrowMoving.add(ArrowProjection.prepare(session, assembly, ids));
+      for (intseq ids : requestedOccurrences) {
+        String occurrenceId = occurrencePathId(ids);
+        double[] preferred = preferredAnchors.get(occurrenceId);
+        if (preferred != null) preferred = new double[] {
+          preferred[0] + framingTranslation[0],
+          preferred[1] + framingTranslation[1],
+          preferred[2] + framingTranslation[2]
+        };
+        arrowMoving.add(ArrowProjection.prepare(session, assembly, ids, preferred));
+      }
       for (intseq ids : requestedOccurrences) translateResolved(session, assembly, ids, dx, dy, dz);
       double[] arrowTranslation = new double[] { dx, dy, dz };
       System.err.println("[PERSISTENT] translated occurrences=" + occurrencePaths + " vector=" + java.util.Arrays.toString(arrowTranslation));
@@ -536,11 +579,25 @@ public final class RenderAssemblyImage {
       System.err.println("[PERSISTENT] wrote=" + outputJpeg + " audit=" + arrowAuditJson);
     }
     finally {
-      if (arrowDisplay != null) try { arrowDisplay.Delete(); } catch (Throwable ignored) {}
+      Throwable arrowCleanupFailure = null;
+      if (arrowDisplay != null) {
+        try {
+          arrowDisplay.Delete();
+          if (window != null) {
+            window.Repaint();
+            session.FlushCurrentWindow();
+          }
+        } catch (Throwable error) {
+          arrowCleanupFailure = error;
+          System.err.println("[PERSISTENT] ARROW_DISPLAY_CLEANUP_FAILED " + error);
+        }
+      }
       if (window != null) try { window.Close(); } catch (Throwable ignored) {}
       // This is the state-isolation boundary for the persistent application.
       // The next job reopens the authoritative assembly from the isolated copy.
       try { session.EraseUndisplayedModels(); } catch (Throwable ignored) {}
+      if (arrowCleanupFailure != null)
+        throw new IllegalStateException("ARROW_DISPLAY_CLEANUP_FAILED", arrowCleanupFailure);
     }
   }
 

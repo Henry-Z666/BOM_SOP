@@ -204,8 +204,8 @@ class SkillRuntime:
             for definition in self.registry.definitions.values()
         )
 
-    @staticmethod
     def _fingerprint(
+        self,
         run: RunRecord,
         invocation: SkillInvocation,
         artifacts: tuple[ArtifactRef, ...],
@@ -213,7 +213,9 @@ class SkillRuntime:
         payload = {
             "schema_version": "skill-execution-fingerprint/v1",
             "skill": invocation.skill_name,
-            "contract": "agent-skill/v1",
+            "contract": self.registry.definitions[
+                invocation.skill_name
+            ].contract_version,
             "run_input": run.input_fingerprint,
             "inputs": [
                 {

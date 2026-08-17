@@ -15,6 +15,11 @@ from sop_pipeline.camera_planner import (
 from .bom_cad_mapper import BomCadMap, BomOccurrenceMapping
 from .bom_normalizer import NormalizedBom, NormalizedBomRow
 from .draft_planner import DraftPlan
+from .physical_sequence import (
+    PHYSICAL_SEQUENCE_POLICY,
+    infer_physical_precedence,
+    physical_role,
+)
 
 
 @dataclass(frozen=True)
@@ -111,6 +116,7 @@ def compile_formal_render_plan(
     camera_basis = _camera_basis(graph)
     process_by_row = _process_index(draft_plan)
     descendant_rows = _descendant_rows(mapping.rows)
+    occurrence_owner = _occurrence_owner(mapping.rows)
     diagnostics: list[PlanningDiagnostic] = []
     if camera_basis.get("calibration", {}).get("fallback"):
         diagnostics.append(
@@ -177,14 +183,23 @@ def compile_formal_render_plan(
             for occurrence_id, item in evidence.items()
             if item is None
         )
-        grouped: dict[tuple[int, int], list[_OccurrenceEvidence]] = {}
+        grouped: dict[tuple[int, int, str], list[_OccurrenceEvidence]] = {}
         for item in proven:
             face = classify_receiver_face(item.outward_normal, camera_basis)
             # Repeated identical BOM items belong in one image when their
             # proven installation directions use the same receiver face.  The
             # contract retains every distinct receiver occurrence, so this is
             # a presentation grouping rather than a loss of geometry evidence.
-            key = (int(face["face_id"]), int(face["sign"]))
+            receiver_layer = (
+                _nearest_occurrence_owner(item.receiver_id, occurrence_owner)
+                if physical_role(row.name) == "seal"
+                else "shared-presentation-layer"
+            )
+            key = (
+                int(face["face_id"]),
+                int(face["sign"]),
+                receiver_layer,
+            )
             grouped.setdefault(key, []).append(item)
 
         group_count = len(grouped) + (1 if missing else 0)
@@ -254,6 +269,8 @@ def compile_formal_render_plan(
 
     ordered = [item[1] for item in sorted(raw_steps, key=lambda item: (item[0], item[1].step_id))]
     ordered = _attach_dependencies(ordered)
+    ordered, physical_diagnostics = _attach_physical_dependencies(ordered)
+    diagnostics.extend(physical_diagnostics)
     ordered = _topologically_order(ordered)
     ordered = _complete_plan_state(ordered, scope_bases, initial_completed)
     ordered = _attach_affected_descendants(ordered)
@@ -338,6 +355,7 @@ def lock_formal_render_plan(
 
     retained = [step for step in plan.steps if step.step_id not in removed]
     retained = _attach_dependencies(retained)
+    retained, _ = _attach_physical_dependencies(retained)
     retained = _topologically_order(retained)
     retained = _complete_plan_state(
         retained,
@@ -747,6 +765,62 @@ def _attach_dependencies(steps: list[FormalRenderStep]) -> list[FormalRenderStep
         updated = replace(step, depends_on=tuple(sorted(dependencies)))
         result.append(updated)
     return result
+
+
+def _attach_physical_dependencies(
+    steps: list[FormalRenderStep],
+) -> tuple[list[FormalRenderStep], list[PlanningDiagnostic]]:
+    inferred = infer_physical_precedence(steps)
+    additions: dict[str, set[str]] = {}
+    diagnostics: list[PlanningDiagnostic] = []
+    by_id = {step.step_id: step for step in steps}
+    for edge in inferred:
+        additions.setdefault(edge.after_step_id, set()).add(edge.before_step_id)
+        before = by_id[edge.before_step_id]
+        after = by_id[edge.after_step_id]
+        diagnostics.append(
+            PlanningDiagnostic(
+                "PHYSICAL_SEQUENCE_AUTO_RESOLVED",
+                f"按 {PHYSICAL_SEQUENCE_POLICY} 自动确定：{before.title} 先于 {after.title}（{edge.rule}）。",
+                tuple(sorted(set(before.source_bom_rows + after.source_bom_rows))),
+                edge.shared_receivers,
+                (before.step_id, after.step_id),
+            )
+        )
+    return (
+        [
+            replace(
+                step,
+                depends_on=tuple(
+                    sorted(set(step.depends_on) | additions.get(step.step_id, set()))
+                ),
+            )
+            for step in steps
+        ],
+        diagnostics,
+    )
+
+
+def _occurrence_owner(
+    rows: tuple[BomOccurrenceMapping, ...],
+) -> dict[str, str]:
+    return {
+        occurrence: f"bom-row-{row.bom_row:04d}"
+        for row in rows
+        if row.status == "matched"
+        for occurrence in row.occurrence_ids
+    }
+
+
+def _nearest_occurrence_owner(
+    occurrence_id: str, owners: dict[str, str]
+) -> str:
+    current = occurrence_id
+    while current and current != "ROOT":
+        if current in owners:
+            return owners[current]
+        current = current.rpartition("/")[0]
+    return owners.get("ROOT", f"receiver:{occurrence_id}")
 
 
 def _topologically_order(steps: list[FormalRenderStep]) -> list[FormalRenderStep]:
