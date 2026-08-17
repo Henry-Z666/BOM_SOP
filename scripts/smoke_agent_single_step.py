@@ -30,6 +30,72 @@ def _hash_files(root: Path) -> dict[str, str]:
     }
 
 
+def _camera_id(task: dict) -> str:
+    variants = task.get("payload", {}).get("presentation", {}).get("variants", [])
+    if not variants:
+        return ""
+    return str(variants[0].get("camera_id", ""))
+
+
+def _select_targets(tasks: list[dict], step_count: int) -> list[dict]:
+    if step_count < 1:
+        raise ValueError("step count must be positive")
+    formal = [
+        task
+        for task in tasks
+        if task.get("payload", {}).get("execution_mode") == "formal"
+    ]
+    if len(formal) < step_count:
+        raise ValueError(
+            f"requested {step_count} formal steps but only {len(formal)} exist"
+        )
+    if step_count == 1:
+        return formal[:1]
+
+    by_camera: dict[str, list[dict]] = {}
+    for task in formal:
+        by_camera.setdefault(_camera_id(task), []).append(task)
+    primary_camera, primary_tasks = max(
+        by_camera.items(), key=lambda item: (len(item[1]), item[0])
+    )
+    primary_tasks = sorted(
+        primary_tasks, key=lambda task: (bool(task.get("depends_on")), formal.index(task))
+    )
+    selected = primary_tasks[: min(2, step_count)]
+    if len(selected) < step_count:
+        secondary = [
+            task
+            for task in formal
+            if _camera_id(task) != primary_camera and task not in selected
+        ]
+        secondary.sort(
+            key=lambda task: (bool(task.get("depends_on")), formal.index(task))
+        )
+        if secondary:
+            selected.append(secondary[0])
+    for task in formal:
+        if len(selected) >= step_count:
+            break
+        if task not in selected:
+            selected.append(task)
+    return selected
+
+
+def _manifest_frame_counts(run_workspace: Path, step_ids: list[str]) -> dict[str, int]:
+    counts = {step_id: 0 for step_id in step_ids}
+    worker_root = run_workspace / "internal" / "native-worker"
+    if not worker_root.is_dir():
+        return counts
+    for manifest in worker_root.glob("generation-*/manifests/*.tsv"):
+        for line in manifest.read_text(encoding="utf-8", errors="replace").splitlines():
+            output_path = line.split("\t", 1)[0]
+            for step_id in step_ids:
+                if step_id in output_path:
+                    counts[step_id] += 1
+                    break
+    return counts
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run one real Creo task through AgentCore and SkillRuntime."
@@ -38,6 +104,7 @@ def main() -> int:
     parser.add_argument("--cad", type=Path, required=True)
     parser.add_argument("--workspace", type=Path)
     parser.add_argument("--runtime-config", type=Path)
+    parser.add_argument("--step-count", type=int, default=1)
     args = parser.parse_args()
 
     if args.runtime_config is not None:
@@ -72,25 +139,37 @@ def main() -> int:
         raise RuntimeError(f"render compilation failed: {compiled.diagnostics}")
     jobs_path = compiled.artifacts[0].relative_path
     jobs = runtime.artifacts.read_json(core.get_run(run_id).workspace, jobs_path)
-    target = next(
-        task
-        for task in jobs["tasks"]
-        if task.get("payload", {}).get("execution_mode") == "formal"
-    )
+    targets = _select_targets(jobs["tasks"], args.step_count)
+    target_ids = [str(task["step_id"]) for task in targets]
+    render_parameters = {
+        "step_ids": target_ids,
+        "result_scope_contract": "requested/v1",
+    }
     rendered = runtime.execute(
         run_id,
         "render-batch",
         (jobs_path,),
-        {"step_ids": [target["step_id"]]},
+        render_parameters,
     )
     if rendered.status is not SkillStatus.PASSED:
         raise RuntimeError(f"render skill failed: {rendered.diagnostics}")
+    run_workspace = core.get_run(run_id).workspace
+    frames_after_render = _manifest_frame_counts(run_workspace, target_ids)
+    cached_render = runtime.execute(
+        run_id,
+        "render-batch",
+        (jobs_path,),
+        render_parameters,
+    )
+    frames_after_cache = _manifest_frame_counts(run_workspace, target_ids)
+    if cached_render != rendered or frames_after_cache != frames_after_render:
+        raise RuntimeError("identical render fingerprint was not reused without new frames")
     validated = runtime.execute(
         run_id,
         "validate-repair",
         (jobs_path, rendered.artifacts[0].relative_path),
     )
-    if validated.status is not SkillStatus.PASSED:
+    if validated.status not in {SkillStatus.PASSED, SkillStatus.QUESTIONED}:
         raise RuntimeError(f"validation skill failed: {validated.diagnostics}")
     validation_path = next(
         artifact.relative_path
@@ -112,7 +191,7 @@ def main() -> int:
             candidates_path,
         ),
     )
-    if published.status is not SkillStatus.PASSED:
+    if published.status not in {SkillStatus.PASSED, SkillStatus.QUESTIONED}:
         raise RuntimeError(f"publication skill failed: {published.diagnostics}")
     publication = runtime.artifacts.read_json(
         core.get_run(run_id).workspace, published.artifacts[0].relative_path
@@ -124,27 +203,52 @@ def main() -> int:
     result = runtime.artifacts.read_json(
         core.get_run(run_id).workspace, rendered.artifacts[0].relative_path
     )
-    target_result = next(
-        item for item in result["steps"] if item["step_id"] == target["step_id"]
-    )
+    target_results = [
+        next(item for item in result["steps"] if item["step_id"] == step_id)
+        for step_id in target_ids
+    ]
     after = _hash_files(args.cad)
     if before != after:
         raise RuntimeError("source CAD hashes changed during Agent smoke run")
-    image = (
-        core.get_run(run_id).workspace / str(target_result.get("image_path", ""))
+    images = [
+        run_workspace / str(target_result.get("image_path", ""))
+        for target_result in target_results
+    ]
+    for target_result, image in zip(target_results, images, strict=True):
+        if target_result["status"] == "PASSED" and not image.is_file():
+            raise RuntimeError(f"passed target image is missing: {target_result}")
+    delivery_files = sorted(
+        path.relative_to(delivery).as_posix()
+        for path in delivery.rglob("*")
+        if path.is_file()
     )
-    if target_result["status"] != "PASSED" or not image.is_file():
-        raise RuntimeError(f"real target did not pass: {target_result}")
+    if not delivery_files or any(
+        path.split("/", 1)[0] not in {"SOP.xlsx", "SOP_待确认.xlsx", "步骤图片"}
+        for path in delivery_files
+    ):
+        raise RuntimeError(f"delivery whitelist violation: {delivery_files}")
     print(
         json.dumps(
             {
                 "run_id": run_id,
                 "workspace": str(workspace),
-                "step_id": target["step_id"],
-                "image": str(image),
-                "output_hash": target_result["output_hash"],
+                "steps": [
+                    {
+                        "step_id": task["step_id"],
+                        "camera_id": _camera_id(task),
+                        "status": target_result["status"],
+                        "image": str(image) if image.is_file() else None,
+                        "output_hash": target_result["output_hash"],
+                        "rendered_frames": frames_after_render[task["step_id"]],
+                    }
+                    for task, target_result, image in zip(
+                        targets, target_results, images, strict=True
+                    )
+                ],
                 "sop": str(sop),
                 "publication_pending": publication["pending"],
+                "render_fingerprint_reused": True,
+                "delivery_files": delivery_files,
                 "cad_files": len(before),
                 "cad_unchanged": True,
             },

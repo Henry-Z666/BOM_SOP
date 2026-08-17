@@ -17,15 +17,27 @@ datas += [(str(root / "skills" / name), f"skills/{name}") for name in skill_name
 datas += [
     (str(root / "creo_java" / "RuntimeConfig.ps1"), "creo_java"),
     (str(root / "creo_java" / "run_input_discovery.ps1"), "creo_java"),
+    (str(root / "creo_java" / "run_agent_native_batch.ps1"), "creo_java"),
+    (str(root / "creo_java" / "invoke_agent_native_jlink.ps1"), "creo_java"),
+    (str(root / "creo_java" / "invoke_agent_native_worker.ps1"), "creo_java"),
+    (str(root / "creo_java" / "stop_agent_native_worker.ps1"), "creo_java"),
+    (str(root / "creo_java" / "test_license_binding.ps1"), "creo_java"),
+    (str(root / "creo_java" / "isolated_config.pro"), "creo_java"),
+    (str(root / "scripts" / "fit_creo_image.ps1"), "scripts"),
     (str(root / "creo_java" / "src" / "AutoCadDiscovery.java"), "creo_java/src"),
+    (str(root / "creo_java" / "src" / "ArrowProjection.java"), "creo_java/src"),
+    (str(root / "creo_java" / "src" / "RenderAssemblyImage.java"), "creo_java/src"),
+    (str(root / "creo_java" / "src" / "NativeArrowBatch.java"), "creo_java/src"),
+    (str(root / "creo_java" / "src" / "NativeArrowWorker.java"), "creo_java/src"),
 ]
-compiled_discovery = root / "creo_java" / "build" / "AutoCadDiscovery.class"
-if not compiled_discovery.is_file():
+compiled_root = root / "creo_java" / "build"
+required_classes = ("AutoCadDiscovery.class", "NativeArrowWorker.class")
+if any(not (compiled_root / name).is_file() for name in required_classes):
     raise FileNotFoundError(
-        "AutoCadDiscovery.class is required; run packaging/build.ps1 so J-Link "
-        "is compiled before PyInstaller analysis"
+        "Current J-Link classes are required; run packaging/build.ps1 before "
+        "PyInstaller analysis"
     )
-datas.append((str(compiled_discovery), "creo_java/build"))
+datas.append((str(compiled_root), "creo_java/build"))
 
 a = Analysis(
     [str(root / "packaging" / "entrypoint.py")],

@@ -13,7 +13,6 @@ from sop_pipeline.agent.render_scheduler import (
     RenderScheduler,
     RenderTask,
 )
-from sop_pipeline.agent.render_job_compiler import compile_creo_render_jobs
 
 
 class PassingWorker:
@@ -53,17 +52,6 @@ def _task(index: int, *, depends_on=(), blocks=False) -> RenderTask:
 
 
 class RenderSchedulerTests(unittest.TestCase):
-    def test_current_42_job_contract_compiles_deterministically(self) -> None:
-        contract = Path("data/runs/corrected-v2-render-jobs.json")
-        first = compile_creo_render_jobs(contract)
-        second = compile_creo_render_jobs(contract)
-
-        self.assertEqual(len(first.tasks), 42)
-        self.assertEqual(first.fingerprint, second.fingerprint)
-        self.assertEqual(first.tasks[0].depends_on, ())
-        self.assertEqual(first.tasks[-1].depends_on, (first.tasks[-2].step_id,))
-        self.assertTrue(all(task.main_process_id == "30" for task in first.tasks))
-
     def test_disk_checkpoint_resumes_without_rerendering(self) -> None:
         plan = RenderPlan("render-plan/v1", tuple(_task(index) for index in range(1, 8)))
         worker = PassingWorker()

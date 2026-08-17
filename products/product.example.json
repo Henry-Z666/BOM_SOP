@@ -1,9 +1,0 @@
-{
-  "schema_version": "assembly-sop-product/v1",
-  "product_id": "example-product",
-  "bom_file": "input/BOM.xlsx",
-  "models_dir": "input/models",
-  "sop_template": "input/SOP-template.xlsx",
-  "final_assembly": "final-assembly.asm.1",
-  "bom_sheet": "BOM"
-}

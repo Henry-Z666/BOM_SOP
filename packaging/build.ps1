@@ -13,9 +13,12 @@ if (-not $WorkPath) { $WorkPath = Join-Path $projectRoot 'build\pyinstaller' }
 & (Join-Path $projectRoot 'creo_java\build.ps1') -RuntimeConfig $RuntimeConfig
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-$discoveryClass = Join-Path $projectRoot 'creo_java\build\AutoCadDiscovery.class'
-if (-not (Test-Path -LiteralPath $discoveryClass -PathType Leaf)) {
-  throw 'J-Link compilation did not produce AutoCadDiscovery.class.'
+$requiredClasses = @('AutoCadDiscovery.class', 'NativeArrowWorker.class')
+foreach ($className in $requiredClasses) {
+  $classPath = Join-Path $projectRoot (Join-Path 'creo_java\build' $className)
+  if (-not (Test-Path -LiteralPath $classPath -PathType Leaf)) {
+    throw "J-Link compilation did not produce $className."
+  }
 }
 
 & $PythonCommand -m PyInstaller --noconfirm --clean `

@@ -1,5 +1,5 @@
 from .core import AgentCore
-from .creo_worker import AgentNativeCreoWorker, PowerShellCreoWorker
+from .creo_worker import AgentNativeCreoWorker
 from .desktop_workflow import DesktopWorkflow
 from .excel_verifier import ExcelComVerifier
 from .formal_render_planner import (
@@ -50,7 +50,7 @@ from .screen_centering import (
     solve_with_screen_pan_response,
     update_screen_pan_response,
 )
-from .render_job_compiler import compile_creo_render_jobs, compile_locked_render_jobs
+from .render_job_compiler import compile_locked_render_jobs
 from .render_validation import (
     ArrowEvidence,
     ArrowRasterMetrics,
@@ -108,7 +108,6 @@ __all__ = [
     "ArrowRasterMetrics",
     "ClarificationItem",
     "ClarificationPacket",
-    "compile_creo_render_jobs",
     "compile_locked_render_jobs",
     "compile_formal_render_plan",
     "formal_render_plan_from_dict",
@@ -130,7 +129,6 @@ __all__ = [
     "PipelineOrchestrator",
     "PlanningDiagnostic",
     "lock_formal_render_plan",
-    "PowerShellCreoWorker",
     "ProducedArtifact",
     "QwenAdvisor",
     "RunNotFoundError",

@@ -2,6 +2,7 @@
 node_modules/
 creo_java/build/
 build/
+dist/
 *.egg-info/
 *.class
 __pycache__/
@@ -9,26 +10,23 @@ __pycache__/
 
 # Per-computer Creo installation, license and runtime commands
 config/creo-runtime.json
+config/qwen-runtime.json
 
 # Source CAD and generated deliverables are kept locally, not in the workflow repository.
 零件图/
+BOM.xlsx
+SOP示例.xlsx
+work/
+output/
 outputs/
+delivery/
+交付结果/
+步骤图片/
 .agent-runs/
-data/clean-migration-*/
-
-# Ephemeral Creo sessions, rendered images, spreadsheet build caches and logs
-data/runs/published-sop-build/
-data/runs/**/models/
-data/runs/**/*.jpg
-data/runs/**/*.jpeg
-data/runs/**/*.png
-data/runs/**/*.log
-data/runs/**/*.stderr
-data/runs/**/*.stdout
-data/camera-bases/*.log
-data/runs/arrow-*/
-data/runs/persistent-*/
-data/runs/pixel-*/
+data/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
 
 # Local app and operating-system artifacts
 .DS_Store
