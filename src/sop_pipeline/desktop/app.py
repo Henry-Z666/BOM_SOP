@@ -370,6 +370,19 @@ class MainWindow(QMainWindow):
         )
         self.review_instruction_help.setWordWrap(True)
         layout.addWidget(self.review_instruction_help)
+        self.guided_group = QGroupBox("只填写关键信息")
+        self.guided_form_layout = QFormLayout(self.guided_group)
+        self.guided_instruction = QLabel()
+        self.guided_instruction.setWordWrap(True)
+        self.guided_form_layout.addRow(self.guided_instruction)
+        self.guided_sentence = QLabel()
+        self.guided_sentence.setWordWrap(True)
+        self.guided_sentence.setStyleSheet("font-weight: 600;")
+        self.guided_form_layout.addRow("将提交：", self.guided_sentence)
+        self.guided_group.setVisible(False)
+        self.guided_widgets: dict[str, QWidget] = {}
+        self.current_guided_form: dict[str, object] | None = None
+        layout.addWidget(self.guided_group)
         self.quick_prompt_layout = QHBoxLayout()
         self.quick_prompt_buttons: dict[str, QPushButton] = {}
         layout.addLayout(self.quick_prompt_layout)
@@ -558,6 +571,7 @@ class MainWindow(QMainWindow):
     def _load_candidate_gallery(self, outcome: dict) -> None:
         self.candidate_gallery.clear()
         self.current_review_item = None
+        self._load_guided_form(None)
         self.choose_candidate_button.setEnabled(False)
         self.instruct_button.setEnabled(False)
         if not self.current_run_id:
@@ -616,6 +630,7 @@ class MainWindow(QMainWindow):
         entry = dict(item.data(Qt.UserRole) or {})
         self.current_review_item = entry
         self._refresh_quick_prompts(entry)
+        self._load_guided_form(entry.get("guided_form"))
         step_number = entry.get("step_number")
         step_title = str(entry.get("step_title", "")).strip()
         if step_number:
@@ -658,14 +673,74 @@ class MainWindow(QMainWindow):
                     Qt.SmoothTransformation,
                 )
             )
-        is_candidate = entry.get("kind") in {"candidate", "current"}
-        self.choose_candidate_button.setText(
-            "采用当前图片"
-            if entry.get("kind") == "current"
-            else "采用选中的候选图"
-        )
+        is_candidate = entry.get("kind") in {"candidate", "current", "failed_image"}
+        if entry.get("kind") == "failed_image":
+            choose_label = "知情采用此原图"
+        elif entry.get("kind") == "current":
+            choose_label = "采用当前图片"
+        else:
+            choose_label = "采用选中的候选图"
+        self.choose_candidate_button.setText(choose_label)
         self.choose_candidate_button.setEnabled(is_candidate)
+        guided = entry.get("guided_form")
+        if isinstance(guided, dict):
+            self.instruct_button.setText(
+                str(guided.get("submit_label") or "按关键信息重新生成")
+            )
+        else:
+            self.instruct_button.setText("按说明重新生成当前步骤")
         self.instruct_button.setEnabled(bool(entry.get("step_id")))
+
+    def _load_guided_form(self, value: object) -> None:
+        while self.guided_form_layout.rowCount() > 2:
+            self.guided_form_layout.removeRow(2)
+        self.guided_widgets.clear()
+        if not isinstance(value, dict):
+            self.current_guided_form = None
+            self.guided_group.setVisible(False)
+            return
+        self.current_guided_form = dict(value)
+        self.guided_group.setTitle(str(value.get("title") or "只填写关键信息"))
+        self.guided_instruction.setText(str(value.get("instruction") or ""))
+        for field in value.get("fields", []):
+            if not isinstance(field, dict):
+                continue
+            name = str(field.get("name") or "")
+            if not name:
+                continue
+            if field.get("type") == "choice":
+                widget: QWidget = QComboBox()
+                options = [str(option) for option in field.get("options", [])]
+                widget.addItems(options)  # type: ignore[attr-defined]
+                default = str(field.get("default") or "")
+                if default in options:
+                    widget.setCurrentText(default)  # type: ignore[attr-defined]
+                widget.currentTextChanged.connect(self._refresh_guided_sentence)  # type: ignore[attr-defined]
+            else:
+                widget = QLineEdit(str(field.get("default") or ""))
+                widget.textChanged.connect(self._refresh_guided_sentence)
+            self.guided_widgets[name] = widget
+            self.guided_form_layout.addRow(str(field.get("label") or name), widget)
+        self.guided_group.setVisible(True)
+        self._refresh_guided_sentence()
+
+    def _guided_values(self) -> dict[str, str]:
+        values: dict[str, str] = {}
+        for name, widget in self.guided_widgets.items():
+            if isinstance(widget, QComboBox):
+                values[name] = widget.currentText().strip()
+            elif isinstance(widget, QLineEdit):
+                values[name] = widget.text().strip()
+        return values
+
+    def _refresh_guided_sentence(self, *_args: object) -> None:
+        form = self.current_guided_form or {}
+        template = str(form.get("sentence_template") or "")
+        try:
+            sentence = template.format(**self._guided_values())
+        except KeyError:
+            sentence = "请填写全部必填信息"
+        self.guided_sentence.setText(sentence)
 
     def _resume(self) -> None:
         if not self.current_run_id:
@@ -698,9 +773,25 @@ class MainWindow(QMainWindow):
 
     def _resolve_candidate(self) -> None:
         entry = self.current_review_item or {}
-        if not self.current_run_id or entry.get("kind") not in {"candidate", "current"}:
+        if not self.current_run_id or entry.get("kind") not in {
+            "candidate",
+            "current",
+            "failed_image",
+        }:
             self._show_error("请先从左侧选择一张可采用的图片。")
             return
+        override = entry.get("kind") == "failed_image"
+        if override:
+            answer = QMessageBox.question(
+                self,
+                "确认知情采用",
+                "这张原图没有通过机器硬门。确认采用后，机器失败记录仍会保留，"
+                "SOP 将直接使用这张无水印原图。是否继续？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
         self.progress_previous_page = self.review_page
         self._set_operation_active(True)
         self.choose_candidate_button.setEnabled(False)
@@ -708,17 +799,35 @@ class MainWindow(QMainWindow):
         self.review_guidance.setText("正在采用当前选择，完成后将自动显示下一项……")
         self.bridge.succeeded.connect(self._resolution_ready, Qt.SingleShotConnection)
         self.progress_timer.start()
-        self.bridge.watch(
-            self.service.resolve_candidate(
-                self.current_run_id,
-                str(entry.get("step_id", "")),
-                str(entry.get("candidate_id", "")),
+        if override:
+            self.bridge.watch(
+                self.service.accept_with_override(
+                    self.current_run_id,
+                    str(entry.get("step_id", "")),
+                    reason=self.review_instruction.toPlainText().strip(),
+                )
             )
-        )
+        else:
+            self.bridge.watch(
+                self.service.resolve_candidate(
+                    self.current_run_id,
+                    str(entry.get("step_id", "")),
+                    str(entry.get("candidate_id", "")),
+                )
+            )
 
     def _resolve_instruction(self) -> None:
         entry = self.current_review_item or {}
-        instruction = self.review_instruction.toPlainText().strip()
+        structured_inputs: dict[str, str] = {}
+        if self.current_guided_form is not None:
+            structured_inputs = self._guided_values()
+            missing = [name for name, value in structured_inputs.items() if not value]
+            if missing:
+                self._show_error("请填写全部关键信息后再重新生成。")
+                return
+            instruction = self.guided_sentence.text().strip()
+        else:
+            instruction = self.review_instruction.toPlainText().strip()
         if not self.current_run_id or not entry.get("step_id"):
             self._show_error("请先从左侧选择要重新生成的步骤。")
             return
@@ -737,6 +846,7 @@ class MainWindow(QMainWindow):
                 self.current_run_id,
                 str(entry.get("step_id", "")),
                 instruction,
+                structured_inputs=structured_inputs,
             )
         )
 

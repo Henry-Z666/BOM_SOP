@@ -90,6 +90,25 @@ def compile_locked_render_jobs(plan: FormalRenderPlan) -> RenderPlan:
 def _execution_mode(step: FormalRenderStep) -> str:
     if step.status == "ready":
         return "formal"
+    renderable_review_codes = {
+        "DIRECTION_SIGN_WEAK",
+        "RECEIVER_NORMAL_NOT_AXIS_ALIGNED",
+        "CAMERA_RECEIVER_WRONG_HALF_SPACE",
+        "CAMERA_RECEIVER_SILHOUETTE",
+        "EXPLOSION_NOT_VISIBLE_IN_CAMERA",
+    }
+    if step.diagnostics and set(step.diagnostics).issubset(renderable_review_codes):
+        required = (
+            step.receiver_point_root,
+            step.receiver_normal_root,
+            step.translation_vector_root,
+            step.camera_id,
+            step.receiver_occurrences,
+            step.constraint_ids,
+            step.arrow_anchors,
+        )
+        if all(required):
+            return "diagnostic_preview"
     return "placeholder"
 
 

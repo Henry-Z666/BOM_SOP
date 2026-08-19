@@ -100,6 +100,23 @@ class DesktopAgentServiceTests(unittest.TestCase):
         self.assertEqual(backend.calls[0][2]["candidate_id"], "candidate-b")
         self.assertEqual(backend.calls[1][2]["instruction"], "箭头再短一些")
 
+    def test_informed_override_is_an_explicit_audited_resolution(self) -> None:
+        backend = FakeBackend()
+        service = DesktopAgentService(backend)
+
+        outcome = service.accept_with_override(
+            "run-1",
+            "step-4",
+            reason="现场确认采用原图",
+        ).result(timeout=2)
+        service.close()
+
+        self.assertEqual(outcome["status"], "COMPLETED")
+        resolution = backend.calls[0][2]
+        self.assertEqual(resolution["action"], "accept_with_override")
+        self.assertTrue(resolution["metadata"]["acknowledged"])
+        self.assertEqual(resolution["metadata"]["reason"], "现场确认采用原图")
+
     def test_pause_is_forwarded_to_the_independent_backend_process(self) -> None:
         backend = FakeBackend()
         service = DesktopAgentService(backend)

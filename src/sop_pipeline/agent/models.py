@@ -115,6 +115,7 @@ class StepResolution:
     step_id: str
     candidate_id: str | None = None
     instruction: str | None = None
+    action: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

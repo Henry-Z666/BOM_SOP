@@ -181,7 +181,10 @@ class AgentNativeCreoWorker:
         task: RenderTask,
         attempt: int,
     ) -> RenderAttempt:
-        if task.payload.get("execution_mode") != "formal":
+        if task.payload.get("execution_mode") not in {
+            "formal",
+            "diagnostic_preview",
+        }:
             return RenderAttempt.failed("TASK_NOT_FORMAL")
         if task.payload.get("arrow_renderer") != "creo_display_list/v1":
             return RenderAttempt.failed("ARROW_RENDERER_NOT_FORMAL")

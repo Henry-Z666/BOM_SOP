@@ -205,7 +205,7 @@ class ProgressViewTests(unittest.TestCase):
         self.assertEqual(packet["items"][1]["step_number"], 2)
         self.assertIn("没有可交付图片", packet["items"][1]["issues"][0])
 
-    def test_review_packet_rejects_weak_direction_camera_candidates(self) -> None:
+    def test_review_packet_keeps_weak_direction_image_for_informed_review(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             workspace = Path(folder)
             run_workspace = workspace / "runs" / "run-1"
@@ -262,10 +262,15 @@ class ProgressViewTests(unittest.TestCase):
 
             packet = review_packet(workspace, "run-1")
 
-        self.assertEqual(packet["candidate_count"], 0)
+        self.assertEqual(packet["candidate_count"], 1)
         self.assertEqual(len(packet["items"]), 1)
-        self.assertEqual(packet["items"][0]["kind"], "placeholder")
+        self.assertEqual(packet["items"][0]["kind"], "failed_image")
         self.assertEqual(packet["items"][0]["category"], "hard_block")
+        self.assertTrue(packet["items"][0]["override_allowed"])
+        self.assertEqual(
+            packet["items"][0]["guided_form"]["title"],
+            "确认安装方向",
+        )
 
     def test_review_packet_explains_when_no_candidates_passed(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

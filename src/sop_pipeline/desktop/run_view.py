@@ -5,6 +5,10 @@ from pathlib import Path
 from typing import Any
 
 from sop_pipeline.agent.step_revision import CURRENT_IMAGE_CANDIDATE_ID
+from sop_pipeline.agent.review import (
+    HUMAN_OVERRIDE_IMAGE_ID,
+    prepare_review_step,
+)
 
 
 def progress_snapshot(workspace: Path, run_id: str | None = None) -> dict[str, Any]:
@@ -69,6 +73,11 @@ def review_packet(workspace: Path, run_id: str) -> dict[str, Any]:
         for index, step in enumerate(locked_plan.get("steps", []), start=1)
         if isinstance(step, dict)
     }
+    plan_contracts = {
+        str(step.get("step_id")): step
+        for step in locked_plan.get("steps", [])
+        if isinstance(step, dict)
+    }
     groups = {
         str(group.get("step_id")): group
         for group in candidate_set.get("groups", [])
@@ -112,6 +121,21 @@ def review_packet(workspace: Path, run_id: str) -> dict[str, Any]:
             if detail and detail not in issues:
                 issues.append(detail)
         diagnostics = _review_diagnostics(step)
+        review_contract = prepare_review_step(
+            run_workspace,
+            step,
+            plan_contracts.get(step_id, {}),
+        )
+        review_fields = {
+            "machine_status": review_contract["machine_status"],
+            "machine_category": review_contract["machine_category"],
+            "machine_failures": review_contract["machine_failures"],
+            "has_real_image": review_contract["has_real_image"],
+            "override_allowed": review_contract["override_allowed"],
+            "available_actions": review_contract["available_actions"],
+            "guided_form": review_contract["guided_form"],
+            "attempt_history": review_contract["attempt_history"],
+        }
         selected_group = groups.get(step_id, {})
         group_candidates = (
             selected_group.get("candidates", [])
@@ -137,6 +161,7 @@ def review_packet(workspace: Path, run_id: str) -> dict[str, Any]:
                     "candidate_id": candidate_id,
                     "recommended": bool(candidate.get("recommended", False)),
                     "image_path": str(image_path) if image_path else "",
+                    **review_fields,
                     "issues": issues,
                     "label": (
                         f"{display_name} · {candidate_id}"
@@ -149,9 +174,7 @@ def review_packet(workspace: Path, run_id: str) -> dict[str, Any]:
             continue
         relative_path = str(step.get("image_path", ""))
         image_path = run_workspace / relative_path if relative_path else None
-        acceptance_allowed = bool(step.get("manual_acceptance_allowed", False)) and str(
-            step.get("category") or ""
-        ) not in {"hard_block", "system_retry"}
+        acceptance_allowed = bool(review_contract["normal_acceptance_allowed"])
         if acceptance_allowed:
             items.append(
                 {
@@ -166,8 +189,32 @@ def review_packet(workspace: Path, run_id: str) -> dict[str, Any]:
                     "candidate_id": CURRENT_IMAGE_CANDIDATE_ID,
                     "recommended": True,
                     "image_path": str(image_path) if image_path else "",
+                    **review_fields,
                     "issues": issues or ["图片已通过基础几何硬门，等待人工确认。"],
                     "label": f"{display_name} · 当前图片（可直接采用）",
+                }
+            )
+            candidate_count += 1
+            continue
+        if bool(review_contract["override_allowed"]):
+            override_path = str(review_contract["image_path"])
+            items.append(
+                {
+                    "kind": "failed_image",
+                    "step_id": step_id,
+                    "step_number": step_number,
+                    "step_title": title,
+                    "source_bom_rows": source_bom_rows,
+                    "error_code": error_code,
+                    "error_message": error_message,
+                    **diagnostics,
+                    "candidate_id": HUMAN_OVERRIDE_IMAGE_ID,
+                    "recommended": False,
+                    "image_path": override_path,
+                    **review_fields,
+                    "issues": issues
+                    or ["机器校验未通过；可修正重生成，或在确认风险后采用此原图。"],
+                    "label": f"{display_name} · 机器未通过（可人工审核原图）",
                 }
             )
             candidate_count += 1
@@ -213,6 +260,7 @@ def review_packet(workspace: Path, run_id: str) -> dict[str, Any]:
                 "candidate_id": "",
                 "recommended": False,
                 "image_path": str(image_path) if image_path else "",
+                **review_fields,
                 "issues": issues or ["本步骤没有可交付图片，需要按说明修正后重新生成。"],
                 "label": f"{display_name} · 待重新生成（占位图）",
             }
@@ -222,8 +270,8 @@ def review_packet(workspace: Path, run_id: str) -> dict[str, Any]:
         message = "没有待处理步骤。"
     elif candidate_count:
         message = (
-            "请选择一个步骤图片查看大图。候选图或已通过基础硬门的当前图片可直接采用；"
-            "占位步骤请填写修正说明。"
+            "请选择步骤查看完整证据。合格候选图可直接采用；机器未通过但已生成的"
+            "原图可在确认风险后人工采用，或填写关键信息重新生成。"
         )
     else:
         message = (

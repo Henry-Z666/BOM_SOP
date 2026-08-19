@@ -8,7 +8,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QListWidgetItem
 
 from sop_pipeline.desktop.app import MainWindow, _actionable_review_details
 from sop_pipeline.desktop.quick_prompts import QuickPrompt, StaticQuickPromptProvider
@@ -107,6 +107,54 @@ class DesktopResolutionFlowTests(unittest.TestCase):
                 window.quick_prompt_buttons["flip-view"].text(),
                 "翻转视角",
             )
+        finally:
+            window.close()
+
+    def test_direction_gate_uses_structured_fields_without_flip_shortcut(self) -> None:
+        window = MainWindow(_PendingResolutionService())  # type: ignore[arg-type]
+        item = QListWidgetItem("方向待确认")
+        item.setData(
+            Qt.UserRole,
+            {
+                "kind": "failed_image",
+                "step_id": "step-1",
+                "error_code": "DIRECTION_SIGN_WEAK",
+                "image_path": "",
+                "guided_form": {
+                    "title": "确认安装方向",
+                    "instruction": "只填写关键信息",
+                    "sentence_template": "该零件沿设备总装{axis}轴{sign}方向装入",
+                    "submit_label": "按所选方向重新生成",
+                    "fields": [
+                        {
+                            "name": "axis",
+                            "label": "安装轴",
+                            "type": "choice",
+                            "options": ["X", "Y", "Z"],
+                            "default": "Z",
+                        },
+                        {
+                            "name": "sign",
+                            "label": "装入方向",
+                            "type": "choice",
+                            "options": ["正", "负"],
+                            "default": "负",
+                        },
+                    ],
+                },
+            },
+        )
+
+        window._candidate_clicked(item)
+
+        try:
+            self.assertFalse(window.guided_group.isHidden())
+            self.assertEqual(
+                window.guided_sentence.text(),
+                "该零件沿设备总装Z轴负方向装入",
+            )
+            self.assertNotIn("flip-view", window.quick_prompt_buttons)
+            self.assertEqual(window.choose_candidate_button.text(), "知情采用此原图")
         finally:
             window.close()
 

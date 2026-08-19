@@ -351,8 +351,16 @@ class AgentCore:
         run = self._store.get(run_id)
         if run.status is not RunStatus.NEEDS_REVIEW:
             raise ValueError("只有 NEEDS_REVIEW 状态可以提交释疑")
-        if bool(resolution.candidate_id) == bool(resolution.instruction):
-            raise ValueError("释疑必须且只能提供候选图或自然语言说明之一")
+        supplied = sum(
+            bool(value)
+            for value in (
+                resolution.candidate_id,
+                resolution.instruction,
+                resolution.action,
+            )
+        )
+        if supplied != 1:
+            raise ValueError("释疑必须且只能提供候选图、修正说明或人工决定之一")
         before = self._store.list_steps(run_id)
         target = next((step for step in before if step.step_id == resolution.step_id), None)
         if target is None:

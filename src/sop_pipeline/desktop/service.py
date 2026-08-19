@@ -64,11 +64,37 @@ class DesktopAgentService:
         run_id: str,
         step_id: str,
         instruction: str,
+        *,
+        structured_inputs: dict[str, Any] | None = None,
     ) -> Future:
         return self._executor.submit(
             self.backend.resolve,
             run_id,
-            {"step_id": step_id, "instruction": instruction},
+            {
+                "step_id": step_id,
+                "instruction": instruction,
+                "metadata": {"structured_inputs": dict(structured_inputs or {})},
+            },
+        )
+
+    def accept_with_override(
+        self,
+        run_id: str,
+        step_id: str,
+        *,
+        reason: str = "",
+    ) -> Future:
+        return self._executor.submit(
+            self.backend.resolve,
+            run_id,
+            {
+                "step_id": step_id,
+                "action": "accept_with_override",
+                "metadata": {
+                    "acknowledged": True,
+                    "reason": str(reason).strip(),
+                },
+            },
         )
 
     def resume(self, run_id: str) -> Future:

@@ -355,7 +355,7 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         self.assertEqual(batch.count("-RuntimeConfig \"' + $runtime.ConfigPath + '\"'"), 2)
         self.assertIn("Get-CreoRuntime -ProjectRoot $ProjectRoot -ConfigPath $RuntimeConfig", worker)
         self.assertIn("Get-CreoRuntime -ProjectRoot $ProjectRoot -ConfigPath $RuntimeConfig", legacy)
-        self.assertIn("execution_mode -ne 'formal'", batch)
+        self.assertIn("@('formal','diagnostic_preview')", batch)
         self.assertNotIn("candidate_search", batch)
 
     def test_native_framing_has_a_six_raster_hard_budget(self) -> None:

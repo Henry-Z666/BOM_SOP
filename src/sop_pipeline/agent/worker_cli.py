@@ -82,6 +82,8 @@ def execute(workspace: Path, action: str, payload: dict[str, Any]) -> Any:
                 step_id=str(resolution["step_id"]),
                 candidate_id=resolution.get("candidate_id"),
                 instruction=resolution.get("instruction"),
+                action=resolution.get("action"),
+                metadata=dict(resolution.get("metadata", {})),
             ),
         )
     if action == "resume":

@@ -614,9 +614,11 @@ class PipelineOrchestratorTests(unittest.TestCase):
                 for item in pending_validation["steps"]
                 if item["step_id"] == target.step_id
             )
-            self.assertEqual(pending_item["image_kind"], "placeholder")
+            self.assertEqual(pending_item["image_kind"], "rendered")
             self.assertFalse(pending_item["manual_acceptance_allowed"])
-            self.assertIn("placeholder", pending_item["image_path"])
+            self.assertTrue(
+                pending_item["image_path"].replace("\\", "/").startswith("rendered/")
+            )
             calls_before = worker.calls.count(target.step_id)
 
             outcome = core.resolve(
@@ -640,6 +642,86 @@ class PipelineOrchestratorTests(unittest.TestCase):
                 if value["step_id"] == target.step_id
             )
             self.assertIn("-revision-", item["image_path"])
+
+    def test_human_override_publishes_original_bytes_without_changing_machine_result(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            bom, cad, graph = _weak_direction_fixture(root)
+            worker = ImageWorker()
+            core = AgentCore(
+                root / "workspace",
+                PipelineOrchestrator(
+                    adapters={
+                        "creo_discovery": StaticCreoDiscovery(graph),
+                        "render_worker": worker,
+                        "qwen_advisor": DirectionAdvisor(),
+                    }
+                ),
+            )
+            run_id = core.create_run(bom, cad)
+            packet = core.analyze(run_id)
+            core.confirm(
+                run_id,
+                {
+                    item.item_id: item.recommended_option
+                    for item in packet.items
+                    if item.category == "CONFIRMATION"
+                },
+            )
+            pending = core.generate(run_id)
+            target = next(step for step in pending.steps if step.status is StepStatus.FAILED)
+            run = core.get_run(run_id)
+            validation = json.loads(
+                (run.workspace / "results" / "validation-0001.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            machine_item = next(
+                item for item in validation["steps"] if item["step_id"] == target.step_id
+            )
+            original = run.workspace / machine_item["image_path"]
+            original_bytes = original.read_bytes()
+
+            completed = core.resolve(
+                run_id,
+                StepResolution(
+                    step_id=target.step_id,
+                    action="accept_with_override",
+                    metadata={
+                        "acknowledged": True,
+                        "reason": "人工核对装配现场后确认采用",
+                    },
+                ),
+            )
+
+            publication = json.loads(
+                (run.workspace / "results" / "publication-0001.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            published = next(
+                item for item in publication["steps"] if item["step_id"] == target.step_id
+            )
+            decision = json.loads(
+                (run.workspace / "reviews" / "human-review-decision-0001.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            delivery_image = next(
+                path
+                for path in (run.workspace / "delivery" / "步骤图片").iterdir()
+                if target.step_id in path.name
+            )
+            delivery_bytes = delivery_image.read_bytes()
+
+        self.assertEqual(completed.status, RunStatus.COMPLETED)
+        self.assertEqual(machine_item["status"], "FAILED")
+        self.assertEqual(published["status"], "PASSED")
+        self.assertEqual(published["machine_status"], "FAILED")
+        self.assertEqual(published["human_disposition"], "accept_with_override")
+        self.assertEqual(decision["publication_transform"], "none")
+        self.assertFalse(decision["watermark"])
+        self.assertEqual(delivery_bytes, original_bytes)
 
     def test_qwen_can_accept_real_image_with_only_presentation_warning(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

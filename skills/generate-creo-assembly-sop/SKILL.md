@@ -16,6 +16,11 @@ Run the skills in this order:
 
 Use the BOM as process truth and the locked final Creo assembly as geometry truth. Keep Qwen limited to semantic recommendations, visual review, and bounded natural-language revisions. Never let a model waive occurrence, visibility, transform, camera, arrow, hash, or state-machine gates.
 
-Use one persistent Creo worker by default, save a checkpoint after every completed step, and restart the worker after twenty tasks. Continue unrelated steps after an image failure. Publish two to four candidates only when every candidate passes the basic geometry gates; otherwise publish an explicit regeneration placeholder.
+Machine gates control automatic acceptance. When a real image exists, always expose it with its
+machine result for human review. A user may explicitly accept a machine-failed original through a
+hashed `human-review-decision/v1`; retain the failure status separately and publish the original
+bytes with no watermark or transformation. A model may never create this decision.
+
+Use one persistent Creo worker by default, save a checkpoint after every completed step, and restart the worker after twenty tasks. Continue unrelated steps after an image failure. Publish two to four candidates only when every candidate passes the basic geometry gates. Preserve a real failed image for informed review; use an explicit regeneration placeholder only when no real image exists.
 
 Read `references/render-rules.md` and `references/contracts.md` before changing render or publication contracts. Reuse schemas and derivation mechanisms across products; never reuse product-specific occurrence IDs, coordinates, PAN, ZOOM, paths, or license settings.

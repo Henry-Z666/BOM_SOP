@@ -176,25 +176,33 @@ class PipelineOrchestrator:
                 "step_id": resolution.step_id,
                 "candidate_id": resolution.candidate_id,
                 "instruction": resolution.instruction,
+                "action": resolution.action,
+                "metadata": dict(resolution.metadata),
                 "revision": revision_number,
             },
         )
         revision_ref = _artifact_path(result, "step-revision")
         invalidation_ref = _artifact_path(result, "invalidation-set")
+        review_decision_ref = _optional_artifact_path(
+            result, "human-review-decision"
+        )
         revision = self._runtime().artifacts.read_json(run.workspace, revision_ref)
         if revision.get("changes", {}).get("candidate_id"):
+            publication_refs = [
+                "analysis/normalized-bom.json",
+                f"plans/locked-render-plan-{run.plan_revision:04d}.json",
+                f"results/validation-{run.plan_revision:04d}.json",
+                f"results/candidate-set-{run.plan_revision:04d}.json",
+                prior_publication_ref,
+                revision_ref,
+                invalidation_ref,
+            ]
+            if review_decision_ref is not None:
+                publication_refs.append(review_decision_ref)
             self._run(
                 run.run_id,
                 "publish-delivery",
-                (
-                    "analysis/normalized-bom.json",
-                    f"plans/locked-render-plan-{run.plan_revision:04d}.json",
-                    f"results/validation-{run.plan_revision:04d}.json",
-                    f"results/candidate-set-{run.plan_revision:04d}.json",
-                    prior_publication_ref,
-                    revision_ref,
-                    invalidation_ref,
-                ),
+                tuple(publication_refs),
             )
         else:
             self._run(
@@ -323,6 +331,13 @@ def _artifact_path(result, kind: str) -> str:
         if artifact.kind == kind:
             return artifact.relative_path
     raise KeyError(f"Skill结果缺少产物：{kind}")
+
+
+def _optional_artifact_path(result, kind: str) -> str | None:
+    for artifact in result.artifacts:
+        if artifact.kind == kind:
+            return artifact.relative_path
+    return None
 
 
 def _representative_formal_step_ids(payload: dict[str, Any], limit: int) -> list[str]:

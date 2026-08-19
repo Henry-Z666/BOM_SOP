@@ -55,24 +55,25 @@ AGENT_SKILL_DEFINITIONS: dict[str, SkillDefinition] = {
         "render-batch",
         _GENERATING,
         ("render-batch", "validate-repair"),
-        "agent-skill/v5",
+        "agent-skill/v6",
     ),
     "validate-repair": _definition(
         "validate-repair",
         _GENERATING,
         ("validate-repair", "render-batch", "publish-delivery"),
-        "agent-skill/v5",
+        "agent-skill/v6",
     ),
     "publish-delivery": _definition(
         "publish-delivery",
         (RunStatus.GENERATING, RunStatus.NEEDS_REVIEW),
         ("publish-delivery", "resolve-step"),
+        "agent-skill/v2",
     ),
     "resolve-step": _definition(
         "resolve-step",
         (RunStatus.NEEDS_REVIEW,),
         ("resolve-step", "render-batch", "validate-repair", "publish-delivery"),
-        "agent-skill/v3",
+        "agent-skill/v4",
     ),
 }
 

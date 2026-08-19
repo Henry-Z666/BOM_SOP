@@ -39,6 +39,11 @@ from .models import (
     StepStatus,
 )
 from .qwen_adapter import DashScopeTransport, QwenAdvisor, explicit_axis_direction
+from .review import (
+    ACCEPT_WITH_OVERRIDE,
+    HUMAN_OVERRIDE_IMAGE_ID,
+    create_human_override_decision,
+)
 from .render_job_compiler import compile_locked_render_jobs
 from .render_scheduler import (
     FileCheckpointStore,
@@ -433,7 +438,8 @@ def render_batch(
         formal_ids = {
             task.step_id
             for task in plan.tasks
-            if task.payload.get("execution_mode") == "formal"
+            if task.payload.get("execution_mode")
+            in {"formal", "diagnostic_preview"}
             and task.step_id in invalidated
         }
         formal_tasks = tuple(
@@ -559,7 +565,7 @@ def render_batch(
                 decision = classify_failures(unresolved)
                 status = (
                     StepStatus.QUESTIONED
-                    if task.payload.get("execution_mode") == "candidate_search"
+                    if task.payload.get("execution_mode") == "diagnostic_preview"
                     else StepStatus.FAILED
                 )
                 steps.append(
@@ -617,19 +623,21 @@ def render_batch(
             )
             decision = classify_failures(all_failures)
             result_status = (
-                StepStatus.QUESTIONED
-                if execution_mode == "candidate_search"
-                and result.status in {StepStatus.PASSED, StepStatus.QUESTIONED}
+                StepStatus.FAILED
+                if execution_mode == "diagnostic_preview"
                 else result.status
             )
             deterministic_geometry_passed = (
-                result.status is StepStatus.PASSED
-                or bool(
-                    gate_failures
-                    and all(
-                        gate_policy(str(failure)).category
-                        in {GateCategory.AUTO_REPAIR, GateCategory.HUMAN_REVIEW}
-                        for failure in gate_failures
+                execution_mode != "diagnostic_preview"
+                and (
+                    result.status is StepStatus.PASSED
+                    or bool(
+                        gate_failures
+                        and all(
+                            gate_policy(str(failure)).category
+                            in {GateCategory.AUTO_REPAIR, GateCategory.HUMAN_REVIEW}
+                            for failure in gate_failures
+                        )
                     )
                 )
             )
@@ -660,12 +668,6 @@ def render_batch(
                     image_path = previous_path
                     retained_image = previous_relative.replace("\\", "/")
                     result_status = StepStatus.QUESTIONED
-            if (
-                execution_mode == "candidate_search"
-                and image_path.is_file()
-                and "placeholder" not in image_path.name.casefold()
-            ):
-                result_status = StepStatus.QUESTIONED
             has_real_image = (
                 image_path.is_file()
                 and "placeholder" not in image_path.name.casefold()
@@ -684,7 +686,7 @@ def render_batch(
                     "restored": False,
                     "error_code": (
                         planning_diagnostics[0]
-                        if execution_mode == "candidate_search"
+                        if execution_mode == "diagnostic_preview"
                         and planning_diagnostics
                         else (
                             diagnostic.get("error_code")
@@ -738,7 +740,7 @@ def render_batch(
                                 )
                             )
                         )
-                        if execution_mode == "candidate_search"
+                        if execution_mode == "diagnostic_preview"
                         else (
                             _render_diagnostic_message(diagnostic)
                             if diagnostic
@@ -868,7 +870,7 @@ def validate_repair(
                 if detail and detail not in issues:
                     issues.append(detail)
             planning_review_required = (
-                str(item.get("execution_mode")) == "candidate_search"
+                str(item.get("execution_mode")) == "diagnostic_preview"
             )
             if planning_review_required:
                 planning_issue = str(
@@ -1115,6 +1117,10 @@ def publish_delivery(
         }
         selected_step = None
         selected_candidate = None
+        decision_ref = _optional_ref(invocation, "human-review-decision")
+        human_decision = (
+            context.read_json(decision_ref) if decision_ref is not None else None
+        )
         prior_publication_ref = _optional_ref(
             invocation, "results/publication-"
         )
@@ -1157,6 +1163,9 @@ def publish_delivery(
             step_id = str(item["step_id"])
             step = formal_by_step[step_id]
             status = StepStatus(item["status"])
+            machine_status = status.value
+            human_disposition: str | None = None
+            applied_review_decision_ref: str | None = None
             image_path = context.run.workspace / str(item["image_path"])
             candidate_images = tuple(
                 SopImage(
@@ -1189,11 +1198,47 @@ def publish_delivery(
                 status = StepStatus.PASSED
                 result_depends_on = committed.depends_on
                 result_complete_state_hash = committed.complete_state_hash
+                machine_status = str(prior.get("machine_status") or machine_status)
+                human_disposition = prior.get("human_disposition")
+                applied_review_decision_ref = prior.get("review_decision_ref")
             if (
                 step_id == selected_step
                 and selected_candidate == CURRENT_IMAGE_CANDIDATE_ID
             ):
                 status = StepStatus.PASSED
+            elif (
+                step_id == selected_step
+                and selected_candidate == HUMAN_OVERRIDE_IMAGE_ID
+            ):
+                if not isinstance(human_decision, Mapping):
+                    raise ValueError("人工特批缺少独立审核决定记录")
+                if (
+                    str(human_decision.get("decision")) != ACCEPT_WITH_OVERRIDE
+                    or str(human_decision.get("step_id")) != step_id
+                ):
+                    raise ValueError("人工审核决定与当前步骤不一致")
+                selected_relative = str(
+                    human_decision.get("selected_image_path") or ""
+                )
+                selected_path = (context.run.workspace / selected_relative).resolve()
+                root = context.run.workspace.resolve()
+                if root not in selected_path.parents or not selected_path.is_file():
+                    raise ValueError("人工选定的原始图片不存在或超出当前运行区")
+                if "placeholder" in selected_path.name.casefold():
+                    raise ValueError("占位图不能通过人工特批进入正式SOP")
+                if _file_hash(selected_path) != str(
+                    human_decision.get("selected_image_sha256") or ""
+                ):
+                    raise ValueError("人工选定图片已变化，必须重新审核")
+                if (
+                    human_decision.get("publication_transform") != "none"
+                    or bool(human_decision.get("watermark", True))
+                ):
+                    raise ValueError("人工特批必须直接采用无水印原始图片")
+                image_path = selected_path
+                status = StepStatus.PASSED
+                human_disposition = ACCEPT_WITH_OVERRIDE
+                applied_review_decision_ref = decision_ref
             elif step_id == selected_step and selected_candidate:
                 chosen = next(
                     (
@@ -1271,6 +1316,12 @@ def publish_delivery(
                     "image_path": _run_relative_path(
                         context.run.workspace, image_path
                     ),
+                    "machine_status": machine_status,
+                    "human_disposition": human_disposition,
+                    "review_decision_ref": applied_review_decision_ref,
+                    "publication_transform": (
+                        "none" if human_disposition == ACCEPT_WITH_OVERRIDE else None
+                    ),
                 }
             )
         verifier = context.adapters.get("workbook_verifier")
@@ -1278,7 +1329,7 @@ def publish_delivery(
         delivery = context.run.workspace / "delivery"
         workbook = publisher.publish(tuple(sop_steps), delivery, pending=pending)
         publication = {
-            "schema_version": "publication-result/v1",
+            "schema_version": "publication-result/v2",
             "pending": pending,
             "workbook": workbook.name,
             "delivery_directory": str(delivery),
@@ -1309,19 +1360,57 @@ def resolve_step(
     step_id = str(invocation.parameters.get("step_id", "")).strip()
     raw_candidate = invocation.parameters.get("candidate_id")
     raw_instruction = invocation.parameters.get("instruction")
+    raw_action = invocation.parameters.get("action")
     candidate_id = str(raw_candidate).strip() if raw_candidate is not None else ""
     instruction = str(raw_instruction).strip() if raw_instruction is not None else ""
-    if not step_id or bool(candidate_id) == bool(instruction):
+    action = str(raw_action).strip() if raw_action is not None else ""
+    supplied = sum(bool(value) for value in (candidate_id, instruction, action))
+    if not step_id or supplied != 1:
         return _blocked(
             "INVALID_STEP_RESOLUTION",
-            "释疑必须指定步骤，并且只能提供候选图或文字说明之一。",
+            "释疑必须指定步骤，并且只能提供候选图、修正说明或人工决定之一。",
         )
     steps = context.run_store.list_steps(context.run.run_id)
     if step_id not in {step.step_id for step in steps}:
         return _blocked("STEP_NOT_FOUND", f"找不到待释疑步骤：{step_id}")
     revision_number = int(invocation.parameters.get("revision", 1))
+    review_decision: dict[str, Any] | None = None
     try:
-        if candidate_id:
+        if action:
+            if action != ACCEPT_WITH_OVERRIDE:
+                raise ValueError(f"不支持的人工决定：{action}")
+            metadata = invocation.parameters.get("metadata", {})
+            if not isinstance(metadata, Mapping) or not bool(
+                metadata.get("acknowledged", False)
+            ):
+                raise ValueError("知情采用前必须明确确认已阅读机器校验结果")
+            validation = context.read_json(
+                _require_ref(invocation, "results/validation-")
+            )
+            selected_step = next(
+                (
+                    item
+                    for item in validation.get("steps", [])
+                    if str(item.get("step_id")) == step_id
+                ),
+                None,
+            )
+            if not isinstance(selected_step, Mapping):
+                raise ValueError("当前校验结果中找不到待审核步骤")
+            review_decision = create_human_override_decision(
+                context.run.workspace,
+                selected_step,
+                step_id=step_id,
+                revision=revision_number,
+                reason=str(metadata.get("reason") or ""),
+            )
+            revision = StepRevision(
+                revision_number,
+                step_id,
+                RevisionKind.PRESENTATION,
+                {"candidate_id": HUMAN_OVERRIDE_IMAGE_ID},
+            )
+        elif candidate_id:
             if candidate_id == CURRENT_IMAGE_CANDIDATE_ID:
                 validation = context.read_json(
                     _require_ref(invocation, "results/validation-")
@@ -1502,7 +1591,7 @@ def resolve_step(
         invalidated = tuple(sorted(graph.invalidated_by(revision)))
     except (KeyError, RuntimeError, TypeError, ValueError) as error:
         return _blocked("STEP_RESOLUTION_REJECTED", str(error))
-    return _passed(
+    artifacts = [
         SkillArtifactValue(
             "step-revision",
             {
@@ -1521,7 +1610,12 @@ def resolve_step(
                 "steps": invalidated,
             },
         ),
-    )
+    ]
+    if review_decision is not None:
+        artifacts.append(
+            SkillArtifactValue("human-review-decision", review_decision)
+        )
+    return _passed(*artifacts)
 
 
 def _passed(*artifacts: SkillArtifactValue) -> SkillHandlerOutput:

@@ -63,11 +63,16 @@ A formal image passes only when all apply:
 - no datum, weld symbol, annotation, UI, or unrelated assembly content is visible;
 - output dimensions and fixed-frame policy match the job contract.
 
-Failure blocks publication and triggers a bounded correction/rerender of the affected step.
+Failure blocks automatic publication and triggers bounded correction/rerender of the affected
+step. If a real image exists, it remains available for informed human review. An explicit human
+override grants delivery eligibility without changing the machine failure result.
 
 ## Publication gates
 
-- Only passed render jobs may enter the workbook.
+- Machine-passed render jobs or real images covered by a verified `human-review-decision/v1`
+  may enter the workbook. The decision must bind the exact path and SHA-256, retain the machine
+  status, and require byte-identical publication with no watermark or image transformation.
+- Placeholders and missing images may never be manually approved.
 - Preserve BOM order and one-step-per-sheet/page template semantics.
 - Populate material, quantity, process, control, and tooling fields from traceable sources.
 - Validate sheet count, image count, image references, print areas, merged cells, and visible page layout.

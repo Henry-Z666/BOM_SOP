@@ -88,6 +88,7 @@ _OUTPUT_PATHS: dict[str, dict[str, str]] = {
     "resolve-step": {
         "step-revision": "revisions/step-revision-{revision:04d}.json",
         "invalidation-set": "revisions/invalidation-set-{revision:04d}.json",
+        "human-review-decision": "reviews/human-review-decision-{revision:04d}.json",
     },
 }
 
