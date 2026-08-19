@@ -38,7 +38,7 @@ from .models import (
     SkillStatus,
     StepStatus,
 )
-from .qwen_adapter import DashScopeTransport, QwenAdvisor
+from .qwen_adapter import DashScopeTransport, QwenAdvisor, explicit_axis_direction
 from .render_job_compiler import compile_locked_render_jobs
 from .render_scheduler import (
     FileCheckpointStore,
@@ -433,7 +433,7 @@ def render_batch(
         formal_ids = {
             task.step_id
             for task in plan.tasks
-            if task.payload.get("execution_mode") in {"formal", "candidate_search"}
+            if task.payload.get("execution_mode") == "formal"
             and task.step_id in invalidated
         }
         formal_tasks = tuple(
@@ -762,9 +762,7 @@ def render_batch(
             "diagnostics_directory": "internal/render-diagnostics",
         }
         formal_step_payloads = [
-            item
-            for item in steps
-            if item.get("execution_mode") in {"formal", "candidate_search"}
+            item for item in steps if item.get("execution_mode") == "formal"
         ]
         if formal_step_payloads and not any(
             item.get("status")
@@ -928,18 +926,21 @@ def validate_repair(
                     issues.append(failure_detail)
             if status is not StepStatus.PASSED:
                 questioned = True
-                discovered_candidates = tuple(
-                    sorted(
-                        (context.run.workspace / "rendered").glob(
-                            f"{_safe_id(step_id)}-candidate-*.*"
+                category = str(item.get("category") or "")
+                if geometry_passed and category not in {"hard_block", "system_retry"}:
+                    discovered_candidates = tuple(
+                        sorted(
+                            (context.run.workspace / "rendered").glob(
+                                f"{_safe_id(step_id)}-candidate-*.*"
+                            )
                         )
                     )
-                )
                 if 2 <= len(discovered_candidates) <= 4:
                     candidate_groups.append(
                         {
                             "step_id": step_id,
                             "factor": "bounded-render-variant",
+                            "selection_allowed": True,
                             "candidates": [
                                 {
                                     "candidate_id": f"candidate-{index}",
@@ -1339,18 +1340,46 @@ def resolve_step(
                     raise ValueError("当前图片未通过基础几何硬门，不能直接采用")
             else:
                 candidates = context.read_json(_require_ref(invocation, "candidate-set"))
+                selected_group = next(
+                    (
+                        group
+                        for group in candidates.get("groups", [])
+                        if str(group.get("step_id")) == step_id
+                    ),
+                    None,
+                )
                 selected = next(
                     (
                         candidate
-                        for group in candidates.get("groups", [])
-                        if str(group.get("step_id")) == step_id
-                        for candidate in group.get("candidates", [])
+                        for candidate in (
+                            selected_group.get("candidates", [])
+                            if isinstance(selected_group, dict)
+                            else []
+                        )
                         if str(candidate.get("candidate_id")) == candidate_id
                     ),
                     None,
                 )
-                if selected is None:
-                    raise ValueError("候选图不属于当前步骤或当前计划版本")
+                validation = context.read_json(
+                    _require_ref(invocation, "results/validation-")
+                )
+                validation_step = next(
+                    (
+                        item
+                        for item in validation.get("steps", [])
+                        if str(item.get("step_id")) == step_id
+                    ),
+                    None,
+                )
+                selection_allowed = bool(
+                    isinstance(selected_group, dict)
+                    and selected_group.get("selection_allowed", False)
+                    and isinstance(validation_step, dict)
+                    and str(validation_step.get("category") or "")
+                    not in {"hard_block", "system_retry"}
+                )
+                if selected is None or not selection_allowed:
+                    raise ValueError("候选图不属于当前步骤或未通过基础几何硬门")
             revision = StepRevision(
                 revision_number,
                 step_id,
@@ -1431,6 +1460,20 @@ def resolve_step(
                 revision_number,
                 current_context=current_step,
             )
+            if revision.kind is RevisionKind.COMPLETE_STATE:
+                raise ValueError(
+                    "文字模型不能修改依赖顺序或完整安装态；请返回生成前重新确认计划。"
+                )
+            if "direction" in revision.changes:
+                explicit_direction = explicit_axis_direction(instruction)
+                returned_direction = [
+                    float(value) for value in revision.changes["direction"]
+                ]
+                if explicit_direction is None or returned_direction != explicit_direction:
+                    raise ValueError(
+                        "安装方向必须来自用户明确给出的正/负 X、Y、Z 轴说明，"
+                        "不能由 Qwen 推断。"
+                    )
             unresolved_code = str(current_step.get("error_code") or "")
             if (
                 revision.kind is RevisionKind.PRESENTATION
@@ -1440,8 +1483,7 @@ def resolve_step(
                 raise ValueError(
                     f"当前步骤仍有安装方向待确认项 {unresolved_code}；"
                     "仅调整视角、Zoom或箭头不会确认该方向。"
-                    "请说明安装方向，例如“沿设备 Z 轴正方向装入”；"
-                    "如果推定方向图片正确，也可直接采用当前图片。"
+                    "请说明安装方向，例如“沿设备 Z 轴正方向装入”。"
                 )
             if (
                 revision.kind is RevisionKind.PRESENTATION
@@ -1497,10 +1539,10 @@ def _blocked(code: str, message: str) -> SkillHandlerOutput:
 def _current_image_is_acceptable(run_workspace: Path, item: Mapping[str, Any]) -> bool:
     if str(item.get("status")) != StepStatus.QUESTIONED.value:
         return False
+    if str(item.get("category") or "") in {"hard_block", "system_retry"}:
+        return False
     relative = str(item.get("image_path") or "").replace("\\", "/")
-    explicitly_allowed = bool(item.get("manual_acceptance_allowed", False))
-    legacy_allowed = relative.startswith("rendered/")
-    if not (explicitly_allowed or legacy_allowed):
+    if not bool(item.get("manual_acceptance_allowed", False)):
         return False
     path = (Path(run_workspace) / relative).resolve()
     try:
@@ -1594,6 +1636,26 @@ def _apply_step_revision(plan: RenderPlan, payload: dict[str, Any]) -> RenderPla
         found = True
         contract = deepcopy(task.payload)
         changes = revision.changes
+        frozen_fields = {
+            "zoom",
+            "pan",
+            "explosion_distance",
+            "arrow_anchor",
+            "arrow_layout",
+        } & set(changes)
+        if frozen_fields:
+            raise ValueError(
+                "当前生产构图策略已冻结，禁止修改："
+                + "、".join(sorted(frozen_fields))
+            )
+        occurrence_fields = {
+            "moving_occurrences",
+            "receiver_occurrences",
+        } & set(changes)
+        if occurrence_fields:
+            raise ValueError(
+                "occurrence 只能由确定性 BOM/CAD 映射修订，不能由文字模型写入"
+            )
         if "camera_id" in changes:
             camera_id = str(changes["camera_id"])
             catalog = contract.get("camera_catalog", {})
@@ -1612,30 +1674,16 @@ def _apply_step_revision(plan: RenderPlan, payload: dict[str, Any]) -> RenderPla
         variant = dict(variants[0])
         if "camera_id" in changes:
             variant["camera_id"] = str(changes["camera_id"])
-        if "zoom" in changes:
-            variant["zoom"] = float(changes["zoom"])
-        if "pan" in changes:
-            variant["pan"] = [float(value) for value in changes["pan"]]
-        if "zoom" in changes or "pan" in changes:
-            framing_profile = dict(presentation.get("framing_profile", {}))
-            framing_profile["policy"] = "manual_refit/v1"
-            framing_profile["probe_interface_status"] = "disabled_user_revision/v1"
-            presentation["framing_profile"] = framing_profile
         variant["variant_id"] = f"step-revision-{revision.revision}"
         presentation["variants"] = [variant]
-        if "arrow_layout" in changes:
-            presentation["arrow_layout"] = changes["arrow_layout"]
         contract["presentation"] = presentation
-        for field in ("moving_occurrences", "receiver_occurrences"):
-            if field in changes:
-                contract[field] = list(changes[field])
         if "direction" in changes:
             direction = _unit_vector(changes["direction"], "安装方向")
             contract["receiver_normal_root"] = direction
             current_translation = contract.get("translation_vector_root")
             distance = _vector_length(current_translation)
             if distance <= 1.0e-9:
-                distance = float(changes.get("explosion_distance", 80.0))
+                distance = 80.0
             contract["translation_vector_root"] = [
                 round(value * distance, 6) for value in direction
             ]
@@ -1651,16 +1699,7 @@ def _apply_step_revision(plan: RenderPlan, payload: dict[str, Any]) -> RenderPla
                     "EXPLOSION_NOT_VISIBLE_IN_CAMERA",
                 }
             ]
-        if "explosion_distance" in changes:
-            basis = contract.get("receiver_normal_root") or contract.get(
-                "translation_vector_root"
-            )
-            direction = _unit_vector(basis, "爆炸方向")
-            distance = float(changes["explosion_distance"])
-            contract["translation_vector_root"] = [
-                round(value * distance, 6) for value in direction
-            ]
-        if "direction" in changes or "explosion_distance" in changes:
+        if "direction" in changes:
             _refresh_arrow_endpoints(contract)
         if "direction" in changes or "camera_id" in changes:
             _link_revision_cameras(
@@ -1758,6 +1797,8 @@ def _link_revision_cameras(
     if not ranked:
         raise ValueError("两台固定相机都缺少可计算的视线方向")
     ranked.sort(key=lambda item: item[0], reverse=True)
+    if not ranked[0][0][0]:
+        raise ValueError("两台固定相机都不满足承接面与爆炸投影硬门")
     linked_variants: list[dict[str, Any]] = []
     for index, (_score, camera_id) in enumerate(ranked):
         linked = dict(base_variant)

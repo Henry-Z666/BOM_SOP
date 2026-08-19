@@ -64,7 +64,7 @@ class CandidateWorker(ImageWorker):
             image = session / f"{task.task_id}-candidate-{index}.jpg"
             Image.new("RGB", (1600, 1600), (shade, shade, shade)).save(image)
             hashes.append("sha256:" + sha256(image.read_bytes()).hexdigest())
-        return RenderAttempt.questioned(tuple(hashes))
+        return RenderAttempt.reviewable(hashes[0], "SUBJECT_TOO_SMALL")
 
 
 class PresentationWarningWorker(ImageWorker):
@@ -95,7 +95,7 @@ class RecoveringWorker(ImageWorker):
                 image = session / f"{task.task_id}-candidate-{index}.jpg"
                 Image.new("RGB", (1600, 1600), (shade, shade, shade)).save(image)
                 hashes.append("sha256:" + sha256(image.read_bytes()).hexdigest())
-            return RenderAttempt.questioned(tuple(hashes), "CREO_TEST_FAILURE")
+            return RenderAttempt.reviewable(hashes[0], "SUBJECT_TOO_SMALL")
         return super().render(session, task, attempt)
 
 
@@ -119,7 +119,7 @@ class FakeAdvisor:
             revision,
             step_id,
             RevisionKind.PRESENTATION,
-            {"arrow_layout": "spread"},
+            {"camera_id": "fixed_456"},
         )
 
 
@@ -323,7 +323,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "step-1"):
             AgentCore._assert_unaffected_unchanged(before, after, set())
 
-    def test_resolve_resumes_repaired_plan_with_stale_validation(self) -> None:
+    def test_stale_validation_cannot_be_bypassed_by_replacing_locked_plan(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             bom, cad, graph = _fixture(root)
@@ -385,24 +385,20 @@ class PipelineOrchestratorTests(unittest.TestCase):
                 value=repaired,
             )
 
-            completed = core.resolve(
-                run_id,
-                StepResolution(
-                    step_id=target_id,
-                    instruction="继续使用已恢复的原生安装几何",
-                ),
+            with self.assertRaisesRegex(SkillPipelineError, "NO_NATIVE_RECEIVER_GEOMETRY"):
+                core.resolve(
+                    run_id,
+                    StepResolution(
+                        step_id=target_id,
+                        instruction="继续使用已恢复的原生安装几何",
+                    ),
+                )
+
+            self.assertFalse(
+                (run.workspace / "revisions" / "step-revision-0001.json").exists()
             )
 
-            self.assertEqual(completed.status, RunStatus.COMPLETED)
-            revision = core._artifacts.read_json(
-                run.workspace, "revisions/step-revision-0001.json"
-            )
-            self.assertEqual(
-                revision["source"],
-                "persisted-plan-native-geometry-recovery/v1",
-            )
-
-    def test_resolve_repairs_persisted_plan_without_restarting_run(self) -> None:
+    def test_resolve_does_not_recompile_or_overwrite_stale_locked_plan(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             bom, cad, graph = _fixture(root)
@@ -457,29 +453,18 @@ class PipelineOrchestratorTests(unittest.TestCase):
 
             pending = core.generate(run_id)
             self.assertEqual(pending.status, RunStatus.NEEDS_REVIEW)
+            locked_before = (run.workspace / locked_path).read_bytes()
 
-            completed = core.resolve(
-                run_id,
-                StepResolution(
-                    step_id=target_id,
-                    instruction="按BOM型号重新找文件，把零件安装到孔洞中",
-                ),
-            )
+            with self.assertRaises(SkillPipelineError):
+                core.resolve(
+                    run_id,
+                    StepResolution(
+                        step_id=target_id,
+                        instruction="按BOM型号重新找文件，把零件安装到孔洞中",
+                    ),
+                )
 
-            self.assertEqual(completed.status, RunStatus.COMPLETED)
-            repaired = core._artifacts.read_json(run.workspace, locked_path)
-            repaired_step = next(
-                item for item in repaired["steps"] if item["step_id"] == target_id
-            )
-            self.assertEqual(repaired_step["status"], "ready")
-            self.assertEqual(repaired_step["receiver_occurrences"], ["10"])
-            revision = core._artifacts.read_json(
-                run.workspace, "revisions/step-revision-0001.json"
-            )
-            self.assertEqual(
-                revision["source"],
-                "persisted-plan-native-geometry-recovery/v1",
-            )
+            self.assertEqual((run.workspace / locked_path).read_bytes(), locked_before)
 
     def test_presentation_resolution_cannot_claim_success_without_new_render(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -510,7 +495,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
             target = next(
                 step
                 for step in pending.steps
-                if step.status.value == "QUESTIONED"
+                if step.status.value == "FAILED"
             )
             calls_before = list(worker.calls)
 
@@ -519,7 +504,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
                     run_id,
                     StepResolution(
                         step_id=target.step_id,
-                        instruction="调整箭头布局",
+                        instruction="翻转视角",
                     ),
                 )
 
@@ -571,7 +556,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
                 run_id,
                 StepResolution(
                     step_id=target.step_id,
-                    instruction="调整箭头布局",
+                    instruction="翻转视角",
                 ),
             )
             second_validation = json.loads(
@@ -616,7 +601,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
             )
             pending = core.generate(run_id)
             target = next(
-                step for step in pending.steps if step.status.value == "QUESTIONED"
+                step for step in pending.steps if step.status.value == "FAILED"
             )
             run = core.get_run(run_id)
             pending_validation = json.loads(
@@ -629,11 +614,9 @@ class PipelineOrchestratorTests(unittest.TestCase):
                 for item in pending_validation["steps"]
                 if item["step_id"] == target.step_id
             )
-            self.assertEqual(pending_item["image_kind"], "rendered")
-            self.assertTrue(pending_item["manual_acceptance_allowed"])
-            self.assertTrue(
-                (run.workspace / pending_item["image_path"]).is_file()
-            )
+            self.assertEqual(pending_item["image_kind"], "placeholder")
+            self.assertFalse(pending_item["manual_acceptance_allowed"])
+            self.assertIn("placeholder", pending_item["image_path"])
             calls_before = worker.calls.count(target.step_id)
 
             outcome = core.resolve(
@@ -806,6 +789,54 @@ class PipelineOrchestratorTests(unittest.TestCase):
             self.assertEqual(worker.calls, calls_before)
             self.assertTrue((completed.delivery_directory / "SOP.xlsx").is_file())
 
+    def test_candidate_selection_cannot_bypass_a_hard_block(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            bom, cad, graph = _fixture(root)
+            worker = CandidateWorker()
+            core = AgentCore(
+                root / "workspace",
+                PipelineOrchestrator(
+                    adapters={
+                        "creo_discovery": StaticCreoDiscovery(graph),
+                        "render_worker": worker,
+                        "qwen_advisor": FakeAdvisor(),
+                    }
+                ),
+            )
+            run_id = core.create_run(bom, cad)
+            packet = core.analyze(run_id)
+            core.confirm(
+                run_id,
+                {
+                    item.item_id: item.recommended_option
+                    for item in packet.items
+                    if item.category == "CONFIRMATION"
+                },
+            )
+            pending = core.generate(run_id)
+            run = core.get_run(run_id)
+            validation_ref = "results/validation-0001.json"
+            validation = core._artifacts.read_json(run.workspace, validation_ref)
+            validation["steps"][0]["category"] = "hard_block"
+            validation["steps"][0]["manual_acceptance_allowed"] = False
+            core._artifacts.write_json(
+                run_id=run_id,
+                run_workspace=run.workspace,
+                kind="validation-result",
+                relative_path=validation_ref,
+                value=validation,
+            )
+
+            with self.assertRaisesRegex(SkillPipelineError, "基础几何硬门"):
+                core.resolve(
+                    run_id,
+                    StepResolution(
+                        step_id=pending.steps[0].step_id,
+                        candidate_id="candidate-1",
+                    ),
+                )
+
     def test_questioned_real_image_can_be_accepted_without_rerendering(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -847,7 +878,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
             self.assertEqual(completed.status, RunStatus.COMPLETED)
             self.assertEqual(worker.calls, calls_before)
 
-    def test_explicit_zoom_revision_uses_one_fixed_manual_render_contract(self) -> None:
+    def test_explicit_zoom_revision_cannot_reenable_frozen_framing(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             bom, cad, graph = _fixture(root)
@@ -875,15 +906,16 @@ class PipelineOrchestratorTests(unittest.TestCase):
             pending = core.generate(run_id)
             worker.fail = False
 
-            core.resolve(
-                run_id,
-                StepResolution(
-                    step_id=pending.steps[0].step_id,
-                    instruction="以安装部位为中心放大",
-                ),
-            )
+            with self.assertRaisesRegex(SkillPipelineError, "构图策略已冻结"):
+                core.resolve(
+                    run_id,
+                    StepResolution(
+                        step_id=pending.steps[0].step_id,
+                        instruction="以安装部位为中心放大",
+                    ),
+                )
 
-            self.assertIn(("manual_refit/v1", 1.25), worker.presentation_policies)
+            self.assertNotIn(("manual_refit/v1", 1.25), worker.presentation_policies)
 
     def test_natural_language_resolution_reruns_only_invalidated_step(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -916,7 +948,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
 
             completed = core.resolve(
                 run_id,
-                StepResolution(step_id=target.step_id, instruction="调整箭头布局"),
+                StepResolution(step_id=target.step_id, instruction="翻转视角"),
             )
 
             self.assertEqual(pending.status, RunStatus.NEEDS_REVIEW)

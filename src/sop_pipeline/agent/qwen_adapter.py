@@ -91,10 +91,6 @@ class PlanChoiceRecommendation:
 _CORRECTION_CONTRACT: dict[str, Any] = {
     "presentation": {
         "camera_id": {"type": "enum", "values": ["fixed_123", "fixed_456"]},
-        "zoom": {"type": "number", "range": [0.5, 2.0]},
-        "pan": {"type": "xy_vector", "length": 2, "item_range": [-1.0, 1.0]},
-        "explosion_distance": {"type": "number", "range": [0.0, 1000.0]},
-        "arrow_layout": {"type": "string"},
     },
     "installation_geometry": {
         "direction": {
@@ -102,28 +98,12 @@ _CORRECTION_CONTRACT: dict[str, Any] = {
             "length": 3,
             "description": "root-coordinate installation direction; non-zero numbers",
         },
-        "moving_occurrences": {"type": "string_array"},
-        "receiver_occurrences": {"type": "string_array"},
-    },
-    "complete_state": {
-        "direction": {
-            "type": "xyz_vector",
-            "length": 3,
-            "description": "root-coordinate installation direction; non-zero numbers",
-        },
-        "moving_occurrences": {"type": "string_array"},
-        "receiver_occurrences": {"type": "string_array"},
-        "depends_on": {"type": "step_id_array"},
-        "order": {"type": "integer"},
     },
 }
 
 _REQUIRED_FIELDS_BY_ERROR = {
     "DIRECTION_SIGN_WEAK": ["direction"],
     "RECEIVER_NORMAL_NOT_AXIS_ALIGNED": ["direction"],
-    "MOVING_OCCURRENCE_UNRESOLVED": ["moving_occurrences"],
-    "RECEIVER_OCCURRENCE_UNRESOLVED": ["receiver_occurrences"],
-    "NO_NATIVE_RECEIVER_GEOMETRY": ["receiver_occurrences", "direction"],
 }
 
 
@@ -160,8 +140,8 @@ class QwenAdvisor:
                 "role": "system",
                 "content": (
                     "Return one JSON object only with exactly two top-level fields: "
-                    'kind and changes. kind is one of "presentation", '
-                    '"installation_geometry", "complete_state". Use only fields and value '
+                    'kind and changes. kind is one of "presentation" or '
+                    '"installation_geometry". Use only fields and value '
                     "types listed in correction_contract. changes must contain the concrete "
                     "bounded correction, not only a category. For a placeholder or a geometry "
                     "gate, include every required_correction_fields item; a camera/view change "
@@ -169,8 +149,7 @@ class QwenAdvisor:
                     "step numbers, component names, drawing numbers, material codes, and BOM rows "
                     "in the instruction are human-facing references. Resolve them only against "
                     "current_step; the user is never required to provide an internal occurrence "
-                    "ID. Copy known occurrence IDs from current_step when the contract requires "
-                    "them, and never guess occurrence IDs. Example: "
+                    "ID, and the model must never return one. Example: "
                     '{"kind":"presentation","changes":{"camera_id":"fixed_456",'
                     '"zoom":1.1}}. Never return type, explanation, paths, or markdown.'
                 ),
@@ -183,9 +162,6 @@ class QwenAdvisor:
                         "step_id": step_id,
                         "instruction": instruction,
                         "allowed_cameras": ["fixed_123", "fixed_456"],
-                        "zoom_range": [0.5, 2.0],
-                        "pan_range": [-1.0, 1.0],
-                        "explosion_distance_range": [0.0, 1000.0],
                         "correction_contract": _CORRECTION_CONTRACT,
                         "current_step": minimized_context,
                     },
@@ -209,7 +185,9 @@ class QwenAdvisor:
                     changes=_canonicalize_revision_changes(payload["changes"]),
                 )
                 validated = validate_revision(result)
-                _validate_resolution_context(validated, minimized_context)
+                _validate_resolution_context(
+                    validated, minimized_context, instruction=instruction
+                )
                 return validated
             except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
                 last_error = error
@@ -238,7 +216,9 @@ class QwenAdvisor:
         fallback = _bounded_resolution_fallback(step_id, instruction, revision)
         if fallback is not None:
             try:
-                _validate_resolution_context(fallback, minimized_context)
+                _validate_resolution_context(
+                    fallback, minimized_context, instruction=instruction
+                )
             except ValueError as error:
                 last_error = error
             else:
@@ -432,62 +412,51 @@ def _bounded_resolution_fallback(
     """
 
     normalized = re.sub(r"\s+", "", str(instruction)).casefold()
-    installation_focus = any(
-        marker in normalized
-        for marker in ("安装部位", "安装位置", "装配部位", "装配位置")
-    )
-    if installation_focus and "放大" in normalized:
+    direction = explicit_axis_direction(normalized)
+    if direction is not None:
         return validate_revision(
             StepRevision(
                 revision,
                 step_id,
-                RevisionKind.PRESENTATION,
-                {"zoom": 1.25, "pan": [0.0, 0.0]},
+                RevisionKind.INSTALLATION_GEOMETRY,
+                {"direction": direction},
             )
         )
-    if installation_focus and "缩小" in normalized:
-        return validate_revision(
-            StepRevision(
-                revision,
-                step_id,
-                RevisionKind.PRESENTATION,
-                {"zoom": 0.85, "pan": [0.0, 0.0]},
-            )
-        )
-    if any(marker in normalized for marker in ("装入", "安装方向", "装配方向", "插入")):
-        axis_vectors = {
-            "x轴正方向": [1.0, 0.0, 0.0],
-            "正x方向": [1.0, 0.0, 0.0],
-            "+x方向": [1.0, 0.0, 0.0],
-            "x轴负方向": [-1.0, 0.0, 0.0],
-            "负x方向": [-1.0, 0.0, 0.0],
-            "-x方向": [-1.0, 0.0, 0.0],
-            "y轴正方向": [0.0, 1.0, 0.0],
-            "正y方向": [0.0, 1.0, 0.0],
-            "+y方向": [0.0, 1.0, 0.0],
-            "y轴负方向": [0.0, -1.0, 0.0],
-            "负y方向": [0.0, -1.0, 0.0],
-            "-y方向": [0.0, -1.0, 0.0],
-            "z轴正方向": [0.0, 0.0, 1.0],
-            "正z方向": [0.0, 0.0, 1.0],
-            "+z方向": [0.0, 0.0, 1.0],
-            "z轴负方向": [0.0, 0.0, -1.0],
-            "负z方向": [0.0, 0.0, -1.0],
-            "-z方向": [0.0, 0.0, -1.0],
-        }
-        matched = [
-            vector for marker, vector in axis_vectors.items() if marker in normalized
-        ]
-        if len(matched) == 1:
-            return validate_revision(
-                StepRevision(
-                    revision,
-                    step_id,
-                    RevisionKind.INSTALLATION_GEOMETRY,
-                    {"direction": matched[0]},
-                )
-            )
     return None
+
+
+def explicit_axis_direction(instruction: str) -> list[float] | None:
+    normalized = re.sub(r"\s+", "", str(instruction)).casefold()
+    if not any(
+        marker in normalized for marker in ("装入", "安装方向", "装配方向", "插入")
+    ):
+        return None
+    axis_vectors = {
+        "x轴正方向": [1.0, 0.0, 0.0],
+        "正x方向": [1.0, 0.0, 0.0],
+        "+x方向": [1.0, 0.0, 0.0],
+        "x轴负方向": [-1.0, 0.0, 0.0],
+        "负x方向": [-1.0, 0.0, 0.0],
+        "-x方向": [-1.0, 0.0, 0.0],
+        "y轴正方向": [0.0, 1.0, 0.0],
+        "正y方向": [0.0, 1.0, 0.0],
+        "+y方向": [0.0, 1.0, 0.0],
+        "y轴负方向": [0.0, -1.0, 0.0],
+        "负y方向": [0.0, -1.0, 0.0],
+        "-y方向": [0.0, -1.0, 0.0],
+        "z轴正方向": [0.0, 0.0, 1.0],
+        "正z方向": [0.0, 0.0, 1.0],
+        "+z方向": [0.0, 0.0, 1.0],
+        "z轴负方向": [0.0, 0.0, -1.0],
+        "负z方向": [0.0, 0.0, -1.0],
+        "-z方向": [0.0, 0.0, -1.0],
+    }
+    matched = {
+        tuple(vector)
+        for marker, vector in axis_vectors.items()
+        if marker in normalized
+    }
+    return list(next(iter(matched))) if len(matched) == 1 else None
 
 
 def _minimized_resolution_context(value: dict[str, Any]) -> dict[str, Any]:
@@ -504,9 +473,6 @@ def _minimized_resolution_context(value: dict[str, Any]) -> dict[str, Any]:
         "step_number",
         "step_title",
         "source_bom_rows",
-        "moving_occurrences",
-        "receiver_occurrences",
-        "direction",
         "current_camera_id",
         "allowed_camera_ids",
     }
@@ -561,7 +527,11 @@ def _resolution_failure_message(
 def _validate_resolution_context(
     revision: StepRevision,
     current_context: dict[str, Any],
+    *,
+    instruction: str,
 ) -> None:
+    if revision.kind is RevisionKind.COMPLETE_STATE:
+        raise ValueError("Qwen cannot revise dependency order or complete-state facts")
     required = {
         str(field)
         for field in current_context.get("required_correction_fields", [])
@@ -572,14 +542,34 @@ def _validate_resolution_context(
             "changes missing required correction fields: "
             + ", ".join(sorted(missing))
         )
-    occurrence_fields = {
-        "moving_occurrences",
-        "receiver_occurrences",
-    } & set(revision.changes)
-    if occurrence_fields:
+    if {"moving_occurrences", "receiver_occurrences"} & set(revision.changes):
         raise ValueError(
-            "occurrence IDs cannot be inferred from unrestricted user text"
+            "occurrence IDs require deterministic BOM/CAD remapping; Qwen cannot supply them"
         )
+    if "direction" in revision.changes:
+        if revision.kind is not RevisionKind.INSTALLATION_GEOMETRY:
+            raise ValueError("direction requires installation_geometry revision kind")
+        explicit = explicit_axis_direction(instruction)
+        returned = [float(value) for value in revision.changes["direction"]]
+        if explicit is None or returned != explicit:
+            raise ValueError(
+                "direction must be copied from an explicit user axis instruction"
+            )
+    if {"zoom", "pan", "explosion_distance", "arrow_layout", "arrow_anchor"} & set(
+        revision.changes
+    ):
+        raise ValueError("adaptive framing and geometry magnitude revisions are frozen")
+    camera = revision.changes.get("camera_id")
+    if camera is not None:
+        if revision.kind is not RevisionKind.PRESENTATION:
+            raise ValueError("camera_id requires presentation revision kind")
+        normalized = re.sub(r"\s+", "", str(instruction)).casefold()
+        explicit_camera = str(camera).casefold() in normalized
+        current = str(current_context.get("current_camera_id") or "")
+        expected_flip = "fixed_456" if current == "fixed_123" else "fixed_123"
+        requests_flip = any(marker in normalized for marker in ("翻转", "另一视角", "另一个视角"))
+        if not explicit_camera and not (requests_flip and camera == expected_flip):
+            raise ValueError("camera_id must follow an explicit fixed-camera or flip request")
     if (
         current_context.get("image_kind") == "placeholder"
         and revision.kind is RevisionKind.PRESENTATION

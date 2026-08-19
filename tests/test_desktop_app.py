@@ -74,9 +74,9 @@ class DesktopResolutionFlowTests(unittest.TestCase):
         provider = StaticQuickPromptProvider(
             (
                 QuickPrompt(
-                    "custom-two-arrows",
-                    "两个箭头",
-                    "箭头数量不对，应该为两个",
+                    "custom-flip-view",
+                    "切换视角",
+                    "翻转到另一台固定视角",
                 ),
             )
         )
@@ -86,23 +86,23 @@ class DesktopResolutionFlowTests(unittest.TestCase):
         )
         window.review_instruction.setPlainText("保留这条人工说明")
 
-        window.quick_prompt_buttons["custom-two-arrows"].click()
-        window.quick_prompt_buttons["custom-two-arrows"].click()
+        window.quick_prompt_buttons["custom-flip-view"].click()
+        window.quick_prompt_buttons["custom-flip-view"].click()
 
         try:
             self.assertEqual(
                 window.review_instruction.toPlainText(),
-                "保留这条人工说明\n箭头数量不对，应该为两个",
+                "保留这条人工说明\n翻转到另一台固定视角",
             )
         finally:
             window.close()
 
-    def test_default_quick_prompts_include_view_and_arrow_repairs(self) -> None:
+    def test_default_quick_prompts_only_include_bounded_view_change(self) -> None:
         window = MainWindow(_PendingResolutionService())  # type: ignore[arg-type]
 
         try:
             self.assertIn("flip-view", window.quick_prompt_buttons)
-            self.assertIn("two-arrows", window.quick_prompt_buttons)
+            self.assertEqual(set(window.quick_prompt_buttons), {"flip-view"})
             self.assertEqual(
                 window.quick_prompt_buttons["flip-view"].text(),
                 "翻转视角",

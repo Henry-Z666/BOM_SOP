@@ -40,60 +40,48 @@ class QwenAdvisorTests(unittest.TestCase):
 
         transport = RetryTransport()
         revision = QwenAdvisor(transport).interpret_resolution(
-            "step-1", "换另一侧固定视角", 1
+            "step-1", "换到 fixed_456 固定视角", 1
         )
 
         self.assertEqual(revision.changes, {"camera_id": "fixed_456"})
         self.assertEqual(len(transport.text_calls), 2)
 
-    def test_scalar_pan_is_rejected_with_an_explicit_contract_error(self) -> None:
-        class RetryTransport(FakeTransport):
-            def __init__(self):
-                super().__init__("")
-                self.responses = [
-                    '{"kind":"presentation","changes":{"pan":0.5}}',
-                    '{"kind":"presentation","changes":{"pan":[0.5,0.0]}}',
-                ]
-
-            def call_text(self, messages, *, seed):
-                self.text_calls.append((messages, seed))
-                return self.responses.pop(0)
-
-        transport = RetryTransport()
-        revision = QwenAdvisor(transport).interpret_resolution(
-            "step-1", "向右移动构图", 1
+    def test_pan_revision_is_rejected_while_probe_policy_is_frozen(self) -> None:
+        transport = FakeTransport(
+            '{"kind":"presentation","changes":{"pan":[0.5,0.0]}}'
         )
 
-        self.assertEqual(revision.changes["pan"], [0.5, 0.0])
-        self.assertIn(
-            "pan must be a two-number array",
-            transport.text_calls[1][0][-1]["content"],
-        )
+        with self.assertRaisesRegex(ValueError, "frozen"):
+            QwenAdvisor(transport).interpret_resolution(
+                "step-1", "向右移动构图", 1
+            )
 
-    def test_common_pan_component_aliases_are_canonicalized(self) -> None:
+        self.assertEqual(len(transport.text_calls), 3)
+
+    def test_pan_component_aliases_cannot_bypass_frozen_policy(self) -> None:
         transport = FakeTransport(
             '{"kind":"presentation","changes":{"pan_x":0.25,"pan_y":-0.1}}'
         )
 
-        revision = QwenAdvisor(transport).interpret_resolution(
-            "step-1", "把零件补全并向左调整", 1
-        )
-
-        self.assertEqual(revision.changes, {"pan": [0.25, -0.1]})
+        with self.assertRaisesRegex(ValueError, "frozen"):
+            QwenAdvisor(transport).interpret_resolution(
+                "step-1", "把零件补全并向左调整", 1
+            )
 
     def test_natural_language_resolution_becomes_validated_step_revision(self) -> None:
         transport = FakeTransport(
             json.dumps(
                 {
                     "kind": "presentation",
-                    "changes": {"camera_id": "fixed_456", "zoom": 1.1},
+                    "changes": {"camera_id": "fixed_456"},
                 }
             )
         )
         revision = QwenAdvisor(transport).interpret_resolution(
             step_id="step-7",
-            instruction="换到另一侧固定视角并稍微放大",
+            instruction="换到 fixed_456 固定视角",
             revision=2,
+            current_context={"current_camera_id": "fixed_123"},
         )
 
         self.assertEqual(revision.kind, RevisionKind.PRESENTATION)
@@ -151,10 +139,8 @@ class QwenAdvisorTests(unittest.TestCase):
                 }
             ],
         )
-        self.assertEqual(
-            sent["current_step"]["moving_occurrences"],
-            ["10180/39"],
-        )
+        self.assertNotIn("moving_occurrences", sent["current_step"])
+        self.assertNotIn("receiver_occurrences", sent["current_step"])
         self.assertIn(
             "user is never required to provide an internal occurrence ID",
             transport.text_calls[0][0][0]["content"],
@@ -293,16 +279,27 @@ class QwenAdvisorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             QwenAdvisor(transport).interpret_resolution("step-1", "保存到这里", 1)
 
-    def test_clear_zoom_instruction_has_a_bounded_fallback_when_schema_fails(self) -> None:
+    def test_clear_zoom_instruction_does_not_reenable_frozen_probes(self) -> None:
         transport = FakeTransport("这一步应该把安装位置放大显示")
 
-        revision = QwenAdvisor(transport).interpret_resolution(
-            "step-1", "以安装部位为中心放大", 2
+        with self.assertRaises(ValueError):
+            QwenAdvisor(transport).interpret_resolution(
+                "step-1", "以安装部位为中心放大", 2
+            )
+        self.assertEqual(len(transport.text_calls), 3)
+
+    def test_qwen_cannot_invent_direction_without_explicit_axis_text(self) -> None:
+        transport = FakeTransport(
+            '{"kind":"installation_geometry","changes":{"direction":[0,0,1]}}'
         )
 
-        self.assertEqual(revision.kind, RevisionKind.PRESENTATION)
-        self.assertEqual(revision.changes, {"zoom": 1.25, "pan": [0.0, 0.0]})
-        self.assertEqual(len(transport.text_calls), 3)
+        with self.assertRaisesRegex(ValueError, "明确的安装方向"):
+            QwenAdvisor(transport).interpret_resolution(
+                "step-1",
+                "请重新生成",
+                2,
+                current_context={"error_code": "DIRECTION_SIGN_WEAK"},
+            )
 
     def test_explicit_axis_direction_has_a_bounded_fallback_when_schema_fails(self) -> None:
         transport = FakeTransport(

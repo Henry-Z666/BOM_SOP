@@ -420,16 +420,6 @@ class FormalRenderPlannerTests(unittest.TestCase):
                     "zoom": 1.0,
                     "pan": [0.0, 0.0],
                 },
-                {
-                    "variant_id": "flipped-camera",
-                    "camera_id": (
-                        "fixed_456"
-                        if task.payload["camera_id"] == "fixed_123"
-                        else "fixed_123"
-                    ),
-                    "zoom": 1.0,
-                    "pan": [0.0, 0.0],
-                },
             ],
         )
         expected_step = next(item for item in locked.steps if item.step_id == task.step_id)

@@ -50,21 +50,7 @@ def review_packet(workspace: Path, run_id: str) -> dict[str, Any]:
     run_workspace = _run_workspace(Path(workspace), run_id)
     if run_workspace is None:
         return {"run_id": run_id, "items": [], "message": "找不到该任务的运行区。"}
-    validation_path, validation = _latest_json_artifact(
-        run_workspace / "results", "validation-*.json"
-    )
-    render_path, latest_render = _latest_json_artifact(
-        run_workspace / "results", "render-batch-*.json"
-    )
-    validation = validation or {}
-    latest_render = latest_render or {}
-    render_overrides_validation = bool(
-        render_path is not None
-        and (
-            validation_path is None
-            or _artifact_revision(render_path) > _artifact_revision(validation_path)
-        )
-    )
+    validation = _latest_json(run_workspace / "results", "validation-*.json") or {}
     candidate_set = _latest_json(run_workspace / "results", "candidate-set-*.json") or {}
     publication = _latest_json(run_workspace / "results", "publication-*.json") or {}
     locked_plan = _latest_json(
@@ -93,47 +79,12 @@ def review_packet(workspace: Path, run_id: str) -> dict[str, Any]:
         for step in publication.get("steps", [])
         if isinstance(step, dict)
     }
-    latest_render_steps = {
-        str(step.get("step_id")): step
-        for step in latest_render.get("steps", [])
-        if isinstance(step, dict)
-    }
     items: list[dict[str, Any]] = []
     candidate_count = 0
     for validation_index, step in enumerate(validation.get("steps", []), start=1):
         if not isinstance(step, dict):
             continue
         step_id = str(step.get("step_id", ""))
-        latest_attempt = latest_render_steps.get(step_id)
-        active_attempt = bool(
-            render_overrides_validation
-            and latest_attempt
-            and str(latest_attempt.get("status")) != "PASSED"
-            and (
-                latest_attempt.get("primary_code")
-                or latest_attempt.get("error_code")
-                or latest_attempt.get("failures")
-            )
-        )
-        if active_attempt and latest_attempt is not None:
-            merged = dict(step)
-            for key in (
-                "status",
-                "image_path",
-                "error_code",
-                "error_message",
-                "primary_code",
-                "failures",
-                "category",
-                "expected",
-                "actual",
-                "attempted_actions",
-                "suggested_actions",
-                "retained_image",
-            ):
-                if key in latest_attempt:
-                    merged[key] = latest_attempt[key]
-            step = merged
         metadata = plan_steps.get(
             step_id,
             {"step_number": validation_index, "title": "", "source_bom_rows": []},
@@ -149,7 +100,7 @@ def review_packet(workspace: Path, run_id: str) -> dict[str, Any]:
         effective_status = published_status.get(
             step_id, str(step.get("status", ""))
         )
-        if effective_status == "PASSED" and not active_attempt:
+        if effective_status == "PASSED":
             continue
         issues = [str(issue) for issue in step.get("issues", []) if str(issue).strip()]
         for failure in step.get("failures", []):
@@ -161,7 +112,12 @@ def review_packet(workspace: Path, run_id: str) -> dict[str, Any]:
             if detail and detail not in issues:
                 issues.append(detail)
         diagnostics = _review_diagnostics(step)
-        group_candidates = groups.get(step_id, {}).get("candidates", [])
+        selected_group = groups.get(step_id, {})
+        group_candidates = (
+            selected_group.get("candidates", [])
+            if selected_group.get("selection_allowed", False)
+            else []
+        )
         for candidate in group_candidates:
             if not isinstance(candidate, dict):
                 continue
@@ -196,18 +152,6 @@ def review_packet(workspace: Path, run_id: str) -> dict[str, Any]:
         acceptance_allowed = bool(step.get("manual_acceptance_allowed", False)) and str(
             step.get("category") or ""
         ) not in {"hard_block", "system_retry"}
-        # Backward-compatible inference for runs produced before the explicit
-        # field existed.  Only a real rendered QUESTIONED image is selectable;
-        # failed placeholders can never be accepted as delivery evidence.
-        if (
-            not acceptance_allowed
-            and str(step.get("category") or "") not in {"hard_block", "system_retry"}
-            and step.get("status") == "QUESTIONED"
-            and relative_path.replace("\\", "/").startswith("rendered/")
-            and image_path is not None
-            and image_path.is_file()
-        ):
-            acceptance_allowed = True
         if acceptance_allowed:
             items.append(
                 {
@@ -396,10 +340,3 @@ def _latest_json_artifact(
         return None, None
     path = paths[-1]
     return path, _read_json(path)
-
-
-def _artifact_revision(path: Path) -> int:
-    try:
-        return int(path.stem.rsplit("-", 1)[-1])
-    except ValueError:
-        return -1

@@ -12,7 +12,7 @@ class QuickPrompt:
 
 
 class QuickPromptProvider(Protocol):
-    """Provide review prompts; future providers may use history or step context."""
+    """Provide bounded review prompts without changing CAD facts."""
 
     def prompts(
         self, context: Mapping[str, object] | None = None
@@ -32,21 +32,6 @@ class StaticQuickPromptProvider:
 
 DEFAULT_QUICK_PROMPT_PROVIDER = StaticQuickPromptProvider(
     (
-        QuickPrompt("flip-view", "翻转视角", "翻转视角"),
-        QuickPrompt(
-            "two-arrows",
-            "改为两个箭头",
-            "箭头数量不对，应该为两个",
-        ),
-        QuickPrompt(
-            "zoom-installation",
-            "放大安装部位",
-            "以安装部位为中心放大",
-        ),
-        QuickPrompt(
-            "point-to-interface",
-            "箭头指向接口",
-            "箭头应准确指向安装接口",
-        ),
+        QuickPrompt("flip-view", "翻转视角", "翻转到另一台固定视角"),
     )
 )

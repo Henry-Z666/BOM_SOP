@@ -181,7 +181,7 @@ class AgentNativeCreoWorker:
         task: RenderTask,
         attempt: int,
     ) -> RenderAttempt:
-        if task.payload.get("execution_mode") not in {"formal", "candidate_search"}:
+        if task.payload.get("execution_mode") != "formal":
             return RenderAttempt.failed("TASK_NOT_FORMAL")
         if task.payload.get("arrow_renderer") != "creo_display_list/v1":
             return RenderAttempt.failed("ARROW_RENDERER_NOT_FORMAL")
@@ -200,15 +200,18 @@ class AgentNativeCreoWorker:
             )
             profile_policy = str(profile_contract.get("policy", "freeze_per_camera/v1"))
             default_refit = profile_policy == "default_refit/v1"
-            manual_refit = profile_policy == "manual_refit/v1"
-            fixed_refit = default_refit or manual_refit
+            if profile_policy == "manual_refit/v1":
+                raise ScreenCenteringError(
+                    "manual framing is frozen in the production worker"
+                )
             profile_key = (
                 None
-                if fixed_refit
+                if default_refit
                 else _framing_profile_key(task.payload, camera_id=camera_id)
             )
             if default_refit and (
-                not math.isclose(float(variant["zoom"]), 1.0)
+                variant_index != 0
+                or not math.isclose(float(variant["zoom"]), 1.0)
                 or tuple(float(value) for value in variant["pan"]) != (0.0, 0.0)
             ):
                 raise ScreenCenteringError(
@@ -264,19 +267,7 @@ class AgentNativeCreoWorker:
         if not report.passed:
             decision = classify_failures(report.failures)
             error = decision.primary_code
-            candidate_attempt = _complete_camera_flip_candidates(
-                session,
-                task,
-                image_path=image_path,
-                variant_index=variant_index,
-                failures=report.failures,
-            )
-            if candidate_attempt is not None:
-                return candidate_attempt
-            if fixed_refit and decision.category not in {
-                GateCategory.AUTO_REPAIR,
-                GateCategory.HUMAN_REVIEW,
-            }:
+            if default_refit:
                 return _gate_attempt(image_path, report.failures)
             if CAMERA_FLIP_FAILURES.intersection(report.failures) or (
                 _planning_needs_camera_candidates(task.payload)
@@ -323,32 +314,7 @@ class AgentNativeCreoWorker:
                 session.presentation_variant_by_task[task.task_id] = next_variant
                 return RenderAttempt.retryable(error)
             return _gate_attempt(image_path, report.failures)
-        if _planning_needs_camera_candidates(task.payload):
-            next_variant = _flipped_camera_variant_index(
-                task.payload,
-                current_index=variant_index,
-                attempted=session.attempted_presentation_variants[task.task_id],
-            )
-            if next_variant is not None and attempt < 3:
-                _retain_original_camera_candidate(
-                    session,
-                    task,
-                    image_path=image_path,
-                    variant_index=variant_index,
-                )
-                session.presentation_variant_by_task[task.task_id] = next_variant
-                return RenderAttempt.retryable("DIRECTION_SIGN_WEAK")
-            planning_candidates = _complete_camera_flip_candidates(
-                session,
-                task,
-                image_path=image_path,
-                variant_index=variant_index,
-                failures=(),
-                error_code="DIRECTION_SIGN_WEAK",
-            )
-            if planning_candidates is not None:
-                return planning_candidates
-        if not fixed_refit:
+        if not default_refit:
             _freeze_framing_profile(
                 session,
                 task,

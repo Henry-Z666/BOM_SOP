@@ -175,41 +175,42 @@ _POLICIES = {
         "重新选择可审计的箭头布局。",
         retain_real_image=False,
     ),
-    # Bounded deterministic repairs.
+    # Camera/installation compatibility is replanned before another render;
+    # the production worker must not turn these failures into blind probes.
     "CAMERA_RECEIVER_WRONG_HALF_SPACE": _policy(
         "CAMERA_RECEIVER_WRONG_HALF_SPACE",
-        GateCategory.AUTO_REPAIR,
+        GateCategory.HARD_BLOCK,
         "当前相机位于承接面错误一侧。",
-        "自动切换到另一固定相机并重新计算投影。",
-        retain_real_image=True,
+        "返回规划层重新选择与承接面兼容的固定相机。",
+        retain_real_image=False,
     ),
     "CAMERA_RECEIVER_SILHOUETTE": _policy(
         "CAMERA_RECEIVER_SILHOUETTE",
-        GateCategory.AUTO_REPAIR,
+        GateCategory.HARD_BLOCK,
         "当前相机使承接面接近侧视，安装关系不清晰。",
-        "自动切换到另一固定相机；仍不清晰时保留图片人工复核。",
-        retain_real_image=True,
+        "返回规划层重新选择固定相机；禁止盲目翻转后直接采用。",
+        retain_real_image=False,
     ),
     "EXPLOSION_NOT_VISIBLE_IN_CAMERA": _policy(
         "EXPLOSION_NOT_VISIBLE_IN_CAMERA",
-        GateCategory.AUTO_REPAIR,
+        GateCategory.HARD_BLOCK,
         "爆炸位移在当前相机中的投影过小。",
-        "切换固定相机或在限值内增加爆炸距离。",
-        retain_real_image=True,
+        "返回规划层重新选择固定相机或确定性调整爆炸距离。",
+        retain_real_image=False,
     ),
     "DIRECTION_SIGN_WEAK": _policy(
         "DIRECTION_SIGN_WEAK",
-        GateCategory.AUTO_REPAIR,
+        GateCategory.HARD_BLOCK,
         "安装方向正负号证据不足。",
-        "尝试相反方向和两台固定相机，保留最佳结果供复核。",
-        retain_real_image=True,
+        "在生成前确认安装方向；禁止用相机候选图代替几何事实。",
+        retain_real_image=False,
     ),
     "RECEIVER_NORMAL_NOT_AXIS_ALIGNED": _policy(
         "RECEIVER_NORMAL_NOT_AXIS_ALIGNED",
-        GateCategory.AUTO_REPAIR,
+        GateCategory.HARD_BLOCK,
         "承接面法向与当前安装轴不充分对齐。",
-        "重新选择最近安装轴并联动固定相机。",
-        retain_real_image=True,
+        "重新分析原生约束或由用户明确确认安装方向；禁止猜测最近轴。",
+        retain_real_image=False,
     ),
     # Presentation quality never discards a real image by itself.
     "SUBJECT_TOO_SMALL": _policy(

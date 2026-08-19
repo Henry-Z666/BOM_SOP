@@ -355,8 +355,8 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         self.assertEqual(batch.count("-RuntimeConfig \"' + $runtime.ConfigPath + '\"'"), 2)
         self.assertIn("Get-CreoRuntime -ProjectRoot $ProjectRoot -ConfigPath $RuntimeConfig", worker)
         self.assertIn("Get-CreoRuntime -ProjectRoot $ProjectRoot -ConfigPath $RuntimeConfig", legacy)
-        self.assertIn("'formal', 'candidate_search'", batch)
-        self.assertNotIn("execution_mode -ne 'formal'", batch)
+        self.assertIn("execution_mode -ne 'formal'", batch)
+        self.assertNotIn("candidate_search", batch)
 
     def test_native_framing_has_a_six_raster_hard_budget(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -450,7 +450,7 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         self.assertIn("stop_agent_native_worker.ps1", str(stop_command))
         self.assertFalse(session.native_worker_active)
 
-    def test_native_worker_renders_candidate_search_evidence(self) -> None:
+    def test_native_worker_rejects_candidate_search_geometry(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             workspace = Path(folder)
             base = _native_task()
@@ -473,9 +473,11 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
 
             attempt = worker.render(session, task, 1)
 
-        self.assertEqual(attempt.disposition, "passed")
+        self.assertEqual(attempt.disposition, "failed")
+        self.assertEqual(attempt.error_code, "TASK_NOT_FORMAL")
+        self.assertEqual(runner.commands, [])
 
-    def test_weak_direction_keeps_original_and_flipped_cameras_for_review(self) -> None:
+    def test_weak_direction_cannot_produce_camera_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             workspace = Path(folder)
             task = _native_task()
@@ -512,23 +514,14 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
             session = worker.open_session(workspace, plan)
 
             first = worker.render(session, task, 1)
-            second = worker.render(session, task, 2)
             candidates = sorted(
                 (workspace / "rendered").glob("formal-step-candidate-*.jpg")
             )
 
-        self.assertEqual(first.disposition, "retryable")
-        self.assertEqual(first.error_code, "DIRECTION_SIGN_WEAK")
-        self.assertEqual(second.disposition, "questioned")
-        self.assertEqual(len(second.candidate_hashes), 2)
-        self.assertEqual(len(candidates), 2)
-        self.assertEqual(
-            [
-                command[command.index("-VariantIndex") + 1]
-                for command in runner.commands
-            ],
-            ["0", "1"],
-        )
+        self.assertEqual(first.disposition, "failed")
+        self.assertEqual(first.error_code, "TASK_NOT_FORMAL")
+        self.assertEqual(len(candidates), 0)
+        self.assertEqual(runner.commands, [])
 
     def test_native_worker_passes_durable_runtime_config_to_render_batch(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -629,7 +622,7 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         ]
         self.assertEqual(indexes, ["0", "1"])
 
-    def test_camera_gate_retries_once_with_flipped_fixed_camera(self) -> None:
+    def test_default_refit_camera_gate_does_not_flip_camera(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             workspace = Path(folder)
             task = _native_task()
@@ -664,20 +657,17 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
             session = worker.open_session(workspace, plan)
 
             first = worker.render(session, task, 1)
-            second = worker.render(session, task, 2)
-
-        self.assertEqual(first.disposition, "retryable")
+        self.assertEqual(first.disposition, "failed")
         self.assertEqual(first.error_code, "CAMERA_RECEIVER_SILHOUETTE")
-        self.assertEqual(second.disposition, "passed")
         self.assertEqual(
             [
                 command[command.index("-VariantIndex") + 1]
                 for command in runner.commands
             ],
-            ["0", "1"],
+            ["0"],
         )
 
-    def test_failed_flipped_camera_retains_both_images_for_review(self) -> None:
+    def test_default_refit_does_not_create_flipped_camera_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             workspace = Path(folder)
             task = _native_task()
@@ -715,17 +705,15 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
             session = worker.open_session(workspace, plan)
 
             first = worker.render(session, task, 1)
-            second = worker.render(session, task, 2)
             candidates = sorted(
                 (workspace / "rendered").glob(
                     "formal-step-candidate-*.jpg"
                 )
             )
 
-        self.assertEqual(first.disposition, "retryable")
-        self.assertEqual(second.disposition, "questioned")
-        self.assertEqual(len(second.candidate_hashes), 2)
-        self.assertEqual(len(candidates), 2)
+        self.assertEqual(first.disposition, "failed")
+        self.assertEqual(first.error_code, "CAMERA_RECEIVER_SILHOUETTE")
+        self.assertEqual(len(candidates), 0)
 
     def test_default_refit_policy_never_probes_zooms_or_writes_framing_cache(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -777,7 +765,7 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         self.assertEqual(len(runner.commands), 1)
         self.assertFalse(profile_written)
 
-    def test_manual_refit_accepts_user_zoom_without_reenabling_probes(self) -> None:
+    def test_manual_refit_is_rejected_while_probe_policy_is_frozen(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             workspace = Path(folder)
             task = _native_task()
@@ -821,9 +809,9 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
                 / "frozen-framing-profiles.json"
             ).exists()
 
-        self.assertEqual(result.disposition, "questioned")
-        self.assertEqual(result.error_code, "SUBJECT_TOO_SMALL")
-        self.assertEqual(len(runner.commands), 1)
+        self.assertEqual(result.disposition, "failed")
+        self.assertEqual(result.error_code, "FRAMING_PROFILE_CONTRACT_INVALID")
+        self.assertEqual(len(runner.commands), 0)
         self.assertFalse(cache_written)
 
     def test_first_camera_calibration_freezes_profile_for_later_steps(self) -> None:

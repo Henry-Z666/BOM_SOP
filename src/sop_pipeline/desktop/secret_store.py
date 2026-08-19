@@ -71,4 +71,6 @@ def select_dashscope_key(
     if saved_value:
         return saved_value, False
     environment_value = str(environment).strip()
-    return environment_value, bool(environment_value)
+    # Deployment-owned environment secrets remain deployment-owned.  Only a
+    # key explicitly entered in the desktop configuration is persisted.
+    return environment_value, False

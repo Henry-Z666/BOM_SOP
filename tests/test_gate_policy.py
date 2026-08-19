@@ -22,13 +22,15 @@ class GatePolicyTests(unittest.TestCase):
             "ARROW_AUDIT_INVALID",
             "ARROW_COVERAGE_INVALID",
             "TRANSLATION_AUDIT_INVALID",
+            "DIRECTION_SIGN_WEAK",
+            "RECEIVER_NORMAL_NOT_AXIS_ALIGNED",
         ):
             with self.subTest(code=code):
                 policy = gate_policy(code)
                 self.assertEqual(policy.category, GateCategory.HARD_BLOCK)
                 self.assertFalse(policy.retain_real_image)
 
-    def test_camera_compatibility_codes_are_automatic_repairs(self) -> None:
+    def test_camera_compatibility_codes_require_replanning(self) -> None:
         for code in (
             "CAMERA_RECEIVER_WRONG_HALF_SPACE",
             "CAMERA_RECEIVER_SILHOUETTE",
@@ -36,8 +38,8 @@ class GatePolicyTests(unittest.TestCase):
         ):
             with self.subTest(code=code):
                 policy = gate_policy(code)
-                self.assertEqual(policy.category, GateCategory.AUTO_REPAIR)
-                self.assertTrue(policy.retain_real_image)
+                self.assertEqual(policy.category, GateCategory.HARD_BLOCK)
+                self.assertFalse(policy.retain_real_image)
 
     def test_presentation_codes_retain_real_images_for_human_review(self) -> None:
         for code in (
@@ -75,8 +77,8 @@ class GatePolicyTests(unittest.TestCase):
         decision = classify_failures(
             (
                 "SUBJECT_TOO_SMALL",
-                "CAMERA_RECEIVER_SILHOUETTE",
                 "ARROW_AUDIT_INVALID",
+                "CAMERA_RECEIVER_SILHOUETTE",
             )
         )
 
@@ -86,8 +88,8 @@ class GatePolicyTests(unittest.TestCase):
             decision.failures,
             (
                 "SUBJECT_TOO_SMALL",
-                "CAMERA_RECEIVER_SILHOUETTE",
                 "ARROW_AUDIT_INVALID",
+                "CAMERA_RECEIVER_SILHOUETTE",
             ),
         )
 

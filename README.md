@@ -53,9 +53,9 @@ Copy-Item ./config/creo-runtime.example.json ./config/creo-runtime.json
 $env:DASHSCOPE_API_KEY = '<your-key>'
 ```
 
-桌面 Agent 会在首次分析时把界面输入或环境变量中的 DashScope Key 使用 Windows
-DPAPI 按当前用户加密保存；后续启动可将 Key 输入框留空。输入新 Key 会替换已保存值，
-配置中不保存明文。
+桌面 Agent 会在首次分析时把用户在界面中输入的 DashScope Key 使用 Windows DPAPI
+按当前用户加密保存；后续启动可将 Key 输入框留空。部署环境变量中的 Key 只在当前进程
+使用，不会被应用自行复制到本地设置。输入新 Key 会替换已保存值，配置中不保存明文。
 
 正式 Qwen 接入使用阿里云 DashScope Python SDK，不依赖 OpenAI、GPT 或 Codex 运行时。`pywin32` 是 Windows COM 绑定的包名；64 位 Python 会安装 64 位扩展，可在 64 位 Windows 上驱动 Excel。
 

@@ -61,7 +61,7 @@ class DashScopeSecretStoreTests(unittest.TestCase):
         )
         self.assertEqual(
             select_dashscope_key("", "", "sk-environment"),
-            ("sk-environment", True),
+            ("sk-environment", False),
         )
 
 

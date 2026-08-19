@@ -90,12 +90,6 @@ def compile_locked_render_jobs(plan: FormalRenderPlan) -> RenderPlan:
 def _execution_mode(step: FormalRenderStep) -> str:
     if step.status == "ready":
         return "formal"
-    if (
-        step.translation_vector_root is not None
-        and step.camera_id is not None
-        and len(step.arrow_anchors) == len(step.moving_occurrences)
-    ):
-        return "candidate_search"
     return "placeholder"
 
 
@@ -195,9 +189,6 @@ def _compile_presentation(step: FormalRenderStep) -> dict[str, Any]:
             "variants": [],
             "frame_gate": _frame_gate(),
         }
-    flipped_camera = (
-        "fixed_456" if step.camera_id == "fixed_123" else "fixed_123"
-    )
     return {
         "schema_version": "fixed-frame-presentation/v1",
         "focus_context": "stage_visible_bbox/v1",
@@ -210,12 +201,6 @@ def _compile_presentation(step: FormalRenderStep) -> dict[str, Any]:
             {
                 "variant_id": "base",
                 "camera_id": step.camera_id,
-                "zoom": 1.0,
-                "pan": [0.0, 0.0],
-            },
-            {
-                "variant_id": "flipped-camera",
-                "camera_id": flipped_camera,
                 "zoom": 1.0,
                 "pan": [0.0, 0.0],
             },

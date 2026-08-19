@@ -161,6 +161,7 @@ class ProgressViewTests(unittest.TestCase):
                         "groups": [
                             {
                                 "step_id": "step-1",
+                                "selection_allowed": True,
                                 "candidates": [
                                     {"candidate_id": "candidate-1", "image_path": "rendered/step-1-candidate-1.png", "recommended": True}
                                 ],
@@ -204,7 +205,7 @@ class ProgressViewTests(unittest.TestCase):
         self.assertEqual(packet["items"][1]["step_number"], 2)
         self.assertIn("没有可交付图片", packet["items"][1]["issues"][0])
 
-    def test_review_packet_shows_weak_direction_camera_candidates(self) -> None:
+    def test_review_packet_rejects_weak_direction_camera_candidates(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             workspace = Path(folder)
             run_workspace = workspace / "runs" / "run-1"
@@ -224,7 +225,7 @@ class ProgressViewTests(unittest.TestCase):
                                 "step_id": "step-9",
                                 "status": "QUESTIONED",
                                 "error_code": "DIRECTION_SIGN_WEAK",
-                                "category": "auto_repair",
+                                "category": "hard_block",
                                 "image_path": "rendered/step-9-candidate-1-original-fixed_123.jpg",
                                 "issues": ["安装方向正负号证据不足。"],
                             }
@@ -261,14 +262,10 @@ class ProgressViewTests(unittest.TestCase):
 
             packet = review_packet(workspace, "run-1")
 
-        self.assertEqual(packet["candidate_count"], 2)
-        self.assertEqual(
-            [item["kind"] for item in packet["items"]],
-            ["candidate", "candidate"],
-        )
-        self.assertTrue(packet["items"][0]["image_path"].endswith("fixed_123.jpg"))
-        self.assertTrue(packet["items"][1]["image_path"].endswith("fixed_456.jpg"))
-        self.assertNotEqual(packet["items"][0]["kind"], "placeholder")
+        self.assertEqual(packet["candidate_count"], 0)
+        self.assertEqual(len(packet["items"]), 1)
+        self.assertEqual(packet["items"][0]["kind"], "placeholder")
+        self.assertEqual(packet["items"][0]["category"], "hard_block")
 
     def test_review_packet_explains_when_no_candidates_passed(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -403,7 +400,7 @@ class ProgressViewTests(unittest.TestCase):
             ["step-2"],
         )
 
-    def test_latest_failed_rerender_surfaces_diagnostics_and_retained_image(self) -> None:
+    def test_review_packet_does_not_override_validation_with_raw_render_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             workspace = Path(folder)
             run_workspace = workspace / "runs" / "run-1"
@@ -483,15 +480,8 @@ class ProgressViewTests(unittest.TestCase):
 
             packet = review_packet(workspace, "run-1")
 
-        self.assertEqual(len(packet["items"]), 1)
-        item = packet["items"][0]
-        self.assertEqual(item["kind"], "retained")
-        self.assertEqual(item["category"], "system_retry")
-        self.assertEqual(item["primary_code"], "SUBJECT_NOT_DETECTED")
-        self.assertEqual(item["actual"]["composition"]["foreground_pixels"], 0)
-        self.assertIn("回退", item["suggested_actions"][0])
-        self.assertEqual(item["source_bom_rows"], [21])
-        self.assertIn("BOM 第 21 行", item["label"])
+        self.assertEqual(packet["items"], [])
+        self.assertEqual(packet["message"], "没有待处理步骤。")
 
 
 

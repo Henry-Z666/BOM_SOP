@@ -361,7 +361,6 @@ class AgentCore:
             raise ValueError(f"步骤 {resolution.step_id} 当前不需要释疑")
         affected = self._affected_steps(before, resolution.step_id)
         result = self._require_workflow().resolve(run, resolution)
-        affected.update(self._affected_steps(result.steps, resolution.step_id))
         self._assert_unaffected_unchanged(before, result.steps, affected)
         suffix = uuid4().hex[:12]
         self._artifacts.write_json(
