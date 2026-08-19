@@ -8,7 +8,13 @@ from openpyxl import load_workbook
 from openpyxl.workbook.defined_name import DefinedName
 from PIL import Image
 
-from sop_pipeline.agent.sop_publisher import SopImage, SopStep, SopPublisher
+from sop_pipeline.agent.sop_publisher import (
+    SopImage,
+    SopStep,
+    SopPublisher,
+    _column_width_pixels,
+    _row_height_pixels,
+)
 
 
 def _image(folder: Path, name: str) -> Path:
@@ -119,6 +125,7 @@ class SopPublisherTests(unittest.TestCase):
             self.assertEqual(sheet["AJ8"].value, "按图装配")
             self.assertEqual(sheet["AJ32"].value, "待填写")
             self.assertEqual(len(sheet._images), 1)
+            self.assertIn("AM21:AQ21", {str(item) for item in sheet.merged_cells.ranges})
 
     def test_publication_removes_stale_external_defined_names(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -162,6 +169,16 @@ class SopPublisherTests(unittest.TestCase):
             self.assertEqual(len(workbook.active._images), 6)
             self.assertEqual(workbook.active["AN5"].value, "主工序 1")
             self.assertEqual(workbook.active["AJ8"].value, "按图装配")
+            for image in workbook.active._images:
+                marker = image.anchor._from
+                self.assertLess(
+                    marker.colOff,
+                    _column_width_pixels(workbook.active, marker.col + 1) * 9525,
+                )
+                self.assertLess(
+                    marker.rowOff,
+                    _row_height_pixels(workbook.active, marker.row + 1) * 9525,
+                )
 
     def test_a_main_process_over_template_capacity_uses_continuation_page(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -174,7 +191,7 @@ class SopPublisherTests(unittest.TestCase):
             workbook = load_workbook(workbook_path)
 
             self.assertEqual(workbook.sheetnames, ["主工序 1", "主工序 1-续页2"])
-            self.assertEqual([len(sheet._images) for sheet in workbook], [6, 1])
+            self.assertEqual([len(sheet._images) for sheet in workbook], [4, 3])
 
 
 if __name__ == "__main__":

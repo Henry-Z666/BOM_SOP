@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from io import BytesIO
 from itertools import groupby
+from math import floor
 from pathlib import Path
 import re
 import shutil
@@ -10,8 +11,12 @@ from typing import Protocol
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as WorksheetImage
+from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
+from openpyxl.drawing.xdr import XDRPositiveSize2D
+from openpyxl.utils.units import pixels_to_EMU, points_to_pixels
 
 from .bundle_paths import bundled_sop_template
+from .sop_layout import PixelSize, balanced_page_sizes, plan_page_layout
 
 
 @dataclass(frozen=True)
@@ -157,10 +162,10 @@ class SopPublisher:
             steps, key=lambda item: item.main_process_id
         ):
             grouped = tuple(process_steps)
-            pages.extend(
-                grouped[offset : offset + self.images_per_page]
-                for offset in range(0, len(grouped), self.images_per_page)
-            )
+            offset = 0
+            for page_size in balanced_page_sizes(len(grouped), self.images_per_page):
+                pages.append(grouped[offset : offset + page_size])
+                offset += page_size
 
         # Copy the still-pristine retained template before filling any page. This
         # prevents values from the first process leaking into later pages.
@@ -243,22 +248,35 @@ class SopPublisher:
             sheet["AM32"] = "待填写"
             sheet["AR32"] = "待填写"
 
-        placements = _image_placements(len(steps))
-        for item, (anchor, max_width, max_height) in zip(
-            steps, placements, strict=True
-        ):
+        worksheet_images: list[WorksheetImage] = []
+        for item in steps:
             publication_image = _publication_image(item, pending)
             image_bytes = (
                 image_directory / copied[publication_image.image_id]
             ).read_bytes()
-            worksheet_image = WorksheetImage(BytesIO(image_bytes))
-            scale = min(
-                max_width / worksheet_image.width,
-                max_height / worksheet_image.height,
+            worksheet_images.append(WorksheetImage(BytesIO(image_bytes)))
+        placements = plan_page_layout(
+            tuple(
+                PixelSize(int(image.width), int(image.height))
+                for image in worksheet_images
+            ),
+            zone_width=_image_zone_width(sheet),
+            zone_height=_image_zone_height(sheet),
+        )
+        for worksheet_image, placement in zip(
+            worksheet_images, placements, strict=True
+        ):
+            worksheet_image.width = placement.width
+            worksheet_image.height = placement.height
+            marker = _image_zone_marker(sheet, placement.x, placement.y)
+            worksheet_image.anchor = OneCellAnchor(
+                _from=marker,
+                ext=XDRPositiveSize2D(
+                    cx=pixels_to_EMU(placement.width),
+                    cy=pixels_to_EMU(placement.height),
+                ),
             )
-            worksheet_image.width *= scale
-            worksheet_image.height *= scale
-            sheet.add_image(worksheet_image, anchor)
+            sheet.add_image(worksheet_image)
 
         sheet.print_area = "B1:AR35"
         sheet.print_options.horizontalCentered = True
@@ -298,6 +316,89 @@ def _value_or_pending(value: object) -> object:
     if isinstance(value, str):
         return value.strip() or "待填写"
     return value
+
+
+_IMAGE_ZONE_MIN_COLUMN = 2  # B
+_IMAGE_ZONE_MAX_COLUMN = 34  # AH
+_IMAGE_ZONE_MIN_ROW = 8
+_IMAGE_ZONE_MAX_ROW = 35
+_EXCEL_MAX_DIGIT_WIDTH = 7
+_DEFAULT_RENDERED_ROW_HEIGHT_POINTS = 15.0
+
+
+def _image_zone_width(sheet) -> int:
+    return sum(
+        _column_width_pixels(sheet, column)
+        for column in range(_IMAGE_ZONE_MIN_COLUMN, _IMAGE_ZONE_MAX_COLUMN + 1)
+    )
+
+
+def _image_zone_height(sheet) -> int:
+    return sum(
+        _row_height_pixels(sheet, row)
+        for row in range(_IMAGE_ZONE_MIN_ROW, _IMAGE_ZONE_MAX_ROW + 1)
+    )
+
+
+def _image_zone_marker(sheet, x: int, y: int) -> AnchorMarker:
+    column, column_offset = _axis_marker(
+        x,
+        _IMAGE_ZONE_MIN_COLUMN,
+        _IMAGE_ZONE_MAX_COLUMN,
+        lambda index: _column_width_pixels(sheet, index),
+    )
+    row, row_offset = _axis_marker(
+        y,
+        _IMAGE_ZONE_MIN_ROW,
+        _IMAGE_ZONE_MAX_ROW,
+        lambda index: _row_height_pixels(sheet, index),
+    )
+    return AnchorMarker(
+        col=column - 1,
+        row=row - 1,
+        colOff=pixels_to_EMU(column_offset),
+        rowOff=pixels_to_EMU(row_offset),
+    )
+
+
+def _axis_marker(offset: int, start: int, end: int, span) -> tuple[int, int]:
+    if offset < 0:
+        raise ValueError("image offset cannot be negative")
+    remaining = offset
+    for index in range(start, end + 1):
+        width = span(index)
+        if remaining < width:
+            return index, remaining
+        remaining -= width
+    raise ValueError("image offset escapes the SOP image zone")
+
+
+def _column_width_pixels(sheet, column: int) -> int:
+    width = sheet.sheet_format.defaultColWidth or 8.43
+    for dimension in sheet.column_dimensions.values():
+        if dimension.min <= column <= dimension.max:
+            width = dimension.width
+            break
+    # Excel column widths exclude cell padding. Four pixels matches the retained
+    # template's rendered B:AH width (980 px versus 979.3 px measured by Excel).
+    character_pixels = floor(
+        (
+            256 * width
+            + floor(128 / _EXCEL_MAX_DIGIT_WIDTH)
+        )
+        / 256
+        * _EXCEL_MAX_DIGIT_WIDTH
+    )
+    return max(1, character_pixels + 4)
+
+
+def _row_height_pixels(sheet, row: int) -> int:
+    # The retained workbook declares a 20.1 pt default but Excel renders its
+    # unspecified rows at 15 pt. Explicit row heights remain authoritative.
+    points = sheet.row_dimensions[row].height
+    if points is None:
+        points = _DEFAULT_RENDERED_ROW_HEIGHT_POINTS
+    return max(1, points_to_pixels(points))
 
 
 def _drop_stale_external_defined_names(workbook: Workbook) -> None:
@@ -349,39 +450,6 @@ def _page_materials(
                 positions[key] = len(ordered)
                 ordered.append((code, name, quantity))
     return tuple(ordered)
-
-
-def _image_placements(count: int) -> tuple[tuple[str, int, int], ...]:
-    """Return deterministic slots inside the template's B8:AH35 image area."""
-
-    if count < 1 or count > 6:
-        raise ValueError("a template page supports between 1 and 6 images")
-    if count == 1:
-        return (("K8", 720, 500),)
-    if count == 2:
-        return (("B8", 350, 500), ("T8", 350, 500))
-    if count == 3:
-        return (
-            ("B8", 230, 500),
-            ("M8", 230, 500),
-            ("X8", 230, 500),
-        )
-    if count == 4:
-        return (
-            ("B8", 350, 235),
-            ("T8", 350, 235),
-            ("B22", 350, 235),
-            ("T22", 350, 235),
-        )
-    slots = (
-        ("B8", 230, 235),
-        ("M8", 230, 235),
-        ("X8", 230, 235),
-        ("B22", 230, 235),
-        ("M22", 230, 235),
-        ("X22", 230, 235),
-    )
-    return slots[:count]
 
 
 def _safe_filename(value: str) -> str:
