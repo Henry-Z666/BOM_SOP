@@ -26,7 +26,9 @@ class StepRevisionTests(unittest.TestCase):
         self.assertEqual(self.graph.invalidated_by(revision), frozenset({"b"}))
 
     def test_complete_state_change_invalidates_only_dependency_descendants(self) -> None:
-        revision = StepRevision(1, "b", RevisionKind.COMPLETE_STATE, {"direction": "reverse"})
+        revision = StepRevision(
+            1, "b", RevisionKind.COMPLETE_STATE, {"direction": [0, 0, 1]}
+        )
         self.assertEqual(self.graph.invalidated_by(revision), frozenset({"b", "c"}))
 
     def test_unrelated_branch_remains_valid(self) -> None:

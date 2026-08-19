@@ -14,6 +14,7 @@ config/qwen-runtime.json
 
 # Source CAD and generated deliverables are kept locally, not in the workflow repository.
 零件图/
+/CAD_tanks/
 BOM.xlsx
 SOP示例.xlsx
 work/

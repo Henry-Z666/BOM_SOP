@@ -138,6 +138,7 @@ class ProgressViewTests(unittest.TestCase):
             run_workspace = workspace / "runs" / "run-1"
             (run_workspace / "results").mkdir(parents=True)
             (run_workspace / "rendered").mkdir()
+            (run_workspace / "plans").mkdir()
             (run_workspace / "internal" / "validation").mkdir(parents=True)
             candidate = run_workspace / "rendered" / "step-1-candidate-1.png"
             placeholder = run_workspace / "internal" / "validation" / "step-2-placeholder.png"
@@ -169,14 +170,105 @@ class ProgressViewTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            (run_workspace / "plans" / "locked-render-plan-0001.json").write_text(
+                json.dumps(
+                    {
+                        "steps": [
+                            {
+                                "step_id": "step-1",
+                                "title": "安装阀门",
+                                "source_bom_rows": [12],
+                            },
+                            {
+                                "step_id": "step-2",
+                                "title": "连接管路",
+                                "source_bom_rows": [15],
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             packet = review_packet(workspace, "run-1")
 
         self.assertEqual(packet["candidate_count"], 1)
         self.assertEqual(packet["items"][0]["kind"], "candidate")
+        self.assertEqual(packet["items"][0]["step_number"], 1)
+        self.assertEqual(packet["items"][0]["source_bom_rows"], [12])
+        self.assertIn("第 1 步", packet["items"][0]["label"])
+        self.assertIn("BOM 第 12 行", packet["items"][0]["label"])
+        self.assertIn("安装阀门", packet["items"][0]["label"])
         self.assertTrue(packet["items"][0]["image_path"].endswith("step-1-candidate-1.png"))
         self.assertEqual(packet["items"][1]["kind"], "placeholder")
-        self.assertIn("基础几何硬门", packet["items"][1]["issues"][0])
+        self.assertEqual(packet["items"][1]["step_number"], 2)
+        self.assertIn("没有可交付图片", packet["items"][1]["issues"][0])
+
+    def test_review_packet_shows_weak_direction_camera_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            run_workspace = workspace / "runs" / "run-1"
+            rendered = run_workspace / "rendered"
+            results = run_workspace / "results"
+            rendered.mkdir(parents=True)
+            results.mkdir(parents=True)
+            original = rendered / "step-9-candidate-1-original-fixed_123.jpg"
+            flipped = rendered / "step-9-candidate-2-flipped-fixed_456.jpg"
+            original.write_bytes(b"original")
+            flipped.write_bytes(b"flipped")
+            (results / "validation-0001.json").write_text(
+                json.dumps(
+                    {
+                        "steps": [
+                            {
+                                "step_id": "step-9",
+                                "status": "QUESTIONED",
+                                "error_code": "DIRECTION_SIGN_WEAK",
+                                "category": "auto_repair",
+                                "image_path": "rendered/step-9-candidate-1-original-fixed_123.jpg",
+                                "issues": ["安装方向正负号证据不足。"],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (results / "candidate-set-0001.json").write_text(
+                json.dumps(
+                    {
+                        "groups": [
+                            {
+                                "step_id": "step-9",
+                                "factor": "bounded-render-variant",
+                                "candidates": [
+                                    {
+                                        "candidate_id": "candidate-1",
+                                        "image_path": "rendered/step-9-candidate-1-original-fixed_123.jpg",
+                                        "recommended": True,
+                                    },
+                                    {
+                                        "candidate_id": "candidate-2",
+                                        "image_path": "rendered/step-9-candidate-2-flipped-fixed_456.jpg",
+                                        "recommended": False,
+                                    },
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            packet = review_packet(workspace, "run-1")
+
+        self.assertEqual(packet["candidate_count"], 2)
+        self.assertEqual(
+            [item["kind"] for item in packet["items"]],
+            ["candidate", "candidate"],
+        )
+        self.assertTrue(packet["items"][0]["image_path"].endswith("fixed_123.jpg"))
+        self.assertTrue(packet["items"][1]["image_path"].endswith("fixed_456.jpg"))
+        self.assertNotEqual(packet["items"][0]["kind"], "placeholder")
 
     def test_review_packet_explains_when_no_candidates_passed(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -195,6 +287,212 @@ class ProgressViewTests(unittest.TestCase):
 
         self.assertEqual(packet["candidate_count"], 0)
         self.assertIn("没有候选图通过", packet["message"])
+
+    def test_questioned_real_image_can_be_adopted_without_generated_variants(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            run_workspace = workspace / "runs" / "run-1"
+            results = run_workspace / "results"
+            rendered = run_workspace / "rendered"
+            results.mkdir(parents=True)
+            rendered.mkdir()
+            image = rendered / "step-1.jpg"
+            image.write_bytes(b"real-creo-image")
+            (results / "validation-0001.json").write_text(
+                json.dumps(
+                    {
+                        "steps": [
+                            {
+                                "step_id": "step-1",
+                                "status": "QUESTIONED",
+                                "image_path": "rendered/step-1.jpg",
+                                "issues": ["构图待人工确认"],
+                                "manual_acceptance_allowed": True,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (results / "candidate-set-0001.json").write_text(
+                json.dumps({"groups": []}), encoding="utf-8"
+            )
+
+            packet = review_packet(workspace, "run-1")
+
+        self.assertEqual(packet["candidate_count"], 1)
+        self.assertEqual(packet["items"][0]["kind"], "current")
+        self.assertEqual(packet["items"][0]["candidate_id"], "current-image")
+        self.assertIn("可直接采用", packet["items"][0]["label"])
+
+    def test_review_packet_hides_steps_already_passed_by_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            run_workspace = workspace / "runs" / "run-1"
+            results = run_workspace / "results"
+            rendered = run_workspace / "rendered"
+            results.mkdir(parents=True)
+            rendered.mkdir()
+            for step_id in ("step-1", "step-2"):
+                (rendered / f"{step_id}.jpg").write_bytes(b"real-creo-image")
+            (results / "render-batch-0001.json").write_text(
+                json.dumps(
+                    {
+                        "steps": [
+                            {
+                                "step_id": "step-1",
+                                "status": "QUESTIONED",
+                                "image_path": "rendered/step-1.jpg",
+                                "error_code": "SUBJECT_TOO_SMALL",
+                                "primary_code": "SUBJECT_TOO_SMALL",
+                                "category": "human_review",
+                                "failures": [
+                                    {
+                                        "code": "SUBJECT_TOO_SMALL",
+                                        "message": "主体在画面中偏小。",
+                                        "suggested_action": "人工确认或提高 zoom。",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (results / "validation-0001.json").write_text(
+                json.dumps(
+                    {
+                        "steps": [
+                            {
+                                "step_id": "step-1",
+                                "status": "QUESTIONED",
+                                "image_path": "rendered/step-1.jpg",
+                                "manual_acceptance_allowed": True,
+                            },
+                            {
+                                "step_id": "step-2",
+                                "status": "QUESTIONED",
+                                "image_path": "rendered/step-2.jpg",
+                                "manual_acceptance_allowed": True,
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (results / "candidate-set-0001.json").write_text(
+                json.dumps({"groups": []}), encoding="utf-8"
+            )
+            (results / "publication-0001.json").write_text(
+                json.dumps(
+                    {
+                        "delivery_directory": str(run_workspace / "delivery"),
+                        "steps": [
+                            {"step_id": "step-1", "status": "PASSED"},
+                            {"step_id": "step-2", "status": "QUESTIONED"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            packet = review_packet(workspace, "run-1")
+
+        self.assertEqual(
+            [item["step_id"] for item in packet["items"]],
+            ["step-2"],
+        )
+
+    def test_latest_failed_rerender_surfaces_diagnostics_and_retained_image(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            run_workspace = workspace / "runs" / "run-1"
+            results = run_workspace / "results"
+            rendered = run_workspace / "rendered"
+            plans = run_workspace / "plans"
+            results.mkdir(parents=True)
+            rendered.mkdir()
+            plans.mkdir()
+            previous = rendered / "step-1.jpg"
+            previous.write_bytes(b"previous-valid-image")
+            (results / "validation-0001.json").write_text(
+                json.dumps(
+                    {
+                        "steps": [
+                            {
+                                "step_id": "step-1",
+                                "status": "PASSED",
+                                "image_path": "rendered/step-1.jpg",
+                                "issues": [],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (results / "render-batch-0002.json").write_text(
+                json.dumps(
+                    {
+                        "steps": [
+                            {
+                                "step_id": "step-1",
+                                "status": "QUESTIONED",
+                                "image_path": "rendered/step-1.jpg",
+                                "error_code": "SUBJECT_NOT_DETECTED",
+                                "primary_code": "SUBJECT_NOT_DETECTED",
+                                "category": "system_retry",
+                                "failures": [
+                                    {
+                                        "code": "SUBJECT_NOT_DETECTED",
+                                        "message": "渲染帧中未检测到主体。",
+                                        "suggested_action": "回退本次相机参数后重试。",
+                                    }
+                                ],
+                                "expected": {"subject_span": [0.2, 0.8]},
+                                "actual": {"composition": {"foreground_pixels": 0}},
+                                "attempted_actions": ["已重渲染修订视角"],
+                                "suggested_actions": ["回退本次相机参数后重试。"],
+                                "retained_image": "rendered/step-1.jpg",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (results / "candidate-set-0001.json").write_text(
+                json.dumps({"groups": []}), encoding="utf-8"
+            )
+            (results / "publication-0001.json").write_text(
+                json.dumps({"steps": [{"step_id": "step-1", "status": "PASSED"}]}),
+                encoding="utf-8",
+            )
+            (plans / "locked-render-plan-0001.json").write_text(
+                json.dumps(
+                    {
+                        "steps": [
+                            {
+                                "step_id": "step-1",
+                                "title": "安装事故回放零件",
+                                "source_bom_rows": [21],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            packet = review_packet(workspace, "run-1")
+
+        self.assertEqual(len(packet["items"]), 1)
+        item = packet["items"][0]
+        self.assertEqual(item["kind"], "retained")
+        self.assertEqual(item["category"], "system_retry")
+        self.assertEqual(item["primary_code"], "SUBJECT_NOT_DETECTED")
+        self.assertEqual(item["actual"]["composition"]["foreground_pixels"], 0)
+        self.assertIn("回退", item["suggested_actions"][0])
+        self.assertEqual(item["source_bom_rows"], [21])
+        self.assertIn("BOM 第 21 行", item["label"])
+
 
 
 if __name__ == "__main__":

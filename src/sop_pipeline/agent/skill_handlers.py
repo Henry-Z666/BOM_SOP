@@ -30,6 +30,7 @@ from .formal_render_planner import (
     compile_formal_render_plan,
     formal_render_plan_from_dict,
 )
+from .gate_policy import GateCategory, classify_failures, gate_policy
 from .model_inventory import MODEL_PATTERN, ModelFile, ModelInventory, inventory_models
 from .models import (
     ClarificationItem,
@@ -45,7 +46,6 @@ from .render_scheduler import (
     RenderScheduler,
     RenderTask,
 )
-from .render_validation import PRESENTATION_FAILURES
 from .skill_contract import Diagnostic, RetryScope
 from .skill_registry import SkillInvocation
 from .skill_runtime import (
@@ -55,6 +55,7 @@ from .skill_runtime import (
 )
 from .sop_publisher import SopImage, SopPublisher, SopStep
 from .step_revision import (
+    CURRENT_IMAGE_CANDIDATE_ID,
     RevisionKind,
     StepDependencyGraph,
     StepRevision,
@@ -432,7 +433,7 @@ def render_batch(
         formal_ids = {
             task.step_id
             for task in plan.tasks
-            if task.payload.get("execution_mode") == "formal"
+            if task.payload.get("execution_mode") in {"formal", "candidate_search"}
             and task.step_id in invalidated
         }
         formal_tasks = tuple(
@@ -448,6 +449,48 @@ def render_batch(
             if task.step_id in formal_ids
         )
         formal_plan = RenderPlan("render-plan/v2", formal_tasks)
+        if invalidation_ref is not None and invalidated and not formal_tasks:
+            blocked_tasks = [
+                task for task in plan.tasks if task.step_id in invalidated
+            ]
+            codes = sorted(
+                {
+                    str(code)
+                    for task in blocked_tasks
+                    for code in task.payload.get("diagnostics", [])
+                    if str(code)
+                }
+            )
+            detail = "、".join(codes) or "任务缺少可验证的安装几何"
+            payload = {
+                "schema_version": "render-batch-result/v2",
+                "plan_fingerprint": plan.fingerprint,
+                "steps": [],
+                "metrics": {
+                    "total_tasks": 0,
+                    "rendered_tasks": 0,
+                    "render_attempts": 0,
+                    "worker_sessions": 0,
+                    "restored_steps": 0,
+                },
+                "failure_summary": {
+                    "BLOCKED:TARGET_NOT_RENDERABLE": len(blocked_tasks)
+                },
+                "diagnostics_directory": "internal/render-diagnostics",
+            }
+            return SkillHandlerOutput(
+                status=SkillStatus.BLOCKED,
+                artifacts=(SkillArtifactValue("render-batch-result", payload),),
+                diagnostics=(
+                    Diagnostic(
+                        "TARGET_RERENDER_PRODUCED_NO_IMAGE",
+                        "本次修订没有解除当前几何硬门，因此没有生成新的真实图片。"
+                        f"仍需处理：{detail}",
+                        tuple(sorted(invalidated)),
+                    ),
+                ),
+                allowed_next=("resolve-step",),
+            )
         worker = context.adapters.get("render_worker")
         if formal_tasks and worker is None:
             runtime_config = resolve_runtime_config(context.run.workspace)
@@ -508,6 +551,12 @@ def render_batch(
                 continue
             result = formal_results.get(task.step_id)
             if result is None:
+                unresolved = [
+                    str(code)
+                    for code in task.payload.get("diagnostics", [])
+                    if str(code)
+                ] or ["TASK_NOT_FORMAL"]
+                decision = classify_failures(unresolved)
                 status = (
                     StepStatus.QUESTIONED
                     if task.payload.get("execution_mode") == "candidate_search"
@@ -524,13 +573,20 @@ def render_batch(
                         "image_path": None,
                         "execution_mode": task.payload.get("execution_mode"),
                         "restored": False,
-                        "error_code": (
-                            next(iter(task.payload.get("diagnostics", [])), None)
-                            or "TASK_NOT_FORMAL"
-                        ),
+                        "error_code": decision.primary_code,
+                        "primary_code": decision.primary_code,
+                        "failures": _failure_details(unresolved),
+                        "category": decision.category.value,
+                        "expected": None,
+                        "actual": None,
+                        "attempted_actions": [],
+                        "suggested_actions": [
+                            gate_policy(code).suggested_action for code in unresolved
+                        ],
+                        "retained_image": None,
                         "error_message": (
                             "该步骤尚未满足正式渲染条件："
-                            + ", ".join(task.payload.get("diagnostics", []))
+                            + ", ".join(unresolved)
                         ),
                     }
                 )
@@ -550,44 +606,155 @@ def render_batch(
                     else []
                 )
             )
+            execution_mode = str(task.payload.get("execution_mode") or "formal")
+            planning_diagnostics = [
+                str(code)
+                for code in task.payload.get("diagnostics", [])
+                if str(code)
+            ]
+            all_failures = list(
+                dict.fromkeys(planning_diagnostics + gate_failures)
+            )
+            decision = classify_failures(all_failures)
+            result_status = (
+                StepStatus.QUESTIONED
+                if execution_mode == "candidate_search"
+                and result.status in {StepStatus.PASSED, StepStatus.QUESTIONED}
+                else result.status
+            )
+            deterministic_geometry_passed = (
+                result.status is StepStatus.PASSED
+                or bool(
+                    gate_failures
+                    and all(
+                        gate_policy(str(failure)).category
+                        in {GateCategory.AUTO_REPAIR, GateCategory.HUMAN_REVIEW}
+                        for failure in gate_failures
+                    )
+                )
+            )
+            retained_image: str | None = None
+            if (
+                result.status is StepStatus.FAILED
+                and image_path.is_file()
+                and decision.category
+                in {GateCategory.AUTO_REPAIR, GateCategory.HUMAN_REVIEW}
+            ):
+                result_status = StepStatus.QUESTIONED
+            if (
+                result.status is StepStatus.FAILED
+                and decision.category is GateCategory.SYSTEM_RETRY
+            ):
+                previous = prior_steps.get(task.step_id, {})
+                previous_relative = str(previous.get("image_path") or "")
+                previous_path = (
+                    context.run.workspace / previous_relative
+                    if previous_relative
+                    else None
+                )
+                if (
+                    previous_path is not None
+                    and previous_path.is_file()
+                    and "placeholder" not in previous_path.name.casefold()
+                ):
+                    image_path = previous_path
+                    retained_image = previous_relative.replace("\\", "/")
+                    result_status = StepStatus.QUESTIONED
+            if (
+                execution_mode == "candidate_search"
+                and image_path.is_file()
+                and "placeholder" not in image_path.name.casefold()
+            ):
+                result_status = StepStatus.QUESTIONED
+            has_real_image = (
+                image_path.is_file()
+                and "placeholder" not in image_path.name.casefold()
+            )
             steps.append(
                 {
                     **asdict(result),
-                    "status": result.status.value,
+                    "status": result_status.value,
                     "depends_on": list(result.depends_on),
                     "image_path": (
                         str(image_path.relative_to(context.run.workspace))
                         if image_path.is_file()
                         else None
                     ),
-                    "execution_mode": "formal",
+                    "execution_mode": execution_mode,
                     "restored": False,
                     "error_code": (
-                        diagnostic.get("error_code")
+                        planning_diagnostics[0]
+                        if execution_mode == "candidate_search"
+                        and planning_diagnostics
+                        else (
+                            diagnostic.get("error_code")
+                            if diagnostic
+                            else (
+                                final_attempt.error_code
+                                if final_attempt
+                                else None
+                            )
+                        )
+                    ),
+                    "primary_code": decision.primary_code or None,
+                    "failures": _failure_details(all_failures),
+                    "category": (
+                        decision.category.value if all_failures else None
+                    ),
+                    "expected": diagnostic.get("expected") if diagnostic else None,
+                    "actual": diagnostic.get("actual") if diagnostic else None,
+                    "attempted_actions": (
+                        list(diagnostic.get("attempted_actions", []))
                         if diagnostic
-                        else (final_attempt.error_code if final_attempt else None)
+                        else []
+                    ),
+                    "suggested_actions": [
+                        gate_policy(code).suggested_action for code in all_failures
+                    ],
+                    "retained_image": (
+                        retained_image
+                        or (
+                            str(diagnostic.get("retained_image") or "")
+                            if diagnostic
+                            else ""
+                        )
+                        or None
                     ),
                     "error_message": (
-                        _render_diagnostic_message(diagnostic)
-                        if diagnostic
+                        (
+                            "安装几何存在待确认项，已保留推定结果的真实图片供人工复核："
+                            + "、".join(planning_diagnostics)
+                            if has_real_image
+                            else (
+                                _render_diagnostic_message(diagnostic)
+                                if diagnostic
+                                else (
+                                    f"渲染结束：{final_attempt.error_code}"
+                                    if final_attempt and final_attempt.error_code
+                                    else (
+                                        "安装几何存在待确认项，但未能生成可供复核的真实图片："
+                                        + "、".join(planning_diagnostics)
+                                    )
+                                )
+                            )
+                        )
+                        if execution_mode == "candidate_search"
                         else (
-                            f"渲染结束：{final_attempt.error_code}"
-                            if final_attempt and final_attempt.error_code
-                            else None
+                            _render_diagnostic_message(diagnostic)
+                            if diagnostic
+                            else (
+                                f"渲染结束：{final_attempt.error_code}"
+                                if final_attempt and final_attempt.error_code
+                                else None
+                            )
                         )
                     ),
                     "gate_failures": gate_failures,
-                    "deterministic_geometry_passed": bool(
-                        gate_failures
-                        and all(
-                            str(failure) in PRESENTATION_FAILURES
-                            for failure in gate_failures
-                        )
-                    ),
+                    "deterministic_geometry_passed": deterministic_geometry_passed,
                 }
             )
         payload = {
-            "schema_version": "render-batch-result/v1",
+            "schema_version": "render-batch-result/v2",
             "plan_fingerprint": plan.fingerprint,
             "steps": steps,
             "metrics": metrics,
@@ -595,7 +762,9 @@ def render_batch(
             "diagnostics_directory": "internal/render-diagnostics",
         }
         formal_step_payloads = [
-            item for item in steps if item.get("execution_mode") == "formal"
+            item
+            for item in steps
+            if item.get("execution_mode") in {"formal", "candidate_search"}
         ]
         if formal_step_payloads and not any(
             item.get("status")
@@ -642,6 +811,20 @@ def _render_diagnostic_message(diagnostic: Mapping[str, object]) -> str:
     return "Creo渲染进程未返回详细错误信息"
 
 
+def _failure_details(codes: list[str]) -> list[dict[str, object]]:
+    return [
+        {
+            "code": policy.code,
+            "category": policy.category.value,
+            "message": policy.user_message,
+            "suggested_action": policy.suggested_action,
+            "retain_real_image": policy.retain_real_image,
+        }
+        for code in codes
+        for policy in (gate_policy(code),)
+    ]
+
+
 def _failure_summary(steps: list[dict[str, Any]]) -> dict[str, int]:
     summary: dict[str, int] = {}
     for item in steps:
@@ -675,11 +858,35 @@ def validate_repair(
                 else None
             )
             issues: list[str] = []
+            structured_failures = [
+                dict(value)
+                for value in item.get("failures", [])
+                if isinstance(value, dict)
+            ]
+            for failure in structured_failures:
+                message = str(failure.get("message") or failure.get("code") or "").strip()
+                action = str(failure.get("suggested_action") or "").strip()
+                detail = f"{message} 建议：{action}" if message and action else message
+                if detail and detail not in issues:
+                    issues.append(detail)
+            planning_review_required = (
+                str(item.get("execution_mode")) == "candidate_search"
+            )
+            if planning_review_required:
+                planning_issue = str(
+                    item.get("error_message")
+                    or item.get("error_code")
+                    or "安装几何需要人工确认"
+                ).strip()
+                if planning_issue:
+                    issues.append(planning_issue)
+            discovered_candidates: tuple[Path, ...] = ()
             qwen_invoked = False
             qwen_passed: bool | None = None
             geometry_passed = status is StepStatus.PASSED or bool(
                 item.get("deterministic_geometry_passed", False)
             )
+            manual_acceptance_allowed = False
             if geometry_passed and image_path is not None and image_path.is_file():
                 if advisor is not None and not bool(item.get("restored", False)):
                     try:
@@ -700,7 +907,7 @@ def validate_repair(
                             },
                         )
                         qwen_passed = review.passed
-                        if review.passed:
+                        if review.passed and not planning_review_required:
                             status = StepStatus.PASSED
                         else:
                             status = StepStatus.QUESTIONED
@@ -714,6 +921,11 @@ def validate_repair(
                     if status is StepStatus.QUESTIONED
                     else StepStatus.FAILED
                 )
+                failure_detail = str(
+                    item.get("error_message") or item.get("error_code") or ""
+                ).strip()
+                if failure_detail:
+                    issues.append(failure_detail)
             if status is not StepStatus.PASSED:
                 questioned = True
                 discovered_candidates = tuple(
@@ -745,6 +957,11 @@ def validate_repair(
                     )
                     image_path = discovered_candidates[0]
                     status = StepStatus.QUESTIONED
+                elif geometry_passed and image_path is not None and image_path.is_file():
+                    # A real Creo render which passed every structural/geometric
+                    # gate remains a legitimate human-selectable option even
+                    # when no alternate variants were produced.
+                    manual_acceptance_allowed = True
                 elif image_path is None or not image_path.is_file():
                     placeholder = (
                         context.run.workspace
@@ -760,6 +977,14 @@ def validate_repair(
                 "input_status": str(item["status"]),
                 "input_error_code": item.get("error_code"),
                 "input_error_message": item.get("error_message"),
+                "primary_code": item.get("primary_code"),
+                "failures": structured_failures,
+                "category": item.get("category"),
+                "expected": item.get("expected"),
+                "actual": item.get("actual"),
+                "attempted_actions": item.get("attempted_actions", []),
+                "suggested_actions": item.get("suggested_actions", []),
+                "retained_image": item.get("retained_image"),
                 "qwen_invoked": qwen_invoked,
                 "qwen_passed": qwen_passed,
                 "qwen_issues": issues,
@@ -804,11 +1029,32 @@ def validate_repair(
                         if qwen_passed is False
                         else item.get("error_code")
                     ),
+                    "error_message": item.get("error_message"),
                     "issues": issues,
+                    "primary_code": item.get("primary_code"),
+                    "failures": structured_failures,
+                    "category": item.get("category"),
+                    "expected": item.get("expected"),
+                    "actual": item.get("actual"),
+                    "attempted_actions": item.get("attempted_actions", []),
+                    "suggested_actions": item.get("suggested_actions", []),
+                    "retained_image": item.get("retained_image"),
+                    "manual_acceptance_allowed": manual_acceptance_allowed,
+                    "image_kind": (
+                        "rendered"
+                        if image_path is not None
+                        and image_path.is_file()
+                        and "placeholder" not in image_path.name.casefold()
+                        else (
+                            "candidate"
+                            if discovered_candidates
+                            else "placeholder"
+                        )
+                    ),
                 }
             )
         validation = {
-            "schema_version": "validation-result/v1",
+            "schema_version": "validation-result/v2",
             "steps": validated,
             "failure_summary": _failure_summary(validated),
             "diagnostics_directory": "internal/validation-diagnostics",
@@ -861,12 +1107,39 @@ def publish_delivery(
             context.read_json(_require_ref(invocation, "locked-render-plan"))
         )
         bom = _normalized(context.read_json(_require_ref(invocation, "normalized-bom")))
+        root_bom_row = bom.rows[0] if bom.rows else None
         candidates = context.read_json(_require_ref(invocation, "candidate-set"))
         groups = {
             str(item["step_id"]): item for item in candidates.get("groups", [])
         }
         selected_step = None
         selected_candidate = None
+        prior_publication_ref = _optional_ref(
+            invocation, "results/publication-"
+        )
+        prior_publication = (
+            context.read_json(prior_publication_ref)
+            if prior_publication_ref is not None
+            else {}
+        )
+        prior_steps = {
+            str(item.get("step_id")): item
+            for item in prior_publication.get("steps", [])
+            if isinstance(item, dict)
+        }
+        committed_steps = {
+            step.step_id: step
+            for step in context.run_store.list_steps(context.run.run_id)
+        }
+        invalidation_ref = _optional_ref(invocation, "invalidation-set")
+        invalidated = (
+            {
+                str(step_id)
+                for step_id in context.read_json(invalidation_ref).get("steps", [])
+            }
+            if invalidation_ref is not None
+            else set()
+        )
         revision_ref = _optional_ref(invocation, "step-revision")
         if revision_ref is not None:
             revision = context.read_json(revision_ref)
@@ -893,7 +1166,34 @@ def publish_delivery(
                 )
                 for candidate in groups.get(step_id, {}).get("candidates", [])
             )
-            if step_id == selected_step and selected_candidate:
+            prior = prior_steps.get(step_id)
+            committed = committed_steps.get(step_id)
+            result_depends_on = tuple(item.get("depends_on", step.depends_on))
+            result_complete_state_hash = str(
+                item.get("complete_state_hash") or step.complete_state_hash
+            )
+            if (
+                committed is not None
+                and committed.status is StepStatus.PASSED
+                and step_id not in invalidated
+            ):
+                prior_evidence = dict(prior or {})
+                prior_evidence["output_hash"] = committed.output_hash
+                image_path = _historical_publication_image(
+                    context.run.workspace,
+                    prior_evidence,
+                    image_path,
+                    candidate_images,
+                )
+                status = StepStatus.PASSED
+                result_depends_on = committed.depends_on
+                result_complete_state_hash = committed.complete_state_hash
+            if (
+                step_id == selected_step
+                and selected_candidate == CURRENT_IMAGE_CANDIDATE_ID
+            ):
+                status = StepStatus.PASSED
+            elif step_id == selected_step and selected_candidate:
                 chosen = next(
                     (
                         candidate
@@ -906,11 +1206,15 @@ def publish_delivery(
                     raise ValueError("选中的候选图不属于当前步骤")
                 image_path = chosen.path
                 status = StepStatus.PASSED
+            if status is StepStatus.PASSED:
+                # Once a step is resolved, its alternatives leave both the
+                # review queue and the user delivery directory.
+                candidate_images = ()
             pending = pending or status is not StepStatus.PASSED
             material_rows = [
                 bom_by_row[row]
                 for row in step.source_bom_rows
-                if row in bom_by_row and row != min(step.source_bom_rows, default=-1)
+                if row in bom_by_row
             ]
             materials = tuple(
                 (
@@ -936,6 +1240,21 @@ def publish_delivery(
                     process_text=source.assembly_text if source else step.title,
                     control_points=source.control_points if source else "",
                     tools=source.tools if source else "",
+                    project_name=(
+                        root_bom_row.name
+                        if root_bom_row and root_bom_row.name
+                        else "待填写"
+                    ),
+                    document_no=(
+                        (root_bom_row.drawing_no or root_bom_row.material_code)
+                        if root_bom_row
+                        else "待填写"
+                    ) or "待填写",
+                    applicable_model=(
+                        root_bom_row.model
+                        if root_bom_row and root_bom_row.model
+                        else "待填写"
+                    ),
                     questioned=status is not StepStatus.PASSED,
                     candidates=candidate_images,
                 )
@@ -945,9 +1264,12 @@ def publish_delivery(
                     "step_id": step_id,
                     "main_process_id": step.main_process_id,
                     "status": status.value,
-                    "depends_on": list(step.depends_on),
-                    "complete_state_hash": step.complete_state_hash,
+                    "depends_on": list(result_depends_on),
+                    "complete_state_hash": result_complete_state_hash,
                     "output_hash": _file_hash(image_path),
+                    "image_path": _run_relative_path(
+                        context.run.workspace, image_path
+                    ),
                 }
             )
         verifier = context.adapters.get("workbook_verifier")
@@ -999,19 +1321,36 @@ def resolve_step(
     revision_number = int(invocation.parameters.get("revision", 1))
     try:
         if candidate_id:
-            candidates = context.read_json(_require_ref(invocation, "candidate-set"))
-            selected = next(
-                (
-                    candidate
-                    for group in candidates.get("groups", [])
-                    if str(group.get("step_id")) == step_id
-                    for candidate in group.get("candidates", [])
-                    if str(candidate.get("candidate_id")) == candidate_id
-                ),
-                None,
-            )
-            if selected is None:
-                raise ValueError("候选图不属于当前步骤或当前计划版本")
+            if candidate_id == CURRENT_IMAGE_CANDIDATE_ID:
+                validation = context.read_json(
+                    _require_ref(invocation, "results/validation-")
+                )
+                selected_step = next(
+                    (
+                        item
+                        for item in validation.get("steps", [])
+                        if str(item.get("step_id")) == step_id
+                    ),
+                    None,
+                )
+                if selected_step is None or not _current_image_is_acceptable(
+                    context.run.workspace, selected_step
+                ):
+                    raise ValueError("当前图片未通过基础几何硬门，不能直接采用")
+            else:
+                candidates = context.read_json(_require_ref(invocation, "candidate-set"))
+                selected = next(
+                    (
+                        candidate
+                        for group in candidates.get("groups", [])
+                        if str(group.get("step_id")) == step_id
+                        for candidate in group.get("candidates", [])
+                        if str(candidate.get("candidate_id")) == candidate_id
+                    ),
+                    None,
+                )
+                if selected is None:
+                    raise ValueError("候选图不属于当前步骤或当前计划版本")
             revision = StepRevision(
                 revision_number,
                 step_id,
@@ -1027,7 +1366,93 @@ def resolve_step(
                     retry_scope=RetryScope("step", (step_id,), 3),
                     allowed_next=("resolve-step",),
                 )
-            revision = advisor.interpret_resolution(step_id, instruction, revision_number)
+            validation = context.read_json(
+                _require_ref(invocation, "results/validation-")
+            )
+            current_step = next(
+                (
+                    item
+                    for item in validation.get("steps", [])
+                    if str(item.get("step_id")) == step_id
+                ),
+                {},
+            )
+            current_step = dict(current_step)
+            plan_ref = _optional_ref(invocation, "locked-render-plan")
+            if plan_ref is not None:
+                locked_plan = context.read_json(plan_ref)
+                for index, item in enumerate(locked_plan.get("steps", []), start=1):
+                    if str(item.get("step_id")) != step_id:
+                        continue
+                    current_step.update(
+                        {
+                            "step_number": index,
+                            "step_title": str(item.get("title", "")),
+                            "source_bom_rows": list(
+                                item.get("source_bom_rows", [])
+                            ),
+                            "moving_occurrences": list(
+                                item.get("moving_occurrences", [])
+                            ),
+                            "receiver_occurrences": list(
+                                item.get("receiver_occurrences", [])
+                            ),
+                            "direction": item.get("receiver_normal_root"),
+                            "current_camera_id": item.get("camera_id"),
+                            "allowed_camera_ids": list(
+                                item.get(
+                                    "allowed_camera_ids",
+                                    ("fixed_123", "fixed_456"),
+                                )
+                            ),
+                        }
+                    )
+                    break
+            normalized_ref = _optional_ref(invocation, "normalized-bom")
+            if normalized_ref is not None:
+                source_rows = {
+                    int(value)
+                    for value in current_step.get("source_bom_rows", [])
+                }
+                normalized = context.read_json(normalized_ref)
+                current_step["source_bom_items"] = [
+                    {
+                        "bom_row": int(item["bom_row"]),
+                        "name": str(item.get("name", "")),
+                        "drawing_no": str(item.get("drawing_no", "")),
+                        "material_code": str(item.get("material_code", "")),
+                    }
+                    for item in normalized.get("rows", [])
+                    if int(item.get("bom_row", -1)) in source_rows
+                ]
+            revision = advisor.interpret_resolution(
+                step_id,
+                instruction,
+                revision_number,
+                current_context=current_step,
+            )
+            unresolved_code = str(current_step.get("error_code") or "")
+            if (
+                revision.kind is RevisionKind.PRESENTATION
+                and unresolved_code
+                in {"DIRECTION_SIGN_WEAK", "RECEIVER_NORMAL_NOT_AXIS_ALIGNED"}
+            ):
+                raise ValueError(
+                    f"当前步骤仍有安装方向待确认项 {unresolved_code}；"
+                    "仅调整视角、Zoom或箭头不会确认该方向。"
+                    "请说明安装方向，例如“沿设备 Z 轴正方向装入”；"
+                    "如果推定方向图片正确，也可直接采用当前图片。"
+                )
+            if (
+                revision.kind is RevisionKind.PRESENTATION
+                and not _validation_has_real_image(context.run.workspace, current_step)
+            ):
+                code = str(current_step.get("error_code") or "GEOMETRY_GATE_FAILED")
+                raise ValueError(
+                    "当前步骤未通过几何硬门 "
+                    f"{code}；仅调整相机、Zoom或箭头没有生成新的真实图片。"
+                    "请说明安装方向、安装对象或接收部件。"
+                )
         validate_revision(revision)
         graph = StepDependencyGraph(
             {step.step_id: step.depends_on for step in steps}
@@ -1069,6 +1494,75 @@ def _blocked(code: str, message: str) -> SkillHandlerOutput:
     )
 
 
+def _current_image_is_acceptable(run_workspace: Path, item: Mapping[str, Any]) -> bool:
+    if str(item.get("status")) != StepStatus.QUESTIONED.value:
+        return False
+    relative = str(item.get("image_path") or "").replace("\\", "/")
+    explicitly_allowed = bool(item.get("manual_acceptance_allowed", False))
+    legacy_allowed = relative.startswith("rendered/")
+    if not (explicitly_allowed or legacy_allowed):
+        return False
+    path = (Path(run_workspace) / relative).resolve()
+    try:
+        path.relative_to(Path(run_workspace).resolve())
+    except ValueError:
+        return False
+    return path.is_file() and "placeholder" not in path.name.casefold()
+
+
+def _validation_has_real_image(
+    run_workspace: Path, item: Mapping[str, Any]
+) -> bool:
+    relative = str(item.get("image_path") or "").replace("\\", "/")
+    if not relative or str(item.get("image_kind")) == "placeholder":
+        return False
+    path = (Path(run_workspace) / relative).resolve()
+    try:
+        path.relative_to(Path(run_workspace).resolve())
+    except ValueError:
+        return False
+    return path.is_file() and "placeholder" not in path.name.casefold()
+
+
+def _historical_publication_image(
+    run_workspace: Path,
+    prior: Mapping[str, Any],
+    current_image: Path,
+    candidates: tuple[SopImage, ...],
+) -> Path:
+    """Recover the exact image accepted by an earlier successful resolution."""
+
+    root = Path(run_workspace).resolve()
+    relative = str(prior.get("image_path") or "").strip()
+    if relative:
+        selected = (root / relative).resolve()
+        try:
+            selected.relative_to(root)
+        except ValueError as error:
+            raise ValueError("历史已选图片路径逃逸运行区") from error
+        if selected.is_file():
+            return selected
+
+    expected_hash = str(prior.get("output_hash") or "")
+    possible = (Path(current_image), *(candidate.path for candidate in candidates))
+    if expected_hash:
+        for path in possible:
+            if path.is_file() and _file_hash(path) == expected_hash:
+                return path
+        raise ValueError("历史已选图片缺失，禁止悄悄换回其他候选图")
+    return Path(current_image)
+
+
+def _run_relative_path(run_workspace: Path, image_path: Path) -> str:
+    root = Path(run_workspace).resolve()
+    selected = Path(image_path).resolve()
+    try:
+        relative = selected.relative_to(root)
+    except ValueError as error:
+        raise ValueError("出版图片必须位于当前运行区") from error
+    return relative.as_posix()
+
+
 def _require_ref(invocation: SkillInvocation, kind: str) -> str:
     for reference in invocation.input_refs:
         if kind in reference:
@@ -1108,17 +1602,27 @@ def _apply_step_revision(plan: RenderPlan, payload: dict[str, Any]) -> RenderPla
             contract["camera_id"] = camera_id
             contract["camera"] = deepcopy(catalog[camera_id])
         presentation = dict(contract.get("presentation", {}))
-        framing_policy = str(
-            presentation.get("framing_profile", {}).get("policy", "")
-        )
-        if framing_policy == "default_refit/v1" and (
-            "zoom" in changes or "pan" in changes
-        ):
-            raise ValueError("当前默认视角策略已冻结，禁止修改PAN或Zoom")
+        variants = [
+            dict(value)
+            for value in presentation.get("variants", [])
+            if isinstance(value, dict)
+        ]
+        if not variants:
+            raise ValueError("锁定渲染任务缺少视角变体")
+        variant = dict(variants[0])
+        if "camera_id" in changes:
+            variant["camera_id"] = str(changes["camera_id"])
         if "zoom" in changes:
-            presentation["zoom"] = float(changes["zoom"])
+            variant["zoom"] = float(changes["zoom"])
         if "pan" in changes:
-            presentation["pan"] = list(changes["pan"])
+            variant["pan"] = [float(value) for value in changes["pan"]]
+        if "zoom" in changes or "pan" in changes:
+            framing_profile = dict(presentation.get("framing_profile", {}))
+            framing_profile["policy"] = "manual_refit/v1"
+            framing_profile["probe_interface_status"] = "disabled_user_revision/v1"
+            presentation["framing_profile"] = framing_profile
+        variant["variant_id"] = f"step-revision-{revision.revision}"
+        presentation["variants"] = [variant]
         if "arrow_layout" in changes:
             presentation["arrow_layout"] = changes["arrow_layout"]
         contract["presentation"] = presentation
@@ -1126,19 +1630,203 @@ def _apply_step_revision(plan: RenderPlan, payload: dict[str, Any]) -> RenderPla
             if field in changes:
                 contract[field] = list(changes[field])
         if "direction" in changes:
-            direction = [float(value) for value in changes["direction"]]
-            if len(direction) != 3:
-                raise ValueError("安装方向必须是三维向量")
+            direction = _unit_vector(changes["direction"], "安装方向")
             contract["receiver_normal_root"] = direction
+            current_translation = contract.get("translation_vector_root")
+            distance = _vector_length(current_translation)
+            if distance <= 1.0e-9:
+                distance = float(changes.get("explosion_distance", 80.0))
+            contract["translation_vector_root"] = [
+                round(value * distance, 6) for value in direction
+            ]
+            contract["diagnostics"] = [
+                code
+                for code in contract.get("diagnostics", [])
+                if code
+                not in {
+                    "DIRECTION_SIGN_WEAK",
+                    "RECEIVER_NORMAL_NOT_AXIS_ALIGNED",
+                    "CAMERA_RECEIVER_WRONG_HALF_SPACE",
+                    "CAMERA_RECEIVER_SILHOUETTE",
+                    "EXPLOSION_NOT_VISIBLE_IN_CAMERA",
+                }
+            ]
+        if "explosion_distance" in changes:
+            basis = contract.get("receiver_normal_root") or contract.get(
+                "translation_vector_root"
+            )
+            direction = _unit_vector(basis, "爆炸方向")
+            distance = float(changes["explosion_distance"])
+            contract["translation_vector_root"] = [
+                round(value * distance, 6) for value in direction
+            ]
+        if "direction" in changes or "explosion_distance" in changes:
+            _refresh_arrow_endpoints(contract)
+        if "direction" in changes or "camera_id" in changes:
+            _link_revision_cameras(
+                contract,
+                presentation,
+                revision_number=revision.revision,
+                preferred_camera_id=(
+                    str(changes["camera_id"]) if "camera_id" in changes else None
+                ),
+            )
+            contract["diagnostics"] = [
+                code
+                for code in contract.get("diagnostics", [])
+                if code
+                not in {
+                    "CAMERA_RECEIVER_WRONG_HALF_SPACE",
+                    "CAMERA_RECEIVER_SILHOUETTE",
+                    "EXPLOSION_NOT_VISIBLE_IN_CAMERA",
+                }
+            ]
+            contract["presentation"] = presentation
+        contract["execution_mode"] = _revised_execution_mode(contract)
         depends_on = (
             tuple(str(value) for value in changes["depends_on"])
             if "depends_on" in changes
             else task.depends_on
         )
-        tasks.append(replace(task, depends_on=depends_on, payload=contract))
+        tasks.append(
+            replace(
+                task,
+                task_id=f"{task.step_id}-revision-{revision.revision:04d}",
+                depends_on=depends_on,
+                payload=contract,
+            )
+        )
     if not found:
         raise ValueError(f"找不到待修订渲染步骤：{revision.step_id}")
     return RenderPlan(plan.schema_version, tuple(tasks))
+
+
+def _link_revision_cameras(
+    contract: dict[str, Any],
+    presentation: dict[str, Any],
+    *,
+    revision_number: int,
+    preferred_camera_id: str | None,
+) -> None:
+    """Rank both fixed cameras against the revised installation direction."""
+
+    catalog = contract.get("camera_catalog", {})
+    if not isinstance(catalog, dict):
+        raise ValueError("锁定渲染任务缺少相机目录")
+    variants = [
+        dict(value)
+        for value in presentation.get("variants", [])
+        if isinstance(value, dict)
+    ]
+    if not variants:
+        raise ValueError("锁定渲染任务缺少视角变体")
+    base_variant = variants[0]
+    normal = _unit_vector(contract.get("receiver_normal_root"), "承接面法向")
+    translation = [float(value) for value in contract.get("translation_vector_root", ())]
+    if len(translation) != 3:
+        raise ValueError("锁定渲染任务缺少三维爆炸向量")
+    ranked: list[tuple[tuple[int, int, float, float], str]] = []
+    for camera_id in ("fixed_123", "fixed_456"):
+        camera = catalog.get(camera_id)
+        if not isinstance(camera, dict):
+            continue
+        try:
+            view = _unit_vector(
+                camera.get("position_direction_root"),
+                f"{camera_id} 视线方向",
+            )
+        except ValueError:
+            continue
+        facing = sum(normal[index] * view[index] for index in range(3))
+        along_view = sum(translation[index] * view[index] for index in range(3))
+        projected = [
+            translation[index] - along_view * view[index] for index in range(3)
+        ]
+        projected_length = _vector_length(projected)
+        compatible = facing >= 0.35 and projected_length > 1.0e-6
+        ranked.append(
+            (
+                (
+                    1 if compatible else 0,
+                    1 if camera_id == preferred_camera_id else 0,
+                    facing,
+                    projected_length,
+                ),
+                camera_id,
+            )
+        )
+    if not ranked:
+        raise ValueError("两台固定相机都缺少可计算的视线方向")
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    linked_variants: list[dict[str, Any]] = []
+    for index, (_score, camera_id) in enumerate(ranked):
+        linked = dict(base_variant)
+        linked["camera_id"] = camera_id
+        linked["variant_id"] = (
+            f"step-revision-{revision_number}-camera-{index + 1}"
+        )
+        linked_variants.append(linked)
+    selected_id = str(linked_variants[0]["camera_id"])
+    contract["camera_id"] = selected_id
+    contract["camera"] = deepcopy(catalog[selected_id])
+    presentation["variants"] = linked_variants
+    contract["attempted_actions"] = [
+        "已按修订后的安装方向重算 fixed_123/fixed_456 相机兼容性",
+        f"首选相机更新为 {selected_id}",
+    ]
+
+
+def _unit_vector(value: Any, label: str) -> list[float]:
+    try:
+        vector = [float(item) for item in value]
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{label}必须是三维向量") from error
+    if len(vector) != 3:
+        raise ValueError(f"{label}必须是三维向量")
+    length = _vector_length(vector)
+    if length <= 1.0e-9:
+        raise ValueError(f"{label}不能是零向量")
+    return [round(item / length, 9) for item in vector]
+
+
+def _vector_length(value: Any) -> float:
+    try:
+        vector = [float(item) for item in value]
+    except (TypeError, ValueError):
+        return 0.0
+    if len(vector) != 3:
+        return 0.0
+    return sum(item * item for item in vector) ** 0.5
+
+
+def _refresh_arrow_endpoints(contract: dict[str, Any]) -> None:
+    translation = [float(value) for value in contract["translation_vector_root"]]
+    anchors = []
+    for item in contract.get("arrow_anchors", []):
+        anchor = dict(item)
+        complete = [float(value) for value in anchor["complete_point_root"]]
+        anchor["expected_exploded_point_root"] = [
+            round(complete[index] + translation[index], 6) for index in range(3)
+        ]
+        anchors.append(anchor)
+    contract["arrow_anchors"] = anchors
+
+
+def _revised_execution_mode(contract: Mapping[str, Any]) -> str:
+    if contract.get("diagnostics"):
+        return str(contract.get("execution_mode") or "placeholder")
+    required = (
+        contract.get("receiver_point_root"),
+        contract.get("receiver_normal_root"),
+        contract.get("translation_vector_root"),
+        contract.get("camera_id"),
+        contract.get("receiver_occurrences"),
+        contract.get("constraint_ids"),
+        contract.get("arrow_anchors"),
+    )
+    return "formal" if all(required) else str(
+        contract.get("execution_mode") or "placeholder"
+    )
 
 
 def _file_hash(path: Path) -> str:

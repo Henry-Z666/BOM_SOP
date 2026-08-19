@@ -15,6 +15,7 @@ class DesktopPackagingTests(unittest.TestCase):
         self.assertIn("qwen-creo-sop-agent", pyproject)
         self.assertIn("PySide6", pyproject)
         self.assertIn('excludes=["openai"]', spec)
+        self.assertIn('"sop-template.xlsx"', spec)
         self.assertIn('"build.ps1"', spec)
         self.assertIn('"run_input_discovery.ps1"', spec)
         self.assertIn('"run_agent_native_batch.ps1"', spec)

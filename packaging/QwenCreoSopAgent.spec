@@ -14,6 +14,7 @@ hiddenimports = [
 ] + collect_submodules("sop_pipeline")
 datas = collect_data_files("dashscope")
 datas += [(str(root / "skills" / name), f"skills/{name}") for name in skill_names]
+datas += [(str(root / "assets" / "sop-template.xlsx"), "assets")]
 datas += [
     (str(root / "creo_java" / "RuntimeConfig.ps1"), "creo_java"),
     (str(root / "creo_java" / "build.ps1"), "creo_java"),

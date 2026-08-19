@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from collections import OrderedDict
 from dataclasses import dataclass
 from io import BytesIO
+from itertools import groupby
 from pathlib import Path
 import re
 import shutil
@@ -10,8 +10,8 @@ from typing import Protocol
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as WorksheetImage
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.worksheet.page import PageMargins
+
+from .bundle_paths import bundled_sop_template
 
 
 @dataclass(frozen=True)
@@ -34,6 +34,10 @@ class SopStep:
     process_text: str
     control_points: str
     tools: str
+    project_name: str = "待填写"
+    document_no: str = "待填写"
+    applicable_model: str = "待填写"
+    applicable_base: str = "待填写"
     questioned: bool = False
     candidates: tuple[SopImage, ...] = ()
 
@@ -61,13 +65,15 @@ class SopPublisher:
     def __init__(
         self,
         *,
-        images_per_page: int = 2,
+        images_per_page: int = 6,
         verifier: WorkbookVerifier | None = None,
+        template_path: Path | None = None,
     ) -> None:
-        if images_per_page < 1:
-            raise ValueError("images_per_page must be positive")
+        if not 1 <= images_per_page <= 6:
+            raise ValueError("images_per_page must be between 1 and 6")
         self.images_per_page = images_per_page
         self.verifier = verifier or OpenpyxlWorkbookVerifier()
+        self.template_path = Path(template_path) if template_path else bundled_sop_template()
 
     def publish(
         self,
@@ -140,119 +146,127 @@ class SopPublisher:
         *,
         pending: bool,
     ) -> Workbook:
-        workbook = Workbook()
-        workbook.remove(workbook.active)
-        grouped: OrderedDict[tuple[str, str], list[SopStep]] = OrderedDict()
-        for step in steps:
-            grouped.setdefault(
-                (step.main_process_id, step.main_process_name), []
-            ).append(step)
+        workbook = load_workbook(self.template_path, read_only=False, data_only=False)
+        _drop_stale_external_defined_names(workbook)
+        template_sheet = workbook.active
+        if template_sheet["B7"].value != "装配内容":
+            workbook.close()
+            raise ValueError("内置SOP模板结构不匹配：缺少装配内容区域")
+        pages: list[tuple[SopStep, ...]] = []
+        for _process_id, process_steps in groupby(
+            steps, key=lambda item: item.main_process_id
+        ):
+            grouped = tuple(process_steps)
+            pages.extend(
+                grouped[offset : offset + self.images_per_page]
+                for offset in range(0, len(grouped), self.images_per_page)
+            )
 
+        # Copy the still-pristine retained template before filling any page. This
+        # prevents values from the first process leaking into later pages.
+        sheets = [template_sheet]
+        sheets.extend(workbook.copy_worksheet(template_sheet) for _ in pages[1:])
         used_names: set[str] = set()
-        for (_, process_name), process_steps in grouped.items():
-            for page_index, start in enumerate(
-                range(0, len(process_steps), self.images_per_page), start=1
-            ):
-                page_steps = process_steps[start : start + self.images_per_page]
-                suffix = "" if page_index == 1 else f"-续页{page_index}"
-                sheet_name = _unique_sheet_name(process_name + suffix, used_names)
-                sheet = workbook.create_sheet(sheet_name)
-                self._format_page(
-                    sheet,
-                    process_name,
-                    page_steps,
-                    copied,
-                    image_directory,
-                    pending,
-                )
+        process_pages: dict[str, int] = {}
+        for sheet, page_steps in zip(sheets, pages, strict=True):
+            representative = page_steps[0]
+            page = process_pages.get(representative.main_process_id, 0) + 1
+            process_pages[representative.main_process_id] = page
+            suffix = "" if page == 1 else f"-续页{page}"
+            requested = (
+                representative.main_process_name or representative.main_process_id
+            ) + suffix
+            sheet.title = _unique_sheet_name(requested, used_names)
+            self._fill_template_page(
+                sheet,
+                page_steps,
+                copied,
+                image_directory,
+                pending=pending,
+            )
         return workbook
 
-    def _format_page(
+    def _fill_template_page(
         self,
         sheet,
-        process_name,
-        steps,
-        copied,
-        image_directory,
-        pending,
+        steps: tuple[SopStep, ...],
+        copied: dict[str, str],
+        image_directory: Path,
+        *,
+        pending: bool,
     ) -> None:
+        """Fill one main-process page in the retained template."""
+
+        step = steps[0]
         sheet.sheet_view.showGridLines = False
-        sheet.merge_cells("A1:H1")
-        sheet["A1"] = process_name
-        sheet["A1"].font = Font(name="Microsoft YaHei", size=18, bold=True, color="FFFFFF")
-        sheet["A1"].fill = PatternFill("solid", fgColor="1F4E78")
-        sheet["A1"].alignment = Alignment(horizontal="center", vertical="center")
-        sheet.row_dimensions[1].height = 30
-        sheet.merge_cells("A2:H2")
-        sheet["A2"] = "待确认：当前采用 Agent 推荐图，请选择候选或输入修正" if pending else "已通过自动校验"
-        sheet["A2"].font = Font(
-            name="Microsoft YaHei",
-            size=11,
-            bold=pending,
-            color="C00000" if pending else "548235",
-        )
-        sheet["A2"].alignment = Alignment(horizontal="center")
-        sheet["A2"].fill = PatternFill(
-            "solid", fgColor="FCE4D6" if pending else "E2F0D9"
-        )
-        for column, width in zip("ABCDEFGH", (15, 15, 15, 15, 18, 18, 18, 18), strict=True):
-            sheet.column_dimensions[column].width = width
+        sheet["J1"] = f"项目名称：{_value_or_pending(step.project_name)}"
+        sheet["B4"] = f"文件编号：{_value_or_pending(step.document_no)}"
+        sheet["M4"] = _value_or_pending(step.applicable_model)
+        sheet["V4"] = _value_or_pending(step.applicable_base)
+        sheet["AN4"] = str(step.main_process_id)
+        process_name = _value_or_pending(step.main_process_name or step.title)
+        questioned = any(item.questioned for item in steps)
+        sheet["AN5"] = process_name + ("（待确认）" if pending and questioned else "")
 
-        thin = Side(style="thin", color="B7C9D6")
-        for block_index, step in enumerate(steps):
-            top = 4 + block_index * 20
-            sheet.merge_cells(start_row=top, start_column=1, end_row=top, end_column=8)
-            title = sheet.cell(top, 1, f"{step.step_id}  {step.title}")
-            title.font = Font(name="Microsoft YaHei", size=12, bold=True, color="1F1F1F")
-            title.fill = PatternFill("solid", fgColor="D9EAF7")
-            title.alignment = Alignment(vertical="center")
-            labels = (
-                ("工艺说明", step.process_text),
-                ("关键控制", step.control_points),
-                ("工装工具", step.tools),
-                ("物料", "；".join(f"{code} {name} ×{qty}" for code, name, qty in step.materials)),
-            )
-            for offset, (label, value) in enumerate(labels):
-                row = top + 2 + offset * 3
-                sheet.merge_cells(start_row=row, start_column=6, end_row=row, end_column=8)
-                sheet.cell(row, 6, label).font = Font(name="Microsoft YaHei", bold=True, color="1F4E78")
-                sheet.merge_cells(start_row=row + 1, start_column=6, end_row=row + 2, end_column=8)
-                body = sheet.cell(row + 1, 6, value)
-                body.font = Font(name="Microsoft YaHei", size=10)
-                body.alignment = Alignment(wrap_text=True, vertical="top")
-                for row_cells in sheet.iter_rows(
-                    min_row=row, max_row=row + 2, min_col=6, max_col=8
-                ):
-                    for cell in row_cells:
-                        cell.border = Border(bottom=thin)
+        controls = _page_controls(steps)
+        for offset, row in enumerate(range(8, 19)):
+            sheet[f"AJ{row}"] = controls[offset] if offset < len(controls) else None
+        if not controls:
+            sheet["AJ8"] = "待填写"
 
-        # Images are inserted after styles so each page can reference delivery files.
-        for block_index, step in enumerate(steps):
-            top = 4 + block_index * 20
-            publication_image = _publication_image(step, pending)
-            # Keep openpyxl away from long-lived Windows file handles.  The
-            # workbook owns an in-memory stream until save completes, so the
-            # delivery image can be atomically replaced or cleaned afterward.
+        for row in range(21, 30):
+            sheet[f"AJ{row}"] = None
+            sheet[f"AM{row}"] = None
+            sheet[f"AR{row}"] = None
+        materials = _page_materials(steps)
+        for row, material in zip(range(21, 30), materials, strict=False):
+            code, name, quantity = material
+            sheet[f"AJ{row}"] = _value_or_pending(code)
+            sheet[f"AM{row}"] = _value_or_pending(name)
+            sheet[f"AR{row}"] = quantity if quantity not in (None, "") else "待填写"
+        if not materials:
+            sheet["AJ21"] = "待填写"
+            sheet["AM21"] = "待填写"
+            sheet["AR21"] = "待填写"
+
+        tools = _split_entries(*(item.tools for item in steps))
+        for row in range(32, 36):
+            sheet[f"AJ{row}"] = None
+            sheet[f"AM{row}"] = None
+            sheet[f"AR{row}"] = None
+        for row, tool in zip(range(32, 36), tools, strict=False):
+            sheet[f"AJ{row}"] = tool
+            sheet[f"AM{row}"] = "待填写"
+            sheet[f"AR{row}"] = "待填写"
+        if not tools:
+            sheet["AJ32"] = "待填写"
+            sheet["AM32"] = "待填写"
+            sheet["AR32"] = "待填写"
+
+        placements = _image_placements(len(steps))
+        for item, (anchor, max_width, max_height) in zip(
+            steps, placements, strict=True
+        ):
+            publication_image = _publication_image(item, pending)
             image_bytes = (
                 image_directory / copied[publication_image.image_id]
             ).read_bytes()
             worksheet_image = WorksheetImage(BytesIO(image_bytes))
-            scale = min(480 / worksheet_image.width, 285 / worksheet_image.height)
+            scale = min(
+                max_width / worksheet_image.width,
+                max_height / worksheet_image.height,
+            )
             worksheet_image.width *= scale
             worksheet_image.height *= scale
-            sheet.add_image(worksheet_image, f"A{top + 2}")
+            sheet.add_image(worksheet_image, anchor)
 
-        last_row = 3 + len(steps) * 20
-        sheet.print_area = f"A1:H{last_row}"
+        sheet.print_area = "B1:AR35"
         sheet.print_options.horizontalCentered = True
-        sheet.page_setup.orientation = "portrait"
+        sheet.page_setup.orientation = "landscape"
         sheet.page_setup.paperSize = sheet.PAPERSIZE_A4
         sheet.page_setup.fitToWidth = 1
         sheet.page_setup.fitToHeight = 1
         sheet.sheet_properties.pageSetUpPr.fitToPage = True
-        sheet.page_margins = PageMargins(
-            left=0.25, right=0.25, top=0.35, bottom=0.35, header=0.1, footer=0.1
-        )
 
     def _clean_known_delivery_artifacts(
         self,
@@ -276,6 +290,98 @@ class SopPublisher:
         expected = {workbook_name, "步骤图片"}
         if actual != expected:
             raise ValueError(f"delivery directory violates whitelist: {sorted(actual)}")
+
+
+def _value_or_pending(value: object) -> object:
+    if value is None:
+        return "待填写"
+    if isinstance(value, str):
+        return value.strip() or "待填写"
+    return value
+
+
+def _drop_stale_external_defined_names(workbook: Workbook) -> None:
+    """Remove broken links retained by old templates before Excel COM opens them."""
+
+    for name, definition in list(workbook.defined_names.items()):
+        target = str(getattr(definition, "attr_text", "") or "").strip()
+        if "#REF!" in target or re.match(r"^\[\d+\]", target):
+            del workbook.defined_names[name]
+
+
+def _split_entries(*values: str) -> tuple[str, ...]:
+    entries: list[str] = []
+    for value in values:
+        for item in re.split(r"[\r\n；;]+", str(value or "")):
+            normalized = item.strip()
+            if normalized and normalized not in entries:
+                entries.append(normalized)
+    return tuple(entries)
+
+
+def _page_controls(steps: tuple[SopStep, ...]) -> tuple[str, ...]:
+    entries: list[str] = []
+    for step in steps:
+        descriptions = _split_entries(step.process_text, step.control_points)
+        for description in descriptions:
+            if description not in entries:
+                entries.append(description)
+        if not descriptions:
+            title = str(step.title or "").strip()
+            if title and title not in entries:
+                entries.append(title)
+    return tuple(entries)
+
+
+def _page_materials(
+    steps: tuple[SopStep, ...],
+) -> tuple[tuple[str, str, int], ...]:
+    ordered: list[tuple[str, str, int]] = []
+    positions: dict[tuple[str, str], int] = {}
+    for step in steps:
+        for code, name, quantity in step.materials:
+            key = (str(code), str(name))
+            if key in positions:
+                index = positions[key]
+                previous = ordered[index]
+                ordered[index] = (previous[0], previous[1], previous[2] + quantity)
+            else:
+                positions[key] = len(ordered)
+                ordered.append((code, name, quantity))
+    return tuple(ordered)
+
+
+def _image_placements(count: int) -> tuple[tuple[str, int, int], ...]:
+    """Return deterministic slots inside the template's B8:AH35 image area."""
+
+    if count < 1 or count > 6:
+        raise ValueError("a template page supports between 1 and 6 images")
+    if count == 1:
+        return (("K8", 720, 500),)
+    if count == 2:
+        return (("B8", 350, 500), ("T8", 350, 500))
+    if count == 3:
+        return (
+            ("B8", 230, 500),
+            ("M8", 230, 500),
+            ("X8", 230, 500),
+        )
+    if count == 4:
+        return (
+            ("B8", 350, 235),
+            ("T8", 350, 235),
+            ("B22", 350, 235),
+            ("T22", 350, 235),
+        )
+    slots = (
+        ("B8", 230, 235),
+        ("M8", 230, 235),
+        ("X8", 230, 235),
+        ("B22", 230, 235),
+        ("M22", 230, 235),
+        ("X22", 230, 235),
+    )
+    return slots[:count]
 
 
 def _safe_filename(value: str) -> str:

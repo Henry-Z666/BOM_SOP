@@ -148,6 +148,89 @@ def fixture() -> tuple[NormalizedBom, DraftPlan, BomCadMap, dict]:
 
 
 class FormalRenderPlannerTests(unittest.TestCase):
+    def test_uses_child_reference_from_parent_level_creo_constraint(self) -> None:
+        bom, draft, mapping, graph = fixture()
+        parent_constraint = constraint(
+            "10-parent-insert",
+            "10",
+            "20/1",
+            [0, 0, 1],
+            [0, 0, 0],
+        )
+        parent_constraint["component_reference"]["occurrence_id"] = "10/2"
+        graph["constraints"] = [
+            parent_constraint
+            if item["id"] == "10-2-insert"
+            else item
+            for item in graph["constraints"]
+        ]
+
+        plan = compile_formal_render_plan(bom, draft, mapping, graph)
+        child_step = next(
+            step for step in plan.steps if step.source_bom_rows == (5,)
+        )
+
+        self.assertEqual(child_step.status, "ready")
+        self.assertEqual(child_step.moving_occurrences, ("10/2",))
+        self.assertEqual(child_step.receiver_occurrences, ("20/1",))
+        self.assertEqual(child_step.constraint_ids, ("10-parent-insert",))
+        self.assertNotIn("NO_NATIVE_RECEIVER_GEOMETRY", child_step.diagnostics)
+
+    def test_parent_constraint_cannot_supply_geometry_for_a_different_child(self) -> None:
+        bom, draft, mapping, graph = fixture()
+        parent_constraint = constraint(
+            "10-parent-insert",
+            "10",
+            "20/1",
+            [0, 0, 1],
+            [0, 0, 0],
+        )
+        parent_constraint["component_reference"]["occurrence_id"] = "10/1"
+        graph["constraints"] = [
+            parent_constraint
+            if item["id"] == "10-2-insert"
+            else item
+            for item in graph["constraints"]
+        ]
+
+        plan = compile_formal_render_plan(bom, draft, mapping, graph)
+        child_step = next(
+            step for step in plan.steps if step.source_bom_rows == (5,)
+        )
+
+        self.assertEqual(child_step.status, "questioned")
+        self.assertIn("NO_NATIVE_RECEIVER_GEOMETRY", child_step.diagnostics)
+
+    def test_parent_occurrence_uses_descendant_reference_anchor(self) -> None:
+        bom, draft, mapping, graph = fixture()
+        assembly_constraint = next(
+            item for item in graph["constraints"] if item["id"] == "20-mate"
+        )
+        assembly_constraint["component_reference"]["occurrence_id"] = "20/2"
+
+        plan = compile_formal_render_plan(bom, draft, mapping, graph)
+        assembly_step = next(
+            step for step in plan.steps if step.source_bom_rows == (6,)
+        )
+
+        self.assertEqual(assembly_step.status, "ready")
+        self.assertNotIn("NO_NATIVE_RECEIVER_GEOMETRY", assembly_step.diagnostics)
+
+    def test_parent_occurrence_rejects_unrelated_component_reference(self) -> None:
+        bom, draft, mapping, graph = fixture()
+        assembly_constraint = next(
+            item for item in graph["constraints"] if item["id"] == "20-mate"
+        )
+        assembly_constraint["component_reference"]["occurrence_id"] = "999/2"
+
+        plan = compile_formal_render_plan(bom, draft, mapping, graph)
+        assembly_step = next(
+            step for step in plan.steps if step.source_bom_rows == (6,)
+        )
+
+        self.assertEqual(assembly_step.status, "questioned")
+        self.assertIn("NO_NATIVE_RECEIVER_GEOMETRY", assembly_step.diagnostics)
+
     def test_builds_bottom_up_scopes_without_centre_vector_guessing(self) -> None:
         bom, draft, mapping, graph = fixture()
 
@@ -336,7 +419,17 @@ class FormalRenderPlannerTests(unittest.TestCase):
                     "camera_id": task.payload["camera_id"],
                     "zoom": 1.0,
                     "pan": [0.0, 0.0],
-                }
+                },
+                {
+                    "variant_id": "flipped-camera",
+                    "camera_id": (
+                        "fixed_456"
+                        if task.payload["camera_id"] == "fixed_123"
+                        else "fixed_123"
+                    ),
+                    "zoom": 1.0,
+                    "pan": [0.0, 0.0],
+                },
             ],
         )
         expected_step = next(item for item in locked.steps if item.step_id == task.step_id)

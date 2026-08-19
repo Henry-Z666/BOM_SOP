@@ -106,7 +106,10 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   $task = $tasks[$index]
   $payload = $task.payload
   if ([string]$payload.schema_version -ne 'creo-render-task/v1') { throw "Invalid task schema at index $index." }
-  if ([string]$payload.execution_mode -ne 'formal') { throw "Task $($task.step_id) is not eligible for formal Creo rendering." }
+  $executionMode = [string]$payload.execution_mode
+  if ($executionMode -notin @('formal', 'candidate_search')) {
+    throw "Task $($task.step_id) is not eligible for Creo rendering."
+  }
   if ([string]$payload.arrow_renderer -ne 'creo_display_list/v1') { throw "Task $($task.step_id) does not use Creo-native arrows." }
   if ([string]$payload.authoritative_assembly.assembly_file -ne $assemblyName) { throw 'A batch cannot mix authoritative assemblies.' }
   if (([string]$payload.authoritative_assembly.sha256) -ne ([string]$firstPayload.authoritative_assembly.sha256)) { throw 'A batch cannot mix assembly hashes.' }

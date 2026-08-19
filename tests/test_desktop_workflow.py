@@ -204,7 +204,7 @@ class DesktopWorkflowTests(unittest.TestCase):
             workbook = load_workbook(
                 outcome.delivery_directory / "SOP_待确认.xlsx"
             )
-            self.assertIn("待确认", workbook.active["A2"].value)
+            self.assertIn("待确认", workbook.active["AN5"].value)
             self.assertTrue(all(step.output_hash for step in outcome.steps))
 
 

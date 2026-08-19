@@ -46,6 +46,41 @@ class QwenAdvisorTests(unittest.TestCase):
         self.assertEqual(revision.changes, {"camera_id": "fixed_456"})
         self.assertEqual(len(transport.text_calls), 2)
 
+    def test_scalar_pan_is_rejected_with_an_explicit_contract_error(self) -> None:
+        class RetryTransport(FakeTransport):
+            def __init__(self):
+                super().__init__("")
+                self.responses = [
+                    '{"kind":"presentation","changes":{"pan":0.5}}',
+                    '{"kind":"presentation","changes":{"pan":[0.5,0.0]}}',
+                ]
+
+            def call_text(self, messages, *, seed):
+                self.text_calls.append((messages, seed))
+                return self.responses.pop(0)
+
+        transport = RetryTransport()
+        revision = QwenAdvisor(transport).interpret_resolution(
+            "step-1", "向右移动构图", 1
+        )
+
+        self.assertEqual(revision.changes["pan"], [0.5, 0.0])
+        self.assertIn(
+            "pan must be a two-number array",
+            transport.text_calls[1][0][-1]["content"],
+        )
+
+    def test_common_pan_component_aliases_are_canonicalized(self) -> None:
+        transport = FakeTransport(
+            '{"kind":"presentation","changes":{"pan_x":0.25,"pan_y":-0.1}}'
+        )
+
+        revision = QwenAdvisor(transport).interpret_resolution(
+            "step-1", "把零件补全并向左调整", 1
+        )
+
+        self.assertEqual(revision.changes, {"pan": [0.25, -0.1]})
+
     def test_natural_language_resolution_becomes_validated_step_revision(self) -> None:
         transport = FakeTransport(
             json.dumps(
@@ -64,6 +99,111 @@ class QwenAdvisorTests(unittest.TestCase):
         self.assertEqual(revision.kind, RevisionKind.PRESENTATION)
         self.assertEqual(revision.changes["camera_id"], "fixed_456")
         self.assertEqual(transport.text_calls[0][1], 7)
+
+    def test_resolution_receives_minimized_current_gate_context(self) -> None:
+        transport = FakeTransport(
+            '{"kind":"installation_geometry","changes":{"direction":[0,0,1]}}'
+        )
+        QwenAdvisor(transport).interpret_resolution(
+            "step-7",
+            "沿Z轴正方向装入",
+            3,
+            current_context={
+                "status": "QUESTIONED",
+                "error_code": "DIRECTION_SIGN_WEAK",
+                "error_message": "安装方向证据不足",
+                "image_kind": "placeholder",
+                "moving_occurrences": ["10180/39"],
+                "receiver_occurrences": ["12871"],
+                "source_bom_items": [
+                    {
+                        "bom_row": 20,
+                        "name": "接头",
+                        "drawing_no": "DKBA83165952",
+                        "material_code": "M-20",
+                        "local_path": "C:/secret/part.prt",
+                    }
+                ],
+                "local_path": "C:/secret/cad",
+            },
+        )
+
+        sent = json.loads(transport.text_calls[0][0][1]["content"])
+        self.assertEqual(
+            sent["current_step"]["error_code"], "DIRECTION_SIGN_WEAK"
+        )
+        self.assertEqual(
+            sent["correction_contract"]["installation_geometry"]["direction"]["type"],
+            "xyz_vector",
+        )
+        self.assertIn(
+            "direction",
+            sent["current_step"]["required_correction_fields"],
+        )
+        self.assertEqual(
+            sent["current_step"]["source_bom_items"],
+            [
+                {
+                    "bom_row": 20,
+                    "drawing_no": "DKBA83165952",
+                    "material_code": "M-20",
+                    "name": "接头",
+                }
+            ],
+        )
+        self.assertEqual(
+            sent["current_step"]["moving_occurrences"],
+            ["10180/39"],
+        )
+        self.assertIn(
+            "user is never required to provide an internal occurrence ID",
+            transport.text_calls[0][0][0]["content"],
+        )
+        self.assertNotIn("local_path", sent["current_step"])
+        self.assertNotIn("C:/secret", transport.text_calls[0][0][1]["content"])
+
+    def test_insufficient_placeholder_resolution_returns_actionable_guidance(self) -> None:
+        transport = FakeTransport('{"kind":"installation_geometry","changes":{}}')
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "安装方向.*例如.*沿 Z 轴正方向",
+        ):
+            QwenAdvisor(transport).interpret_resolution(
+                "step-7",
+                "调整到正视图重新生成",
+                3,
+                current_context={
+                    "status": "QUESTIONED",
+                    "error_code": "DIRECTION_SIGN_WEAK",
+                    "error_message": "安装方向证据不足",
+                    "image_kind": "placeholder",
+                },
+            )
+
+        self.assertEqual(len(transport.text_calls), 3)
+        retry_prompt = transport.text_calls[1][0][-1]["content"]
+        self.assertIn("changes must be a non-empty object", retry_prompt)
+        self.assertIn("direction", retry_prompt)
+
+    def test_view_change_cannot_replace_required_geometry_fact(self) -> None:
+        transport = FakeTransport(
+            '{"kind":"presentation","changes":{"camera_id":"fixed_123"}}'
+        )
+
+        with self.assertRaisesRegex(ValueError, "安装方向"):
+            QwenAdvisor(transport).interpret_resolution(
+                "step-7",
+                "调整到正视图重新生成",
+                3,
+                current_context={
+                    "error_code": "DIRECTION_SIGN_WEAK",
+                    "image_kind": "placeholder",
+                },
+            )
+
+        retry_prompt = transport.text_calls[1][0][-1]["content"]
+        self.assertIn("missing required correction fields: direction", retry_prompt)
 
     def test_render_review_sends_only_image_and_minimized_context(self) -> None:
         transport = FakeTransport('{"passed": true, "issues": []}')
@@ -152,6 +292,33 @@ class QwenAdvisorTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             QwenAdvisor(transport).interpret_resolution("step-1", "保存到这里", 1)
+
+    def test_clear_zoom_instruction_has_a_bounded_fallback_when_schema_fails(self) -> None:
+        transport = FakeTransport("这一步应该把安装位置放大显示")
+
+        revision = QwenAdvisor(transport).interpret_resolution(
+            "step-1", "以安装部位为中心放大", 2
+        )
+
+        self.assertEqual(revision.kind, RevisionKind.PRESENTATION)
+        self.assertEqual(revision.changes, {"zoom": 1.25, "pan": [0.0, 0.0]})
+        self.assertEqual(len(transport.text_calls), 3)
+
+    def test_explicit_axis_direction_has_a_bounded_fallback_when_schema_fails(self) -> None:
+        transport = FakeTransport(
+            '{"kind":"installation_geometry","changes":{}}'
+        )
+
+        revision = QwenAdvisor(transport).interpret_resolution(
+            "step-1",
+            "该零件沿设备 Z 轴正方向装入",
+            2,
+            current_context={"error_code": "DIRECTION_SIGN_WEAK"},
+        )
+
+        self.assertEqual(revision.kind, RevisionKind.INSTALLATION_GEOMETRY)
+        self.assertEqual(revision.changes, {"direction": [0.0, 0.0, 1.0]})
+        self.assertEqual(len(transport.text_calls), 3)
 
 
 if __name__ == "__main__":

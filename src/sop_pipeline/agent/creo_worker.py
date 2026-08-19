@@ -7,6 +7,7 @@ import json
 import math
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import tempfile
 from typing import Protocol
@@ -16,6 +17,7 @@ from .framing_recovery import (
     FramingRecoveryError,
     derive_zoom_for_subject_span,
 )
+from .gate_policy import GateCategory, classify_failures, gate_policy
 from .render_scheduler import RenderAttempt, RenderPlan, RenderTask
 from .render_validation import (
     DeterministicNativeRenderValidator,
@@ -42,6 +44,13 @@ CENTERING_FAILURES = frozenset(
         "ARROW_CLIPPED",
     }
 )
+CAMERA_FLIP_FAILURES = frozenset(
+    {
+        "CAMERA_RECEIVER_WRONG_HALF_SPACE",
+        "CAMERA_RECEIVER_SILHOUETTE",
+    }
+)
+PLANNING_CAMERA_FLIP_DIAGNOSTICS = frozenset({"DIRECTION_SIGN_WEAK"})
 MAX_FRAMING_RASTERS_PER_TASK = 6
 
 
@@ -172,7 +181,7 @@ class AgentNativeCreoWorker:
         task: RenderTask,
         attempt: int,
     ) -> RenderAttempt:
-        if task.payload.get("execution_mode") != "formal":
+        if task.payload.get("execution_mode") not in {"formal", "candidate_search"}:
             return RenderAttempt.failed("TASK_NOT_FORMAL")
         if task.payload.get("arrow_renderer") != "creo_display_list/v1":
             return RenderAttempt.failed("ARROW_RENDERER_NOT_FORMAL")
@@ -191,17 +200,20 @@ class AgentNativeCreoWorker:
             )
             profile_policy = str(profile_contract.get("policy", "freeze_per_camera/v1"))
             default_refit = profile_policy == "default_refit/v1"
+            manual_refit = profile_policy == "manual_refit/v1"
+            fixed_refit = default_refit or manual_refit
             profile_key = (
                 None
-                if default_refit
+                if fixed_refit
                 else _framing_profile_key(task.payload, camera_id=camera_id)
             )
             if default_refit and (
-                variant_index != 0
-                or not math.isclose(float(variant["zoom"]), 1.0)
+                not math.isclose(float(variant["zoom"]), 1.0)
                 or tuple(float(value) for value in variant["pan"]) != (0.0, 0.0)
             ):
-                raise ScreenCenteringError("default view must use Zoom=1 and PAN=0")
+                raise ScreenCenteringError(
+                    "default fixed-camera view must use Zoom=1 and PAN=0"
+                )
         except (KeyError, IndexError, TypeError, ValueError, ScreenCenteringError):
             return RenderAttempt.failed("FRAMING_PROFILE_CONTRACT_INVALID")
         frozen = session.framing_profiles.get(profile_key) if profile_key else None
@@ -219,7 +231,10 @@ class AgentNativeCreoWorker:
             frozen_report, _ = rendered
             if frozen_report.passed:
                 return _passed_image(session.output_directory / f"{task.task_id}.jpg")
-            return RenderAttempt.failed(frozen_report.failures[0])
+            return _gate_attempt(
+                session.output_directory / f"{task.task_id}.jpg",
+                frozen_report.failures,
+            )
         execution_error = self._run_batch(
             session,
             plan_path=self.render_plan_json,
@@ -247,11 +262,46 @@ class AgentNativeCreoWorker:
             report=report,
         )
         if not report.passed:
-            error = report.failures[0]
-            if default_refit:
-                if set(report.failures).issubset(PRESENTATION_FAILURES):
-                    return _reviewable_image(image_path, error)
-                return RenderAttempt.failed(error)
+            decision = classify_failures(report.failures)
+            error = decision.primary_code
+            candidate_attempt = _complete_camera_flip_candidates(
+                session,
+                task,
+                image_path=image_path,
+                variant_index=variant_index,
+                failures=report.failures,
+            )
+            if candidate_attempt is not None:
+                return candidate_attempt
+            if fixed_refit and decision.category not in {
+                GateCategory.AUTO_REPAIR,
+                GateCategory.HUMAN_REVIEW,
+            }:
+                return _gate_attempt(image_path, report.failures)
+            if CAMERA_FLIP_FAILURES.intersection(report.failures) or (
+                _planning_needs_camera_candidates(task.payload)
+            ):
+                next_variant = _flipped_camera_variant_index(
+                    task.payload,
+                    current_index=variant_index,
+                    attempted=session.attempted_presentation_variants[task.task_id],
+                )
+                if next_variant is None:
+                    next_variant = _next_presentation_variant(
+                        task.payload,
+                        current_index=variant_index,
+                        attempted=session.attempted_presentation_variants[task.task_id],
+                        failures=report.failures,
+                    )
+                if next_variant is not None and attempt < 3:
+                    _retain_original_camera_candidate(
+                        session,
+                        task,
+                        image_path=image_path,
+                        variant_index=variant_index,
+                    )
+                    session.presentation_variant_by_task[task.task_id] = next_variant
+                    return RenderAttempt.retryable(error)
             if (
                 CENTERING_FAILURES.intersection(report.failures)
                 and report.composition is not None
@@ -272,8 +322,33 @@ class AgentNativeCreoWorker:
             if next_variant is not None and attempt < 3:
                 session.presentation_variant_by_task[task.task_id] = next_variant
                 return RenderAttempt.retryable(error)
-            return RenderAttempt.failed(error)
-        if not default_refit:
+            return _gate_attempt(image_path, report.failures)
+        if _planning_needs_camera_candidates(task.payload):
+            next_variant = _flipped_camera_variant_index(
+                task.payload,
+                current_index=variant_index,
+                attempted=session.attempted_presentation_variants[task.task_id],
+            )
+            if next_variant is not None and attempt < 3:
+                _retain_original_camera_candidate(
+                    session,
+                    task,
+                    image_path=image_path,
+                    variant_index=variant_index,
+                )
+                session.presentation_variant_by_task[task.task_id] = next_variant
+                return RenderAttempt.retryable("DIRECTION_SIGN_WEAK")
+            planning_candidates = _complete_camera_flip_candidates(
+                session,
+                task,
+                image_path=image_path,
+                variant_index=variant_index,
+                failures=(),
+                error_code="DIRECTION_SIGN_WEAK",
+            )
+            if planning_candidates is not None:
+                return planning_candidates
+        if not fixed_refit:
             _freeze_framing_profile(
                 session,
                 task,
@@ -958,8 +1033,28 @@ class AgentNativeCreoWorker:
         variant_index: int,
         report: NativeRenderGateReport,
     ) -> None:
+        decision = classify_failures(report.failures)
+        policies = [gate_policy(code) for code in report.failures]
+        presentation = task.payload.get("presentation", {})
+        frame_gate = (
+            presentation.get("frame_gate", {})
+            if isinstance(presentation, dict)
+            else {}
+        )
+        camera_measurements = _camera_gate_measurements(
+            task.payload,
+            variant_index=variant_index,
+        )
+        attempted_actions = [
+            str(value)
+            for value in task.payload.get("attempted_actions", [])
+            if str(value).strip()
+        ]
+        attempted_actions.append(
+            f"已渲染视角变体 {variant_index}（第 {attempt} 次尝试）"
+        )
         payload: dict[str, object] = {
-            "schema_version": "creo-render-diagnostic/v2",
+            "schema_version": "creo-render-diagnostic/v3",
             "task_id": task.task_id,
             "step_id": task.step_id,
             "phase": "deterministic_render_gate",
@@ -968,13 +1063,46 @@ class AgentNativeCreoWorker:
             "framing_policy": task.payload.get("presentation", {})
             .get("framing_profile", {})
             .get("policy", "freeze_per_camera/v1"),
-            "error_code": report.failures[0] if report.failures else None,
+            "error_code": decision.primary_code or None,
+            "primary_code": decision.primary_code or None,
             "message": (
-                "确定性图片硬门通过"
+                "确定性渲染检查通过"
                 if report.passed
-                else "确定性图片硬门失败：" + ", ".join(report.failures)
+                else "；".join(policy.user_message for policy in policies)
             ),
             "failures": list(report.failures),
+            "category": None if report.passed else decision.category.value,
+            "expected": {
+                "subject_span": [
+                    frame_gate.get("min_subject_span"),
+                    frame_gate.get("max_subject_span"),
+                ],
+                "max_clipped_edges": frame_gate.get("max_clipped_edges"),
+                "camera_receiver_dot_min": 0.35,
+                "projected_explosion_min": 1.0e-6,
+            },
+            "actual": {
+                "composition": (
+                    asdict(report.composition)
+                    if report.composition is not None
+                    else None
+                ),
+                "arrow_raster": (
+                    asdict(report.arrow_raster)
+                    if report.arrow_raster is not None
+                    else None
+                ),
+                **camera_measurements,
+            },
+            "attempted_actions": attempted_actions,
+            "suggested_actions": [
+                policy.suggested_action for policy in policies
+            ],
+            "retained_image": (
+                f"rendered/{task.task_id}.jpg"
+                if not report.passed and decision.retain_real_image
+                else None
+            ),
             "composition": (
                 asdict(report.composition) if report.composition is not None else None
             ),
@@ -1335,6 +1463,165 @@ def _safe_name(value: str) -> str:
     return cleaned or "render-task"
 
 
+def _retain_original_camera_candidate(
+    session: CreoSession,
+    task: RenderTask,
+    *,
+    image_path: Path,
+    variant_index: int,
+) -> None:
+    if not image_path.is_file() or image_path.stat().st_size == 0:
+        return
+    for existing in session.output_directory.glob(
+        f"{_safe_name(task.step_id)}-candidate-*.jpg"
+    ):
+        existing.unlink(missing_ok=True)
+    camera_id = _presentation_camera_id(task.payload, variant_index)
+    candidate = session.output_directory / (
+        f"{_safe_name(task.step_id)}-candidate-1-original-"
+        f"{_safe_name(camera_id)}.jpg"
+    )
+    shutil.copy2(image_path, candidate)
+
+
+def _complete_camera_flip_candidates(
+    session: CreoSession,
+    task: RenderTask,
+    *,
+    image_path: Path,
+    variant_index: int,
+    failures: tuple[str, ...],
+    error_code: str | None = None,
+) -> RenderAttempt | None:
+    if variant_index == 0 or not image_path.is_file() or image_path.stat().st_size == 0:
+        return None
+    originals = tuple(
+        sorted(
+            session.output_directory.glob(
+                f"{_safe_name(task.step_id)}-candidate-1-original-*.jpg"
+            )
+        )
+    )
+    if len(originals) != 1:
+        return None
+    decision = classify_failures(failures)
+    if decision.category not in {
+        GateCategory.AUTO_REPAIR,
+        GateCategory.HUMAN_REVIEW,
+    }:
+        return None
+    camera_id = _presentation_camera_id(task.payload, variant_index)
+    flipped = session.output_directory / (
+        f"{_safe_name(task.step_id)}-candidate-2-flipped-"
+        f"{_safe_name(camera_id)}.jpg"
+    )
+    shutil.copy2(image_path, flipped)
+    return RenderAttempt.questioned(
+        (
+            f"sha256:{sha256(originals[0].read_bytes()).hexdigest()}",
+            f"sha256:{sha256(flipped.read_bytes()).hexdigest()}",
+        ),
+        error_code or decision.primary_code or "DIRECTION_SIGN_WEAK",
+    )
+
+
+def _planning_needs_camera_candidates(payload: dict) -> bool:
+    diagnostics = payload.get("diagnostics") or ()
+    return any(
+        str(code).strip().upper() in PLANNING_CAMERA_FLIP_DIAGNOSTICS
+        for code in diagnostics
+    )
+
+
+def _flipped_camera_variant_index(
+    payload: dict,
+    *,
+    current_index: int,
+    attempted: set[int],
+) -> int | None:
+    variants = payload.get("presentation", {}).get("variants", [])
+    if not isinstance(variants, list) or not (0 <= current_index < len(variants)):
+        return None
+    try:
+        current_camera = str(variants[current_index]["camera_id"])
+        current_zoom = float(variants[current_index]["zoom"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    named: int | None = None
+    same_zoom: int | None = None
+    any_other: int | None = None
+    for index, variant in enumerate(variants):
+        if index in attempted or not isinstance(variant, dict):
+            continue
+        camera_id = str(variant.get("camera_id") or "")
+        if not camera_id or camera_id == current_camera:
+            continue
+        if str(variant.get("variant_id") or "") == "flipped-camera":
+            named = index
+            break
+        try:
+            zoom = float(variant["zoom"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if same_zoom is None and math.isclose(zoom, current_zoom):
+            same_zoom = index
+        if any_other is None:
+            any_other = index
+    return named if named is not None else (
+        same_zoom if same_zoom is not None else any_other
+    )
+
+
+def _presentation_camera_id(payload: dict, variant_index: int) -> str:
+    try:
+        return str(payload["presentation"]["variants"][variant_index]["camera_id"])
+    except (KeyError, IndexError, TypeError):
+        return "unknown-camera"
+
+
+def _camera_gate_measurements(
+    payload: dict,
+    *,
+    variant_index: int,
+) -> dict[str, object]:
+    try:
+        variant = payload["presentation"]["variants"][variant_index]
+        camera_id = str(variant["camera_id"])
+        camera = payload["camera_catalog"][camera_id]
+        view = _unit_tuple(camera["position_direction_root"])
+        normal = _unit_tuple(payload["receiver_normal_root"])
+        translation = tuple(float(value) for value in payload["translation_vector_root"])
+        if len(translation) != 3:
+            raise ValueError
+        receiver_dot = sum(normal[index] * view[index] for index in range(3))
+        along_view = sum(translation[index] * view[index] for index in range(3))
+        projected = tuple(
+            translation[index] - along_view * view[index] for index in range(3)
+        )
+        projected_length = math.sqrt(sum(value * value for value in projected))
+    except (KeyError, IndexError, TypeError, ValueError, ZeroDivisionError):
+        return {
+            "camera_id": None,
+            "camera_receiver_dot": None,
+            "projected_explosion_length": None,
+        }
+    return {
+        "camera_id": camera_id,
+        "camera_receiver_dot": receiver_dot,
+        "projected_explosion_length": projected_length,
+    }
+
+
+def _unit_tuple(value: object) -> tuple[float, float, float]:
+    vector = tuple(float(item) for item in value)  # type: ignore[arg-type]
+    if len(vector) != 3:
+        raise ValueError
+    length = math.sqrt(sum(item * item for item in vector))
+    if length <= 1.0e-12:
+        raise ValueError
+    return tuple(item / length for item in vector)
+
+
 def _passed_image(path: Path) -> RenderAttempt:
     if not path.is_file() or path.stat().st_size == 0:
         return RenderAttempt.retryable("RENDER_OUTPUT_MISSING")
@@ -1347,6 +1634,18 @@ def _reviewable_image(path: Path, error_code: str) -> RenderAttempt:
     return RenderAttempt.reviewable(
         f"sha256:{sha256(path.read_bytes()).hexdigest()}", error_code
     )
+
+
+def _gate_attempt(path: Path, failures: tuple[str, ...]) -> RenderAttempt:
+    decision = classify_failures(failures)
+    if decision.category in {
+        GateCategory.AUTO_REPAIR,
+        GateCategory.HUMAN_REVIEW,
+    }:
+        return _reviewable_image(path, decision.primary_code)
+    if decision.category is GateCategory.SYSTEM_RETRY:
+        return RenderAttempt.retryable(decision.primary_code)
+    return RenderAttempt.failed(decision.primary_code)
 
 
 def _batch_failure(error_code: str) -> RenderAttempt:
@@ -1362,7 +1661,12 @@ def _next_presentation_variant(
     attempted: set[int],
     failures: tuple[str, ...],
 ) -> int | None:
-    if not any(item in PRESENTATION_FAILURES for item in failures):
+    decision = classify_failures(failures)
+    if decision.category not in {
+        GateCategory.AUTO_REPAIR,
+        GateCategory.HUMAN_REVIEW,
+        GateCategory.SYSTEM_RETRY,
+    }:
         return None
     variants = payload.get("presentation", {}).get("variants", [])
     if not isinstance(variants, list) or not (0 <= current_index < len(variants)):
@@ -1371,8 +1675,15 @@ def _next_presentation_variant(
         current_zoom = float(variants[current_index]["zoom"])
     except (KeyError, TypeError, ValueError):
         return None
+    try:
+        current_camera = str(variants[current_index]["camera_id"])
+    except (KeyError, TypeError):
+        current_camera = ""
     candidates: list[tuple[float, int]] = []
     failure_set = set(failures)
+    camera_repair = bool(CAMERA_FLIP_FAILURES & failure_set) or (
+        _planning_needs_camera_candidates(payload)
+    )
     grow = bool({"SUBJECT_TOO_SMALL", "ARROW_TOO_SMALL"} & failure_set)
     shrink = bool(
         {
@@ -1392,7 +1703,10 @@ def _next_presentation_variant(
             zoom = float(variant["zoom"])
         except (KeyError, TypeError, ValueError):
             continue
-        if shrink and zoom < current_zoom:
+        camera_id = str(variant.get("camera_id") or "")
+        if camera_repair and camera_id and camera_id != current_camera:
+            candidates.append((abs(zoom - current_zoom), index))
+        elif shrink and zoom < current_zoom:
             candidates.append((-zoom, index))
         elif not shrink and grow and zoom > current_zoom:
             candidates.append((zoom, index))

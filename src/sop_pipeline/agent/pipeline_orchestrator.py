@@ -4,6 +4,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .artifacts import ArtifactStore
+from .formal_render_planner import (
+    compile_formal_render_plan,
+    formal_render_plan_from_dict,
+    lock_formal_render_plan,
+)
 from .models import (
     AnalysisResult,
     ClarificationItem,
@@ -17,8 +22,14 @@ from .models import (
     StepStatus,
 )
 from .progress import write_progress
-from .skill_handlers import default_skill_handlers
+from .skill_handlers import _draft, _mapping, _normalized, default_skill_handlers
 from .skill_runtime import SkillRuntime
+from .step_revision import (
+    RevisionKind,
+    StepDependencyGraph,
+    StepRevision,
+    validate_revision,
+)
 from .store import RunStore
 
 
@@ -159,20 +170,36 @@ class PipelineOrchestrator:
     ) -> GenerationResult:
         current_steps = self._runtime().store.list_steps(run.run_id)
         prior_hashes = {step.step_id: step.output_hash for step in current_steps}
-        revision_number = self._next_step_revision(run)
-        result = self._run(
-            run.run_id,
-            "resolve-step",
-            (f"results/candidate-set-{run.plan_revision:04d}.json",),
-            {
-                "step_id": resolution.step_id,
-                "candidate_id": resolution.candidate_id,
-                "instruction": resolution.instruction,
-                "revision": revision_number,
-            },
+        prior_publication_ref = (
+            f"results/publication-{run.plan_revision:04d}.json"
         )
-        revision_ref = _artifact_path(result, "step-revision")
-        invalidation_ref = _artifact_path(result, "invalidation-set")
+        revision_number = self._next_step_revision(run)
+        recovered_refs = self._recover_stale_native_geometry(
+            run,
+            resolution,
+            revision_number,
+        )
+        if recovered_refs is None:
+            result = self._run(
+                run.run_id,
+                "resolve-step",
+                (
+                    f"results/candidate-set-{run.plan_revision:04d}.json",
+                    f"results/validation-{run.plan_revision:04d}.json",
+                    f"plans/locked-render-plan-{run.plan_revision:04d}.json",
+                    "analysis/normalized-bom.json",
+                ),
+                {
+                    "step_id": resolution.step_id,
+                    "candidate_id": resolution.candidate_id,
+                    "instruction": resolution.instruction,
+                    "revision": revision_number,
+                },
+            )
+            revision_ref = _artifact_path(result, "step-revision")
+            invalidation_ref = _artifact_path(result, "invalidation-set")
+        else:
+            revision_ref, invalidation_ref = recovered_refs
         revision = self._runtime().artifacts.read_json(run.workspace, revision_ref)
         if revision.get("changes", {}).get("candidate_id"):
             self._run(
@@ -183,7 +210,9 @@ class PipelineOrchestrator:
                     f"plans/locked-render-plan-{run.plan_revision:04d}.json",
                     f"results/validation-{run.plan_revision:04d}.json",
                     f"results/candidate-set-{run.plan_revision:04d}.json",
+                    prior_publication_ref,
                     revision_ref,
+                    invalidation_ref,
                 ),
             )
         else:
@@ -220,6 +249,8 @@ class PipelineOrchestrator:
                     f"plans/locked-render-plan-{run.plan_revision:04d}.json",
                     f"results/validation-{run.plan_revision:04d}.json",
                     f"results/candidate-set-{run.plan_revision:04d}.json",
+                    prior_publication_ref,
+                    invalidation_ref,
                 ),
             )
         generated = self._generation_result(run)
@@ -230,6 +261,148 @@ class PipelineOrchestrator:
             if step.step_id not in affected and prior_hashes.get(step.step_id) != step.output_hash:
                 raise ValueError(f"局部再生成修改了无关步骤：{step.step_id}")
         return generated
+
+    def _recover_stale_native_geometry(
+        self,
+        run: RunRecord,
+        resolution: StepResolution,
+        revision_number: int,
+    ) -> tuple[str, str] | None:
+        """Upgrade a persisted pre-fix plan without restarting its run."""
+
+        if not resolution.instruction:
+            return None
+        runtime = self._runtime()
+        locked_ref = f"plans/locked-render-plan-{run.plan_revision:04d}.json"
+        locked = formal_render_plan_from_dict(
+            runtime.artifacts.read_json(run.workspace, locked_ref)
+        )
+        stale_step = next(
+            (step for step in locked.steps if step.step_id == resolution.step_id),
+            None,
+        )
+        validation = runtime.artifacts.read_json(
+            run.workspace, f"results/validation-{run.plan_revision:04d}.json"
+        )
+        validation_step = next(
+            (
+                item
+                for item in validation.get("steps", [])
+                if str(item.get("step_id")) == resolution.step_id
+            ),
+            {},
+        )
+        plan_is_stale = (
+            stale_step is not None
+            and "NO_NATIVE_RECEIVER_GEOMETRY" in stale_step.diagnostics
+        )
+        validation_is_stale = (
+            str(validation_step.get("error_code") or "")
+            == "NO_NATIVE_RECEIVER_GEOMETRY"
+        )
+        if stale_step is None or not (plan_is_stale or validation_is_stale):
+            return None
+
+        if plan_is_stale:
+            compiled = compile_formal_render_plan(
+                _normalized(
+                    runtime.artifacts.read_json(
+                        run.workspace, "analysis/normalized-bom.json"
+                    )
+                ),
+                _draft(
+                    runtime.artifacts.read_json(
+                        run.workspace, "analysis/draft-plan.json"
+                    )
+                ),
+                _mapping(
+                    runtime.artifacts.read_json(
+                        run.workspace, "analysis/bom-cad-map.json"
+                    )
+                ),
+                runtime.artifacts.read_json(
+                    run.workspace, "analysis/creo-cad-graph.json"
+                ),
+            )
+            answers = {
+                item_id: (
+                    "按BOM在本工位展开内部构造"
+                    if decision == "expand"
+                    else "作为已完成整体安装"
+                )
+                for item_id, decision in locked.scope_decisions.items()
+            }
+            repaired = lock_formal_render_plan(compiled, answers)
+        else:
+            repaired = locked
+        repaired_step = next(
+            (step for step in repaired.steps if step.step_id == resolution.step_id),
+            None,
+        )
+        if (
+            repaired_step is None
+            or repaired_step.status != "ready"
+            or not repaired_step.receiver_occurrences
+            or repaired_step.receiver_normal_root is None
+            or "NO_NATIVE_RECEIVER_GEOMETRY" in repaired_step.diagnostics
+        ):
+            return None
+
+        runtime.artifacts.write_json(
+            run_id=run.run_id,
+            run_workspace=run.workspace,
+            kind="locked-render-plan",
+            relative_path=locked_ref,
+            value=repaired,
+        )
+        revision = validate_revision(
+            StepRevision(
+                revision=revision_number,
+                step_id=resolution.step_id,
+                kind=RevisionKind.COMPLETE_STATE,
+                changes={
+                    "moving_occurrences": list(repaired_step.moving_occurrences),
+                    "receiver_occurrences": list(repaired_step.receiver_occurrences),
+                    "direction": list(repaired_step.receiver_normal_root),
+                },
+            )
+        )
+        graph = StepDependencyGraph(
+            {
+                step.step_id: step.depends_on
+                for step in repaired.steps
+            }
+        )
+        invalidated = tuple(sorted(graph.invalidated_by(revision)))
+        revision_ref = f"revisions/step-revision-{revision_number:04d}.json"
+        invalidation_ref = f"revisions/invalidation-set-{revision_number:04d}.json"
+        runtime.artifacts.write_json(
+            run_id=run.run_id,
+            run_workspace=run.workspace,
+            kind="step-revision",
+            relative_path=revision_ref,
+            value={
+                "schema_version": "step-revision/v1",
+                "revision": revision.revision,
+                "step_id": revision.step_id,
+                "kind": revision.kind.value,
+                "changes": revision.changes,
+                "source": "persisted-plan-native-geometry-recovery/v1",
+                "instruction": resolution.instruction,
+            },
+        )
+        runtime.artifacts.write_json(
+            run_id=run.run_id,
+            run_workspace=run.workspace,
+            kind="invalidation-set",
+            relative_path=invalidation_ref,
+            value={
+                "schema_version": "invalidation-set/v1",
+                "step_revision": revision.revision,
+                "steps": invalidated,
+            },
+        )
+        return revision_ref, invalidation_ref
 
     def _run(
         self,

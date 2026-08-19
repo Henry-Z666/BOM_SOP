@@ -39,6 +39,15 @@ def bundled_creo_script(filename: str) -> Path:
     return bundled_project_root() / "creo_java" / filename
 
 
+def bundled_sop_template() -> Path:
+    """Return the retained, product-neutral single-page SOP template."""
+
+    template = bundled_project_root() / "assets" / "sop-template.xlsx"
+    if not template.is_file():
+        raise FileNotFoundError(f"Bundled SOP template is missing: {template}")
+    return template
+
+
 def materialized_creo_script(run_workspace: Path, filename: str) -> Path:
     """Return a durable copy of a bundled Creo script for one Agent run.
 

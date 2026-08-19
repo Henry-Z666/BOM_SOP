@@ -355,6 +355,8 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         self.assertEqual(batch.count("-RuntimeConfig \"' + $runtime.ConfigPath + '\"'"), 2)
         self.assertIn("Get-CreoRuntime -ProjectRoot $ProjectRoot -ConfigPath $RuntimeConfig", worker)
         self.assertIn("Get-CreoRuntime -ProjectRoot $ProjectRoot -ConfigPath $RuntimeConfig", legacy)
+        self.assertIn("'formal', 'candidate_search'", batch)
+        self.assertNotIn("execution_mode -ne 'formal'", batch)
 
     def test_native_framing_has_a_six_raster_hard_budget(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -447,6 +449,86 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         )
         self.assertIn("stop_agent_native_worker.ps1", str(stop_command))
         self.assertFalse(session.native_worker_active)
+
+    def test_native_worker_renders_candidate_search_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            base = _native_task()
+            payload = deepcopy(base.payload)
+            payload["execution_mode"] = "candidate_search"
+            payload["diagnostics"] = ["DIRECTION_SIGN_WEAK"]
+            task = replace(base, payload=payload)
+            plan = RenderPlan("render-plan/v2", (task,))
+            runner = PersistentProtocolRunner(
+                workspace / "internal" / "prepared-models"
+            )
+            worker = AgentNativeCreoWorker(
+                powershell="pwsh",
+                batch_script=Path("creo_java/run_agent_native_batch.ps1"),
+                models_root=Path("cad"),
+                render_plan_json=Path("locked-render-jobs.json"),
+                runner=runner,
+            )
+            session = worker.open_session(workspace, plan)
+
+            attempt = worker.render(session, task, 1)
+
+        self.assertEqual(attempt.disposition, "passed")
+
+    def test_weak_direction_keeps_original_and_flipped_cameras_for_review(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            task = _native_task()
+            task.payload["execution_mode"] = "candidate_search"
+            task.payload["diagnostics"] = ["DIRECTION_SIGN_WEAK"]
+            task.payload["presentation"]["framing_profile"] = {
+                "policy": "default_refit/v1"
+            }
+            task.payload["presentation"]["variants"] = [
+                {
+                    "variant_id": "base",
+                    "camera_id": "fixed_123",
+                    "zoom": 1.0,
+                    "pan": [0.0, 0.0],
+                },
+                {
+                    "variant_id": "flipped-camera",
+                    "camera_id": "fixed_456",
+                    "zoom": 1.0,
+                    "pan": [0.0, 0.0],
+                },
+            ]
+            plan = RenderPlan("render-plan/v2", (task,))
+            runner = NativeRecordingRunner(
+                workspace / "internal" / "prepared-models"
+            )
+            worker = AgentNativeCreoWorker(
+                powershell="pwsh",
+                batch_script=Path("native.ps1"),
+                models_root=Path("cad"),
+                render_plan_json=Path("plan.json"),
+                runner=runner,
+            )
+            session = worker.open_session(workspace, plan)
+
+            first = worker.render(session, task, 1)
+            second = worker.render(session, task, 2)
+            candidates = sorted(
+                (workspace / "rendered").glob("formal-step-candidate-*.jpg")
+            )
+
+        self.assertEqual(first.disposition, "retryable")
+        self.assertEqual(first.error_code, "DIRECTION_SIGN_WEAK")
+        self.assertEqual(second.disposition, "questioned")
+        self.assertEqual(len(second.candidate_hashes), 2)
+        self.assertEqual(len(candidates), 2)
+        self.assertEqual(
+            [
+                command[command.index("-VariantIndex") + 1]
+                for command in runner.commands
+            ],
+            ["0", "1"],
+        )
 
     def test_native_worker_passes_durable_runtime_config_to_render_batch(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -547,6 +629,104 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         ]
         self.assertEqual(indexes, ["0", "1"])
 
+    def test_camera_gate_retries_once_with_flipped_fixed_camera(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            task = _native_task()
+            task.payload["presentation"]["framing_profile"] = {
+                "policy": "default_refit/v1"
+            }
+            task.payload["presentation"]["variants"] = [
+                {
+                    "variant_id": "base",
+                    "camera_id": "fixed_456",
+                    "zoom": 1.0,
+                    "pan": [0.0, 0.0],
+                },
+                {
+                    "variant_id": "flipped-camera",
+                    "camera_id": "fixed_123",
+                    "zoom": 1.0,
+                    "pan": [0.0, 0.0],
+                },
+            ]
+            plan = RenderPlan("render-plan/v2", (task,))
+            runner = NativeRecordingRunner(
+                workspace / "internal" / "prepared-models"
+            )
+            worker = AgentNativeCreoWorker(
+                powershell="pwsh",
+                batch_script=Path("native.ps1"),
+                models_root=Path("cad"),
+                render_plan_json=Path("plan.json"),
+                runner=runner,
+            )
+            session = worker.open_session(workspace, plan)
+
+            first = worker.render(session, task, 1)
+            second = worker.render(session, task, 2)
+
+        self.assertEqual(first.disposition, "retryable")
+        self.assertEqual(first.error_code, "CAMERA_RECEIVER_SILHOUETTE")
+        self.assertEqual(second.disposition, "passed")
+        self.assertEqual(
+            [
+                command[command.index("-VariantIndex") + 1]
+                for command in runner.commands
+            ],
+            ["0", "1"],
+        )
+
+    def test_failed_flipped_camera_retains_both_images_for_review(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            task = _native_task()
+            task.payload["presentation"]["framing_profile"] = {
+                "policy": "default_refit/v1"
+            }
+            task.payload["camera_catalog"]["fixed_123"][
+                "position_direction_root"
+            ] = [-1.0, 0.0, 0.0]
+            task.payload["presentation"]["variants"] = [
+                {
+                    "variant_id": "base",
+                    "camera_id": "fixed_456",
+                    "zoom": 1.0,
+                    "pan": [0.0, 0.0],
+                },
+                {
+                    "variant_id": "flipped-camera",
+                    "camera_id": "fixed_123",
+                    "zoom": 1.0,
+                    "pan": [0.0, 0.0],
+                },
+            ]
+            plan = RenderPlan("render-plan/v2", (task,))
+            runner = NativeRecordingRunner(
+                workspace / "internal" / "prepared-models"
+            )
+            worker = AgentNativeCreoWorker(
+                powershell="pwsh",
+                batch_script=Path("native.ps1"),
+                models_root=Path("cad"),
+                render_plan_json=Path("plan.json"),
+                runner=runner,
+            )
+            session = worker.open_session(workspace, plan)
+
+            first = worker.render(session, task, 1)
+            second = worker.render(session, task, 2)
+            candidates = sorted(
+                (workspace / "rendered").glob(
+                    "formal-step-candidate-*.jpg"
+                )
+            )
+
+        self.assertEqual(first.disposition, "retryable")
+        self.assertEqual(second.disposition, "questioned")
+        self.assertEqual(len(second.candidate_hashes), 2)
+        self.assertEqual(len(candidates), 2)
+
     def test_default_refit_policy_never_probes_zooms_or_writes_framing_cache(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             workspace = Path(folder)
@@ -596,6 +776,55 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         self.assertTrue(result.output_hash)
         self.assertEqual(len(runner.commands), 1)
         self.assertFalse(profile_written)
+
+    def test_manual_refit_accepts_user_zoom_without_reenabling_probes(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            task = _native_task()
+            payload = deepcopy(task.payload)
+            payload["presentation"]["framing_profile"] = {
+                "schema_version": "frozen-framing-profile-policy/v1",
+                "policy": "manual_refit/v1",
+                "scale_signature": "user-revision/v1",
+                "probe_interface_status": "disabled_user_revision/v1",
+            }
+            payload["presentation"]["variants"] = [
+                {
+                    "variant_id": "user-revision",
+                    "camera_id": "fixed_123",
+                    "zoom": 1.25,
+                    "pan": [0.0, 0.0],
+                }
+            ]
+            task = replace(task, payload=payload)
+            runner = NativeRecordingRunner(
+                workspace / "internal" / "prepared-models",
+                first_variant_tiny=True,
+            )
+            worker = AgentNativeCreoWorker(
+                powershell="pwsh",
+                batch_script=Path("native.ps1"),
+                models_root=Path("cad"),
+                render_plan_json=Path("plan.json"),
+                runner=runner,
+            )
+
+            result = worker.render(
+                worker.open_session(workspace, RenderPlan("render-plan/v2", (task,))),
+                task,
+                1,
+            )
+            cache_written = (
+                workspace
+                / "internal"
+                / "screen-centering"
+                / "frozen-framing-profiles.json"
+            ).exists()
+
+        self.assertEqual(result.disposition, "questioned")
+        self.assertEqual(result.error_code, "SUBJECT_TOO_SMALL")
+        self.assertEqual(len(runner.commands), 1)
+        self.assertFalse(cache_written)
 
     def test_first_camera_calibration_freezes_profile_for_later_steps(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

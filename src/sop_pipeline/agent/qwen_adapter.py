@@ -88,6 +88,45 @@ class PlanChoiceRecommendation:
     reason: str
 
 
+_CORRECTION_CONTRACT: dict[str, Any] = {
+    "presentation": {
+        "camera_id": {"type": "enum", "values": ["fixed_123", "fixed_456"]},
+        "zoom": {"type": "number", "range": [0.5, 2.0]},
+        "pan": {"type": "xy_vector", "length": 2, "item_range": [-1.0, 1.0]},
+        "explosion_distance": {"type": "number", "range": [0.0, 1000.0]},
+        "arrow_layout": {"type": "string"},
+    },
+    "installation_geometry": {
+        "direction": {
+            "type": "xyz_vector",
+            "length": 3,
+            "description": "root-coordinate installation direction; non-zero numbers",
+        },
+        "moving_occurrences": {"type": "string_array"},
+        "receiver_occurrences": {"type": "string_array"},
+    },
+    "complete_state": {
+        "direction": {
+            "type": "xyz_vector",
+            "length": 3,
+            "description": "root-coordinate installation direction; non-zero numbers",
+        },
+        "moving_occurrences": {"type": "string_array"},
+        "receiver_occurrences": {"type": "string_array"},
+        "depends_on": {"type": "step_id_array"},
+        "order": {"type": "integer"},
+    },
+}
+
+_REQUIRED_FIELDS_BY_ERROR = {
+    "DIRECTION_SIGN_WEAK": ["direction"],
+    "RECEIVER_NORMAL_NOT_AXIS_ALIGNED": ["direction"],
+    "MOVING_OCCURRENCE_UNRESOLVED": ["moving_occurrences"],
+    "RECEIVER_OCCURRENCE_UNRESOLVED": ["receiver_occurrences"],
+    "NO_NATIVE_RECEIVER_GEOMETRY": ["receiver_occurrences", "direction"],
+}
+
+
 class QwenAdvisor:
     """Small Qwen surface: wording, semantic review, and constrained revisions."""
 
@@ -109,15 +148,29 @@ class QwenAdvisor:
         step_id: str,
         instruction: str,
         revision: int,
+        current_context: dict[str, Any] | None = None,
     ) -> StepRevision:
+        minimized_context = _minimized_resolution_context(current_context or {})
+        required_fields = ", ".join(
+            str(field)
+            for field in minimized_context.get("required_correction_fields", [])
+        )
         messages = [
             {
                 "role": "system",
                 "content": (
                     "Return one JSON object only with exactly two top-level fields: "
                     'kind and changes. kind is one of "presentation", '
-                    '"installation_geometry", "complete_state". changes must contain '
-                    "the concrete bounded correction, not only a category. Example: "
+                    '"installation_geometry", "complete_state". Use only fields and value '
+                    "types listed in correction_contract. changes must contain the concrete "
+                    "bounded correction, not only a category. For a placeholder or a geometry "
+                    "gate, include every required_correction_fields item; a camera/view change "
+                    "alone cannot repair missing geometry. The selected step is already bound: "
+                    "step numbers, component names, drawing numbers, material codes, and BOM rows "
+                    "in the instruction are human-facing references. Resolve them only against "
+                    "current_step; the user is never required to provide an internal occurrence "
+                    "ID. Copy known occurrence IDs from current_step when the contract requires "
+                    "them, and never guess occurrence IDs. Example: "
                     '{"kind":"presentation","changes":{"camera_id":"fixed_456",'
                     '"zoom":1.1}}. Never return type, explanation, paths, or markdown.'
                 ),
@@ -133,6 +186,8 @@ class QwenAdvisor:
                         "zoom_range": [0.5, 2.0],
                         "pan_range": [-1.0, 1.0],
                         "explosion_distance_range": [0.0, 1000.0],
+                        "correction_contract": _CORRECTION_CONTRACT,
+                        "current_step": minimized_context,
                     },
                     ensure_ascii=False,
                 ),
@@ -151,9 +206,11 @@ class QwenAdvisor:
                     revision=revision,
                     step_id=step_id,
                     kind=RevisionKind(payload["kind"]),
-                    changes=dict(payload["changes"]),
+                    changes=_canonicalize_revision_changes(payload["changes"]),
                 )
-                return validate_revision(result)
+                validated = validate_revision(result)
+                _validate_resolution_context(validated, minimized_context)
+                return validated
             except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
                 last_error = error
                 if attempt == self.max_schema_attempts:
@@ -165,13 +222,30 @@ class QwenAdvisor:
                             "role": "user",
                             "content": (
                                 "SCHEMA_VALIDATION_FAILED: "
-                                f"{type(error).__name__}. Return the exact required JSON "
-                                "with a concrete non-empty changes object."
+                                f"{type(error).__name__}: {error}. Return the exact required "
+                                "JSON with a concrete non-empty changes object. Use only the "
+                                "correction_contract types and include current_step."
+                                "required_correction_fields when present."
+                                + (
+                                    f" Required fields: {required_fields}."
+                                    if required_fields
+                                    else ""
+                                )
                             ),
                         },
                     ]
                 )
-        raise ValueError("Qwen did not return a valid StepRevision") from last_error
+        fallback = _bounded_resolution_fallback(step_id, instruction, revision)
+        if fallback is not None:
+            try:
+                _validate_resolution_context(fallback, minimized_context)
+            except ValueError as error:
+                last_error = error
+            else:
+                return fallback
+        raise ValueError(
+            _resolution_failure_message(current_context or {}, last_error)
+        ) from last_error
 
     def recommend_plan_choices(
         self,
@@ -325,6 +399,194 @@ def _parse_json_object(text: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("Qwen response must be a JSON object")
     return value
+
+
+def _canonicalize_revision_changes(value: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a small, unambiguous set of common model aliases."""
+
+    changes = dict(value)
+    component_keys = {"pan_x", "pan_y"} & set(changes)
+    if component_keys:
+        if component_keys != {"pan_x", "pan_y"} or "pan" in changes:
+            raise ValueError("pan_x and pan_y must be supplied together without pan")
+        changes["pan"] = [changes.pop("pan_x"), changes.pop("pan_y")]
+    pan = changes.get("pan")
+    if isinstance(pan, dict):
+        if set(pan) != {"x", "y"}:
+            raise ValueError("pan object requires exactly x and y")
+        changes["pan"] = [pan["x"], pan["y"]]
+    return changes
+
+
+def _bounded_resolution_fallback(
+    step_id: str,
+    instruction: str,
+    revision: int,
+) -> StepRevision | None:
+    """Handle a very small set of unambiguous user corrections.
+
+    Qwen remains the primary interpreter.  This fallback exists so a clear,
+    bounded presentation request does not become a system-blocking error only
+    because the model wrapped or malformed its JSON.  It cannot change CAD
+    facts, dependencies, paths, or installation geometry.
+    """
+
+    normalized = re.sub(r"\s+", "", str(instruction)).casefold()
+    installation_focus = any(
+        marker in normalized
+        for marker in ("安装部位", "安装位置", "装配部位", "装配位置")
+    )
+    if installation_focus and "放大" in normalized:
+        return validate_revision(
+            StepRevision(
+                revision,
+                step_id,
+                RevisionKind.PRESENTATION,
+                {"zoom": 1.25, "pan": [0.0, 0.0]},
+            )
+        )
+    if installation_focus and "缩小" in normalized:
+        return validate_revision(
+            StepRevision(
+                revision,
+                step_id,
+                RevisionKind.PRESENTATION,
+                {"zoom": 0.85, "pan": [0.0, 0.0]},
+            )
+        )
+    if any(marker in normalized for marker in ("装入", "安装方向", "装配方向", "插入")):
+        axis_vectors = {
+            "x轴正方向": [1.0, 0.0, 0.0],
+            "正x方向": [1.0, 0.0, 0.0],
+            "+x方向": [1.0, 0.0, 0.0],
+            "x轴负方向": [-1.0, 0.0, 0.0],
+            "负x方向": [-1.0, 0.0, 0.0],
+            "-x方向": [-1.0, 0.0, 0.0],
+            "y轴正方向": [0.0, 1.0, 0.0],
+            "正y方向": [0.0, 1.0, 0.0],
+            "+y方向": [0.0, 1.0, 0.0],
+            "y轴负方向": [0.0, -1.0, 0.0],
+            "负y方向": [0.0, -1.0, 0.0],
+            "-y方向": [0.0, -1.0, 0.0],
+            "z轴正方向": [0.0, 0.0, 1.0],
+            "正z方向": [0.0, 0.0, 1.0],
+            "+z方向": [0.0, 0.0, 1.0],
+            "z轴负方向": [0.0, 0.0, -1.0],
+            "负z方向": [0.0, 0.0, -1.0],
+            "-z方向": [0.0, 0.0, -1.0],
+        }
+        matched = [
+            vector for marker, vector in axis_vectors.items() if marker in normalized
+        ]
+        if len(matched) == 1:
+            return validate_revision(
+                StepRevision(
+                    revision,
+                    step_id,
+                    RevisionKind.INSTALLATION_GEOMETRY,
+                    {"direction": matched[0]},
+                )
+            )
+    return None
+
+
+def _minimized_resolution_context(value: dict[str, Any]) -> dict[str, Any]:
+    """Expose only bounded state needed to understand why a step is pending."""
+
+    allowed = {
+        "status",
+        "error_code",
+        "error_message",
+        "issues",
+        "image_kind",
+        "execution_mode",
+        "planning_diagnostics",
+        "step_number",
+        "step_title",
+        "source_bom_rows",
+        "moving_occurrences",
+        "receiver_occurrences",
+        "direction",
+        "current_camera_id",
+        "allowed_camera_ids",
+    }
+    minimized = {key: value[key] for key in sorted(allowed) if key in value}
+    source_items = value.get("source_bom_items")
+    if isinstance(source_items, list):
+        public_item_fields = {
+            "bom_row",
+            "name",
+            "drawing_no",
+            "material_code",
+        }
+        minimized["source_bom_items"] = [
+            {
+                key: item[key]
+                for key in sorted(public_item_fields)
+                if key in item
+            }
+            for item in source_items
+            if isinstance(item, dict)
+        ]
+    error_code = str(value.get("error_code", ""))
+    required = _REQUIRED_FIELDS_BY_ERROR.get(error_code)
+    if required:
+        minimized["required_correction_fields"] = required
+    return minimized
+
+
+def _resolution_failure_message(
+    current_context: dict[str, Any],
+    last_error: Exception | None,
+) -> str:
+    error_code = str(current_context.get("error_code", ""))
+    if error_code in {"DIRECTION_SIGN_WEAK", "RECEIVER_NORMAL_NOT_AXIS_ALIGNED"}:
+        return (
+            "当前步骤缺少明确的安装方向，现有说明不足以生成真实图片。"
+            "请给出方向，例如：该零件沿 Z 轴正方向装入（也可说明正/负 X、Y、Z）。"
+        )
+    if error_code in {
+        "MOVING_OCCURRENCE_UNRESOLVED",
+        "RECEIVER_OCCURRENCE_UNRESOLVED",
+        "NO_NATIVE_RECEIVER_GEOMETRY",
+    }:
+        return (
+            "当前说明不足以确定安装对象或接收部件。"
+            "请明确说明“把哪个零件安装到哪个部件/接口”，必要时同时给出安装方向。"
+        )
+    detail = f"：{last_error}" if last_error is not None else ""
+    return "Qwen 返回的修正信息不符合步骤修订合同" + detail
+
+
+def _validate_resolution_context(
+    revision: StepRevision,
+    current_context: dict[str, Any],
+) -> None:
+    required = {
+        str(field)
+        for field in current_context.get("required_correction_fields", [])
+    }
+    missing = required - set(revision.changes)
+    if missing:
+        raise ValueError(
+            "changes missing required correction fields: "
+            + ", ".join(sorted(missing))
+        )
+    occurrence_fields = {
+        "moving_occurrences",
+        "receiver_occurrences",
+    } & set(revision.changes)
+    if occurrence_fields:
+        raise ValueError(
+            "occurrence IDs cannot be inferred from unrestricted user text"
+        )
+    if (
+        current_context.get("image_kind") == "placeholder"
+        and revision.kind is RevisionKind.PRESENTATION
+    ):
+        raise ValueError(
+            "a presentation change cannot repair a geometry placeholder"
+        )
 
 
 def _extract_dashscope_text(response: Any) -> str:

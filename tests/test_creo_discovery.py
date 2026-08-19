@@ -91,6 +91,31 @@ class FakeDiscoveryRunner:
 
 
 class CreoDiscoveryTests(unittest.TestCase):
+    def test_runtime_config_reuses_persisted_run_config_after_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as folder, patch.dict(
+            os.environ,
+            {},
+            clear=True,
+        ):
+            workspace = Path(folder)
+            persisted = workspace / "internal" / "creo-runtime.json"
+            persisted.parent.mkdir(parents=True)
+            persisted.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "creo-runtime/v1",
+                        "creo_loadpoint": r"C:\Program Files\PTC\Creo",
+                        "license_file": r"C:\ProgramData\PTC\license.dat",
+                        "python_command": "QwenCreoSopAgent.exe",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            path = resolve_runtime_config(workspace)
+
+        self.assertEqual(path, persisted)
+
     def test_runtime_config_records_the_active_python_command(self) -> None:
         with tempfile.TemporaryDirectory() as folder, patch.dict(
             os.environ,

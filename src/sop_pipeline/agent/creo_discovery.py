@@ -215,6 +215,19 @@ def resolve_runtime_config(run_workspace: Path) -> Path | None:
         )
         temporary.replace(path)
         return path
+    persisted = Path(run_workspace) / "internal" / "creo-runtime.json"
+    if persisted.is_file():
+        try:
+            payload = json.loads(persisted.read_text(encoding="utf-8"))
+        except (OSError, TypeError, ValueError) as error:
+            raise ValueError(f"当前运行批次的 Creo 运行配置已损坏：{persisted}") from error
+        if (
+            payload.get("schema_version") != "creo-runtime/v1"
+            or not str(payload.get("creo_loadpoint", "")).strip()
+            or not str(payload.get("license_file", "")).strip()
+        ):
+            raise ValueError(f"当前运行批次的 Creo 运行配置不完整：{persisted}")
+        return persisted
     return None
 
 

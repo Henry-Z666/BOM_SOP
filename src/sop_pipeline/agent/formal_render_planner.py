@@ -571,12 +571,34 @@ def _select_evidence(
     candidates: list[_OccurrenceEvidence] = []
     for edge in constraints:
         ends = edge.get("occurrences")
-        if not isinstance(ends, list) or len(ends) != 2 or str(ends[0]) != occurrence_id:
+        if not isinstance(ends, list) or len(ends) != 2:
             continue
-        receiver = str(ends[1])
-        if receiver in moving_set or edge.get("type") == "FIX":
+        component_reference = edge.get("component_reference")
+        referenced_component = (
+            str(component_reference.get("occurrence_id") or "")
+            if isinstance(component_reference, dict)
+            else ""
+        )
+        direct_constraint = str(ends[0]) == occurrence_id
+        targets_occurrence = referenced_component == occurrence_id
+        targets_descendant = (
+            direct_constraint
+            and referenced_component.startswith(f"{occurrence_id}/")
+        )
+        if not (
+            targets_occurrence
+            or targets_descendant
+            or (direct_constraint and not referenced_component)
+        ):
             continue
         reference = edge.get("assembly_reference")
+        receiver = (
+            str(reference.get("occurrence_id") or ends[1])
+            if isinstance(reference, dict)
+            else str(ends[1])
+        )
+        if receiver in moving_set or edge.get("type") == "FIX":
+            continue
         geometry = reference.get("geometry") if isinstance(reference, dict) else None
         if not isinstance(geometry, dict) or geometry.get("status") != "available":
             continue
@@ -589,7 +611,6 @@ def _select_evidence(
         alignment = abs(_dot(normal, separation_unit)) if separation_unit else 0.0
         sign = 1.0 if _dot(normal, separation) >= 0.0 else -1.0
         outward = tuple(sign * value for value in normal)
-        component_reference = edge.get("component_reference")
         component_geometry = (
             component_reference.get("geometry")
             if isinstance(component_reference, dict)

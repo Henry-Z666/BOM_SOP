@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+import math
 from typing import Any
+
+
+CURRENT_IMAGE_CANDIDATE_ID = "current-image"
 
 
 class RevisionKind(StrEnum):
@@ -110,13 +114,45 @@ def validate_revision(revision: StepRevision) -> StepRevision:
     if camera is not None and camera not in {"fixed_123", "fixed_456"}:
         raise ValueError("camera_id must be fixed_123 or fixed_456")
     zoom = revision.changes.get("zoom")
-    if zoom is not None and not 0.5 <= float(zoom) <= 2.0:
-        raise ValueError("zoom is outside the bounded repair range")
+    if zoom is not None:
+        try:
+            zoom_value = float(zoom)
+        except (TypeError, ValueError) as error:
+            raise ValueError("zoom must be a number") from error
+        if not math.isfinite(zoom_value) or not 0.5 <= zoom_value <= 2.0:
+            raise ValueError("zoom is outside the bounded repair range")
     pan = revision.changes.get("pan")
     if pan is not None:
-        if len(pan) != 2 or any(abs(float(value)) > 1.0 for value in pan):
+        if not isinstance(pan, (list, tuple)) or len(pan) != 2:
+            raise ValueError("pan must be a two-number array")
+        try:
+            pan_values = tuple(float(value) for value in pan)
+        except (TypeError, ValueError) as error:
+            raise ValueError("pan must be a two-number array") from error
+        if any(not math.isfinite(value) or abs(value) > 1.0 for value in pan_values):
             raise ValueError("pan is outside the bounded repair range")
     distance = revision.changes.get("explosion_distance")
-    if distance is not None and not 0.0 <= float(distance) <= 1000.0:
-        raise ValueError("explosion distance is outside the bounded repair range")
+    if distance is not None:
+        try:
+            distance_value = float(distance)
+        except (TypeError, ValueError) as error:
+            raise ValueError("explosion distance must be a number") from error
+        if (
+            not math.isfinite(distance_value)
+            or not 0.0 <= distance_value <= 1000.0
+        ):
+            raise ValueError("explosion distance is outside the bounded repair range")
+    direction = revision.changes.get("direction")
+    if direction is not None:
+        if not isinstance(direction, (list, tuple)) or len(direction) != 3:
+            raise ValueError("direction must be a three-number array")
+        try:
+            direction_values = tuple(float(value) for value in direction)
+        except (TypeError, ValueError) as error:
+            raise ValueError("direction must be a three-number array") from error
+        if (
+            any(not math.isfinite(value) for value in direction_values)
+            or sum(value * value for value in direction_values) <= 1.0e-18
+        ):
+            raise ValueError("direction must be a non-zero finite vector")
     return revision

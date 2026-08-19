@@ -5,6 +5,7 @@ import tempfile
 import unittest
 
 from openpyxl import load_workbook
+from openpyxl.workbook.defined_name import DefinedName
 from PIL import Image
 
 from sop_pipeline.agent.sop_publisher import SopImage, SopStep, SopPublisher
@@ -50,7 +51,7 @@ class SopPublisherTests(unittest.TestCase):
 
             self.assertEqual(sum(len(sheet._images) for sheet in workbook), 42)
             self.assertTrue(any("续页" in name for name in workbook.sheetnames))
-            self.assertGreater(len(workbook.sheetnames), 8)
+            self.assertEqual(len(workbook.sheetnames), 24)
             self.assertEqual(
                 {path.name for path in (root / "交付结果").iterdir()},
                 {"SOP.xlsx", "步骤图片"},
@@ -89,7 +90,7 @@ class SopPublisherTests(unittest.TestCase):
             pending_book = load_workbook(pending)
 
             self.assertEqual(pending.name, "SOP_待确认.xlsx")
-            self.assertIn("待确认", pending_book.active["A2"].value)
+            self.assertIn("待确认", pending_book.active["AN5"].value)
             self.assertEqual(len(list((root / "交付结果" / "步骤图片").iterdir())), 2)
 
             final_step = _step(1, 1, recommended)
@@ -98,6 +99,82 @@ class SopPublisherTests(unittest.TestCase):
             self.assertEqual(final.name, "SOP.xlsx")
             self.assertFalse((root / "交付结果" / "SOP_待确认.xlsx").exists())
             self.assertEqual(len(list((root / "交付结果" / "步骤图片").iterdir())), 1)
+
+    def test_publication_fills_the_retained_single_page_template(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            image = _image(root, "step.jpg")
+            workbook_path = SopPublisher().publish(
+                (_step(1, 1, image, control_points="", tools=""),),
+                root / "交付结果",
+            )
+            workbook = load_workbook(workbook_path)
+            sheet = workbook.active
+
+            self.assertEqual(sheet["B7"].value, "装配内容")
+            self.assertEqual(sheet["AI19"].value, "物  料  表")
+            self.assertEqual(sheet["AI30"].value, "工  具/工  装  表")
+            self.assertEqual(sheet["AN4"].value, "1")
+            self.assertEqual(sheet["AN5"].value, "主工序 1")
+            self.assertEqual(sheet["AJ8"].value, "按图装配")
+            self.assertEqual(sheet["AJ32"].value, "待填写")
+            self.assertEqual(len(sheet._images), 1)
+
+    def test_publication_removes_stale_external_defined_names(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            image = _image(root, "step.jpg")
+            source_template = load_workbook(
+                Path(__file__).parents[1] / "assets" / "sop-template.xlsx"
+            )
+            source_template.defined_names.add(
+                DefinedName("stale_external_name", attr_text="[1]目录!#REF!")
+            )
+            stale_template = root / "stale-template.xlsx"
+            source_template.save(stale_template)
+            source_template.close()
+
+            workbook_path = SopPublisher(template_path=stale_template).publish(
+                (_step(1, 1, image),),
+                root / "交付结果",
+            )
+            workbook = load_workbook(workbook_path)
+
+            stale_names = [
+                name
+                for name, definition in workbook.defined_names.items()
+                if "#REF!" in str(definition.attr_text)
+                or str(definition.attr_text).startswith("[")
+            ]
+            self.assertEqual(stale_names, [])
+
+    def test_one_main_process_places_its_installation_images_on_one_page(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            steps = tuple(
+                _step(index, 1, _image(root, f"{index}.jpg"))
+                for index in range(1, 7)
+            )
+            workbook_path = SopPublisher().publish(steps, root / "交付结果")
+            workbook = load_workbook(workbook_path)
+
+            self.assertEqual(workbook.sheetnames, ["主工序 1"])
+            self.assertEqual(len(workbook.active._images), 6)
+            self.assertEqual(workbook.active["AN5"].value, "主工序 1")
+            self.assertEqual(workbook.active["AJ8"].value, "按图装配")
+
+    def test_a_main_process_over_template_capacity_uses_continuation_page(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            steps = tuple(
+                _step(index, 1, _image(root, f"{index}.jpg"))
+                for index in range(1, 8)
+            )
+            workbook_path = SopPublisher().publish(steps, root / "交付结果")
+            workbook = load_workbook(workbook_path)
+
+            self.assertEqual(workbook.sheetnames, ["主工序 1", "主工序 1-续页2"])
+            self.assertEqual([len(sheet._images) for sheet in workbook], [6, 1])
 
 
 if __name__ == "__main__":
