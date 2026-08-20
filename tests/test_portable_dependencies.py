@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import tomllib
 import unittest
 
 
@@ -14,14 +15,17 @@ class PortableDependencyTests(unittest.TestCase):
 
         self.assertNotRegex(pyproject, r"\bopenai\b|@oai/artifact-tool|codex_node")
         self.assertNotRegex(source, r"\bimport openai\b|\bfrom openai\b|codex_node")
-        self.assertFalse(Path("src/sop_pipeline/qwen_orchestrator.py").exists())
 
-    def test_qwen_agent_metadata_uses_dashscope_sdk(self) -> None:
-        metadata = Path(
-            "skills/generate-creo-assembly-sop/agents/qwen.yaml"
-        ).read_text(encoding="utf-8")
-        self.assertIn('api_style: "dashscope-python-sdk"', metadata)
-        self.assertNotIn("openai-compatible", metadata.lower())
+    def test_runtime_contains_no_model_provider_dependency(self) -> None:
+        config = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+        dependencies = config["project"]["dependencies"]
+        allowed = {"numpy", "openpyxl", "pillow", "pyside6", "pywin32"}
+        names = {
+            value.split(">", 1)[0].split("=", 1)[0].split(";", 1)[0].strip().lower()
+            for value in dependencies
+        }
+
+        self.assertEqual(names, allowed)
 
 
 if __name__ == "__main__":

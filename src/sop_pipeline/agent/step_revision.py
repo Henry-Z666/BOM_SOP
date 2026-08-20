@@ -77,10 +77,6 @@ class StepDependencyGraph:
 
 _ALLOWED_CHANGES = {
     RevisionKind.PRESENTATION: {
-        "camera_id",
-        "zoom",
-        "pan",
-        "explosion_distance",
         "arrow_anchor",
         "arrow_layout",
         "candidate_id",
@@ -110,38 +106,6 @@ def validate_revision(revision: StepRevision) -> StepRevision:
     unsupported = set(revision.changes) - _ALLOWED_CHANGES[revision.kind]
     if unsupported:
         raise ValueError(f"unsupported revision fields: {sorted(unsupported)}")
-    camera = revision.changes.get("camera_id")
-    if camera is not None and camera not in {"fixed_123", "fixed_456"}:
-        raise ValueError("camera_id must be fixed_123 or fixed_456")
-    zoom = revision.changes.get("zoom")
-    if zoom is not None:
-        try:
-            zoom_value = float(zoom)
-        except (TypeError, ValueError) as error:
-            raise ValueError("zoom must be a number") from error
-        if not math.isfinite(zoom_value) or not 0.5 <= zoom_value <= 2.0:
-            raise ValueError("zoom is outside the bounded repair range")
-    pan = revision.changes.get("pan")
-    if pan is not None:
-        if not isinstance(pan, (list, tuple)) or len(pan) != 2:
-            raise ValueError("pan must be a two-number array")
-        try:
-            pan_values = tuple(float(value) for value in pan)
-        except (TypeError, ValueError) as error:
-            raise ValueError("pan must be a two-number array") from error
-        if any(not math.isfinite(value) or abs(value) > 1.0 for value in pan_values):
-            raise ValueError("pan is outside the bounded repair range")
-    distance = revision.changes.get("explosion_distance")
-    if distance is not None:
-        try:
-            distance_value = float(distance)
-        except (TypeError, ValueError) as error:
-            raise ValueError("explosion distance must be a number") from error
-        if (
-            not math.isfinite(distance_value)
-            or not 0.0 <= distance_value <= 1000.0
-        ):
-            raise ValueError("explosion distance is outside the bounded repair range")
     direction = revision.changes.get("direction")
     if direction is not None:
         if not isinstance(direction, (list, tuple)) or len(direction) != 3:

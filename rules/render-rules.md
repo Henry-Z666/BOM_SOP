@@ -20,17 +20,18 @@ Use full root occurrence paths. Completed subassemblies remain rigid. Geometry m
 ## Explosion and cameras
 
 - Select receiver evidence from the current occurrence's measured Creo assembly constraints. Prefer `INSERT`, then mate/alignment-style constraints; exclude receivers that move in the same step. If no usable receiver point and direction exist, leave the step unresolved instead of guessing.
-- Orient the receiver normal away from its measured receiver point toward the moving occurrence origin. Grouped occurrences use their normalized mean outward normal.
+- Treat Creo `SURFACE`/`INSERT` directions as unsigned axes. When native solid bounds exist, test both signed translations and choose the sign that maximizes the worst post-translation clearance across every same-axis constrained receiver. Use the receiver-point half-space only as a deterministic fallback when bounds are missing or the clearance scores tie.
+- Group repeated occurrences only after the signed direction is resolved. Occurrences on the same unsigned axis but with opposite clearance-maximizing signs must become separate steps.
 - Use the deterministic display distance compiled from the locked assembly occurrence-origin extent (`8%` of its diagonal, or `80` when no usable extent exists).
-- Explosion is translation only, away from the receiver; preserve every 3×3 rotation matrix and validate the applied translation read-back. Raster visibility remains a hard gate; no unimplemented ray-cast or clearance solver may be claimed as evidence.
+- Explosion is translation only and preserves every 3×3 rotation matrix. The interface normal remains the installation-axis truth. If a normal explosion still has material AABB overlap with staged context and is ambiguous because it telescopes along a long bridge or has strong contact-backed lateral evidence, the presentation vector may switch to one root axis within the receiver plane. The lateral candidate must reduce overlap to a bounded minimum and is selected before rendering; it is not a pixel review or retry.
 - Formal cameras are exactly `fixed_123` and its center-opposite `fixed_456`; never create a third per-step view.
-- Receiver faces 1/2/3 map to `fixed_123`; faces 4/5/6 map to `fixed_456`. Compile a question when the fixed view is in the wrong half-space, collapses the receiver face toward a silhouette, or gives no projected explosion length; final raster validation remains authoritative.
+- Evaluate only `fixed_123` and `fixed_456`. Because Creo surface direction signs do not prove a physical front side, use absolute receiver-axis alignment to reject silhouettes. After staged visibility is known, project the exploded activity and visible-context AABBs into both fixed cameras and lock the camera with the smaller front-overlap score; ties deterministically prefer `fixed_123`. No render-time camera switch is allowed.
 
 ## Native adaptive framing
 
 - Formal framing is `native_zoom_to_selected/v1` only.
 - Add the complete moving and receiver occurrence paths to Creo's Selection Buffer, then execute `ProCmdZoomIntoOutline` once.
-- Set `zoom_to_selected_level = 0.42`. Creo's fit to the selected moving-plus-receiver bounding box provides the size adaptation; this fixed relative margin must not be multiplied by a second CAD-size ratio.
+- Set `zoom_to_selected_level = 0.75`. Creo's fit to the selected moving-plus-receiver bounding box provides the size adaptation; this fixed relative margin must not be multiplied by a second CAD-size ratio.
 - External absolute PAN/ZOOM, screen-coordinate automation, probe renders, response caches, dynamic geometry crops, and post-crop upscaling are forbidden.
 - One render attempt may export one formal raster. Scheduler-level retries remain bounded and receive one new raster budget per attempt.
 - Persist `native-framing-audit/v1` with Creo version/datecode, command verification, selection scope, and level.

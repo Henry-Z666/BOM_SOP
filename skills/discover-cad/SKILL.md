@@ -17,4 +17,4 @@ official asynchronous J-Link on a fresh disposable model copy. Return `creo-cad-
 
 Hash every source CAD file before and after access. Return `blocked` on any mutation, assembly
 version mismatch, unknown occurrence reference or invalid root vector. Mark unavailable geometry
-explicitly; never infer it from an occurrence centre. Keep local paths and raw CAD out of Qwen.
+explicitly; never infer it from an occurrence centre. Keep local paths and raw CAD inside the local run workspace.

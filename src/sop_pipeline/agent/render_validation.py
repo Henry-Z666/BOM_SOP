@@ -175,7 +175,7 @@ class DeterministicNativeRenderValidator:
                 != "fixed_native_selection_margin/v1"
                 or selected_fit.get("max_commands_per_render") != 1
                 or selected_fit.get("absolute_pan_zoom_forbidden") is not True
-                or not math.isclose(selected_fit_level, 0.42, abs_tol=1.0e-9)
+                or not math.isclose(selected_fit_level, 0.75, abs_tol=1.0e-9)
             ):
                 failures.append("PRESENTATION_CONTRACT_INVALID")
                 return None, None
@@ -331,7 +331,9 @@ class DeterministicNativeRenderValidator:
         except (KeyError, TypeError, ValueError):
             failures.append("CAMERA_GEOMETRY_INVALID")
             return
-        if float(np.dot(normal, direction)) < 0.35:
+        # Creo surface direction signs do not establish a physical front side;
+        # reject only a true silhouette, not the opposite locked octant.
+        if abs(float(np.dot(normal, direction))) < 0.35:
             failures.append("CAMERA_RECEIVER_SILHOUETTE")
         projected = translation - float(np.dot(translation, direction)) * direction
         if float(np.linalg.norm(projected)) <= 1.0e-6:
@@ -415,7 +417,7 @@ class DeterministicNativeRenderValidator:
 
 
 class DeterministicRenderValidator:
-    """Hard publication gates which no language model may waive."""
+    """Hard publication gates which no caller may waive."""
 
     def __init__(self, *, vector_tolerance: float = 1e-6) -> None:
         self.vector_tolerance = vector_tolerance

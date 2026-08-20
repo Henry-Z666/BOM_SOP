@@ -26,15 +26,14 @@ class RepairCandidateTests(unittest.TestCase):
         )
         self.assertEqual(candidates, ())
 
-    def test_small_subject_proposes_only_bounded_zoom_in_candidates(self) -> None:
+    def test_small_subject_cannot_change_locked_framing(self) -> None:
         candidates = BoundedRepairPlanner().propose(
             step_id="step-1",
             failure_codes=("SUBJECT_TOO_SMALL",),
             current={"camera_id": "fixed_123"},
         )
 
-        self.assertEqual({candidate.factor for candidate in candidates}, {"zoom"})
-        self.assertEqual([candidate.changes["zoom"] for candidate in candidates], [1.5, 2.1])
+        self.assertEqual(candidates, ())
 
     def test_camera_geometry_failure_cannot_switch_to_the_wrong_half_space(self) -> None:
         candidates = BoundedRepairPlanner().propose(

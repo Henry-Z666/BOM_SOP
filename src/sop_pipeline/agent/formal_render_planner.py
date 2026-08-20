@@ -10,7 +10,9 @@ from sop_pipeline.camera_planner import (
     calibrate_camera_basis,
     classify_receiver_face,
     generate_camera_candidates,
+    select_fixed_camera_for_stage,
 )
+from sop_pipeline.explosion_planner import select_display_translation
 
 from .bom_cad_mapper import BomCadMap, BomOccurrenceMapping
 from .bom_normalizer import NormalizedBom, NormalizedBomRow
@@ -174,7 +176,11 @@ def compile_formal_render_plan(
         moving_set = set(mapped.occurrence_ids)
         evidence = {
             occurrence_id: _select_evidence(
-                occurrence_id, moving_set, nodes, constraints
+                occurrence_id,
+                moving_set,
+                nodes,
+                constraints,
+                display_distance=_display_distance(nodes),
             )
             for occurrence_id in mapped.occurrence_ids
         }
@@ -274,6 +280,12 @@ def compile_formal_render_plan(
     diagnostics.extend(physical_diagnostics)
     ordered = _topologically_order(ordered)
     ordered = _complete_plan_state(ordered, scope_bases, initial_completed)
+    ordered = _lock_stage_explosion_modes(
+        ordered, _occurrence_bounds_root(nodes)
+    )
+    ordered = _lock_stage_cameras(
+        ordered, _occurrence_bounds_root(nodes), camera_basis
+    )
     ordered = _attach_affected_descendants(ordered)
     diagnostics.extend(_subassembly_scope_diagnostics(ordered, nodes, bom_rows))
     ready_steps = sum(step.status == "ready" for step in ordered)
@@ -318,13 +330,11 @@ def compile_formal_render_plan(
 def lock_formal_render_plan(
     plan: FormalRenderPlan,
     answers: dict[str, str],
-    recommended_scopes: dict[str, str] | None = None,
 ) -> FormalRenderPlan:
-    """Apply confirmed semantic choices and recompute all derived plan state."""
+    """Apply explicit bounded choices and recompute all derived plan state."""
 
     if plan.schema_version not in {"formal-render-plan/v1", "formal-render-plan/v2"}:
         raise ValueError("不支持的正式规划版本")
-    recommendations = recommended_scopes or {}
     removed: set[str] = set()
     decisions: dict[str, str] = {}
     by_step = {step.step_id: step for step in plan.steps}
@@ -340,12 +350,10 @@ def lock_formal_render_plan(
             decision = "expand"
         elif answer == "作为已完成整体安装":
             decision = "whole"
-        elif answer == "不确定，按推荐方案生成":
-            decision = recommendations.get(item_id, "expand")
         else:
             raise ValueError(f"无法识别子装配范围答案：{item_id}")
         if decision not in {"expand", "whole"}:
-            raise ValueError(f"子装配推荐超出允许范围：{item_id}")
+            raise ValueError(f"子装配范围超出允许值：{item_id}")
         decisions[item_id] = decision
         if decision == "whole":
             scopes = set(diagnostic.occurrence_ids)
@@ -364,6 +372,12 @@ def lock_formal_render_plan(
         retained,
         {scope: set(values) for scope, values in plan.scope_base_occurrences.items()},
         set(plan.initial_completed_occurrences),
+    )
+    retained = _lock_stage_explosion_modes(
+        retained, plan.occurrence_bounds_root
+    )
+    retained = _lock_stage_cameras(
+        retained, plan.occurrence_bounds_root, plan.camera_basis
     )
     retained = _attach_affected_descendants(retained)
     ready_steps = sum(step.status == "ready" for step in retained)
@@ -573,6 +587,8 @@ def _select_evidence(
     moving_set: set[str],
     nodes: dict[str, dict[str, Any]],
     constraints: tuple[dict[str, Any], ...],
+    *,
+    display_distance: float,
 ) -> _OccurrenceEvidence | None:
     node = nodes.get(occurrence_id)
     if node is None:
@@ -620,8 +636,13 @@ def _select_evidence(
             continue
         separation = tuple(origin[index] - point[index] for index in range(3))
         separation_unit = _unit(separation)
-        alignment = abs(_dot(normal, separation_unit)) if separation_unit else 0.0
-        sign = 1.0 if _dot(normal, separation) >= 0.0 else -1.0
+        bounds_sign = _bounds_half_space_sign(node, point, normal)
+        if bounds_sign is not None:
+            alignment = 1.0
+            sign = bounds_sign
+        else:
+            alignment = abs(_dot(normal, separation_unit)) if separation_unit else 0.0
+            sign = 1.0 if _dot(normal, separation) >= 0.0 else -1.0
         outward = tuple(sign * value for value in normal)
         component_geometry = (
             component_reference.get("geometry")
@@ -634,6 +655,18 @@ def _select_evidence(
             and component_geometry.get("status") == "available"
             else None
         )
+        if moving_anchor is not None and not _point_within_occurrence_bounds(
+            moving_anchor,
+            node,
+        ):
+            moving_anchor = None
+        physical_anchor = _vector(node.get("physical_anchor_root"))
+        if (
+            moving_anchor is None
+            and physical_anchor is not None
+            and _point_within_occurrence_bounds(physical_anchor, node)
+        ):
+            moving_anchor = physical_anchor
         candidates.append(
             _OccurrenceEvidence(
                 occurrence_id,
@@ -648,9 +681,26 @@ def _select_evidence(
         )
     if not candidates:
         return None
+    oriented_candidates: list[_OccurrenceEvidence] = []
+    for candidate in candidates:
+        oriented_normal, clearance_proven = _clearance_oriented_normal(
+            candidate,
+            candidates,
+            nodes,
+            display_distance,
+        )
+        oriented_candidates.append(
+            replace(
+                candidate,
+                outward_normal=oriented_normal,
+                alignment=1.0 if clearance_proven else candidate.alignment,
+            )
+        )
+    candidates = oriented_candidates
     return min(
         candidates,
         key=lambda item: (
+            item.moving_anchor_point is None,
             item.constraint_rank,
             -item.alignment,
             item.constraint_id,
@@ -1050,6 +1100,241 @@ def _occurrence_bounds_root(
             "max": [float(value) for value in high],
         }
     return result
+
+
+def _node_bounds(
+    node: dict[str, Any],
+) -> dict[str, list[float]] | None:
+    bounds = node.get("bounds_root")
+    if not isinstance(bounds, dict) or bounds.get("status") != "available":
+        return None
+    low = _vector(bounds.get("min"))
+    high = _vector(bounds.get("max"))
+    if low is None or high is None or any(
+        low[index] > high[index] for index in range(3)
+    ):
+        return None
+    return {"min": list(low), "max": list(high)}
+
+
+def _bounds_clearance_after_translation(
+    moving_node: dict[str, Any],
+    receiver_node: dict[str, Any],
+    translation: tuple[float, float, float],
+) -> float:
+    moving = _node_bounds(moving_node)
+    receiver = _node_bounds(receiver_node)
+    if moving is None or receiver is None:
+        return 0.0
+    gaps = [
+        max(
+            0.0,
+            receiver["min"][index]
+            - (moving["max"][index] + translation[index]),
+            moving["min"][index]
+            + translation[index]
+            - receiver["max"][index],
+        )
+        for index in range(3)
+    ]
+    return math.sqrt(sum(value * value for value in gaps))
+
+
+def _lock_stage_cameras(
+    steps: list[FormalRenderStep],
+    bounds_by_occurrence: dict[str, dict[str, list[float]]],
+    camera_basis: dict[str, Any],
+) -> list[FormalRenderStep]:
+    """Lock the less-occluded fixed view after staged visibility is known."""
+
+    result: list[FormalRenderStep] = []
+    for step in steps:
+        if (
+            step.status not in {"ready", "questioned"}
+            or step.receiver_normal_root is None
+            or step.translation_vector_root is None
+        ):
+            result.append(step)
+            continue
+        moving_bounds = [
+            bounds_by_occurrence[occurrence]
+            for occurrence in step.moving_occurrences
+            if occurrence in bounds_by_occurrence
+        ]
+        moving = set(step.moving_occurrences)
+        context_bounds = [
+            bounds_by_occurrence[occurrence]
+            for occurrence in step.visible_occurrences
+            if occurrence not in moving
+            and occurrence in bounds_by_occurrence
+        ]
+        camera = select_fixed_camera_for_stage(
+            camera_basis,
+            step.receiver_normal_root,
+            step.translation_vector_root,
+            moving_bounds,
+            context_bounds,
+        )
+        result.append(replace(step, camera_id=str(camera["id"])))
+    return result
+
+
+def _lock_stage_explosion_modes(
+    steps: list[FormalRenderStep],
+    bounds_by_occurrence: dict[str, dict[str, list[float]]],
+) -> list[FormalRenderStep]:
+    """Replace an unreadable normal explosion with a bounded lateral one."""
+
+    result: list[FormalRenderStep] = []
+    for step in steps:
+        if (
+            step.receiver_normal_root is None
+            or step.translation_vector_root is None
+        ):
+            result.append(step)
+            continue
+        moving_bounds = [
+            bounds_by_occurrence[occurrence]
+            for occurrence in step.moving_occurrences
+            if occurrence in bounds_by_occurrence
+        ]
+        moving = set(step.moving_occurrences)
+        context_bounds = [
+            bounds_by_occurrence[occurrence]
+            for occurrence in step.visible_occurrences
+            if occurrence not in moving and occurrence in bounds_by_occurrence
+        ]
+        distance = math.sqrt(
+            sum(value * value for value in step.translation_vector_root)
+        )
+        selection = select_display_translation(
+            step.receiver_normal_root,
+            distance,
+            moving_bounds,
+            context_bounds,
+            [anchor.complete_point_root for anchor in step.arrow_anchors],
+        )
+        result.append(
+            replace(
+                step,
+                translation_vector_root=tuple(
+                    float(value)
+                    for value in selection["translation_vector_root"]
+                ),
+            )
+        )
+    return result
+
+
+def _point_within_occurrence_bounds(
+    point: tuple[float, float, float],
+    node: dict[str, Any],
+) -> bool:
+    """Reject constraint anchors that are not on the occurrence's physical solid.
+
+    Creo occasionally exposes an analytic surface coordinate-system origin as
+    though it were a sampled point on the selected face.  That origin can be
+    far outside the component.  When native solid bounds are available, keep
+    only anchors inside them (with a small numerical tolerance).
+    """
+
+    bounds = node.get("bounds_root")
+    if not isinstance(bounds, dict) or bounds.get("status") != "available":
+        return True
+    low = _vector(bounds.get("min"))
+    high = _vector(bounds.get("max"))
+    if low is None or high is None:
+        return False
+    diagonal = math.sqrt(
+        sum((high[index] - low[index]) ** 2 for index in range(3))
+    )
+    tolerance = max(1.0e-5, diagonal * 1.0e-6)
+    return all(
+        low[index] - tolerance <= point[index] <= high[index] + tolerance
+        for index in range(3)
+    )
+
+
+def _clearance_oriented_normal(
+    candidate: _OccurrenceEvidence,
+    candidates: list[_OccurrenceEvidence],
+    nodes: dict[str, dict[str, Any]],
+    display_distance: float,
+) -> tuple[tuple[float, float, float], bool]:
+    """Resolve an unsigned Creo axis by maximizing worst receiver clearance.
+
+    INSERT/MATE/ALIGN surface directions are not reliable outward normals.  For
+    every same-axis constraint on the moving occurrence, compare both signs
+    against the actual moving/receiver solid bounds.  Maximin prevents a
+    secondary constraint from pulling the part toward another constrained
+    receiver while remaining deterministic for multi-constraint parts.
+    """
+
+    moving = nodes.get(candidate.occurrence_id, {})
+    if _node_bounds(moving) is None:
+        return candidate.outward_normal, False
+    axis = candidate.outward_normal
+    aligned_receivers = {
+        item.receiver_id
+        for item in candidates
+        if abs(_dot(axis, item.outward_normal)) >= 0.95
+        and _node_bounds(nodes.get(item.receiver_id, {})) is not None
+    }
+    if not aligned_receivers:
+        return axis, False
+
+    def worst_clearance(sign: float) -> float:
+        vector = tuple(sign * display_distance * value for value in axis)
+        values = [
+            _bounds_clearance_after_translation(
+                moving,
+                nodes[receiver_id],
+                vector,
+            )
+            for receiver_id in aligned_receivers
+        ]
+        return min(values)
+
+    positive = worst_clearance(1.0)
+    negative = worst_clearance(-1.0)
+    tolerance = max(1.0e-5, display_distance * 1.0e-6)
+    if positive > negative + tolerance:
+        return axis, True
+    if negative > positive + tolerance:
+        return tuple(-value for value in axis), True
+    return candidate.outward_normal, False
+
+
+def _bounds_half_space_sign(
+    node: dict[str, Any],
+    receiver_point: tuple[float, float, float],
+    normal: tuple[float, float, float],
+) -> float | None:
+    """Return the side of a receiver plane containing the whole moving solid."""
+
+    bounds = node.get("bounds_root")
+    if not isinstance(bounds, dict) or bounds.get("status") != "available":
+        return None
+    low = _vector(bounds.get("min"))
+    high = _vector(bounds.get("max"))
+    if low is None or high is None:
+        return None
+    minimum = 0.0
+    maximum = 0.0
+    for index, component in enumerate(normal):
+        near = low[index] if component >= 0.0 else high[index]
+        far = high[index] if component >= 0.0 else low[index]
+        minimum += (near - receiver_point[index]) * component
+        maximum += (far - receiver_point[index]) * component
+    diagonal = math.sqrt(
+        sum((high[index] - low[index]) ** 2 for index in range(3))
+    )
+    tolerance = max(1.0e-5, diagonal * 1.0e-6)
+    if minimum >= -tolerance and maximum > tolerance:
+        return 1.0
+    if maximum <= tolerance and minimum < -tolerance:
+        return -1.0
+    return None
 
 
 def _vector(value: Any) -> tuple[float, float, float] | None:

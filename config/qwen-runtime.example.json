@@ -1,8 +1,0 @@
-{
-  "schema_version": "qwen-runtime/v2",
-  "api_key_env": "DASHSCOPE_API_KEY",
-  "text_model": "qwen-plus",
-  "vision_model": "qwen-vl-max-latest",
-  "cad_upload_allowed": false,
-  "minimum_bom_text_only": true
-}

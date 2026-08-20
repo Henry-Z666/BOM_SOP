@@ -1,6 +1,10 @@
 from .core import AgentCore
 from .creo_worker import AgentNativeCreoWorker
 from .desktop_workflow import DesktopWorkflow
+from .deterministic_resolution import (
+    explicit_axis_direction,
+    structured_step_revision,
+)
 from .excel_verifier import ExcelComVerifier
 from .formal_render_planner import (
     ArrowAnchorEvidence,
@@ -26,12 +30,6 @@ from .models import (
 )
 from .ports import WorkflowPort
 from .pipeline_orchestrator import PipelineOrchestrator, SkillPipelineError
-from .qwen_adapter import (
-    DashScopeTransport,
-    PlanChoiceRecommendation,
-    QwenAdvisor,
-    SemanticReview,
-)
 from .repair_candidates import BoundedRepairPlanner, RepairCandidate
 from .render_job_compiler import compile_locked_render_jobs
 from .render_validation import (
@@ -98,7 +96,6 @@ __all__ = [
     "DeterministicRenderValidator",
     "DeterministicNativeRenderValidator",
     "DesktopWorkflow",
-    "DashScopeTransport",
     "FileCheckpointStore",
     "ExcelComVerifier",
     "FormalRenderPlan",
@@ -107,12 +104,10 @@ __all__ = [
     "MemoryCheckpointStore",
     "OpenpyxlWorkbookVerifier",
     "PlanRevision",
-    "PlanChoiceRecommendation",
     "PipelineOrchestrator",
     "PlanningDiagnostic",
     "lock_formal_render_plan",
     "ProducedArtifact",
-    "QwenAdvisor",
     "RunNotFoundError",
     "RunOutcome",
     "RetryScope",
@@ -132,7 +127,6 @@ __all__ = [
     "RunStatus",
     "RevisionKind",
     "SkillStatus",
-    "SemanticReview",
     "SkillResult",
     "SkillDefinition",
     "SkillInvocation",
@@ -153,4 +147,6 @@ __all__ = [
     "StepResult",
     "WorkflowPort",
     "validate_revision",
+    "explicit_axis_direction",
+    "structured_step_revision",
 ]

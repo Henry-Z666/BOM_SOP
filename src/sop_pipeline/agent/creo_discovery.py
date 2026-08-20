@@ -172,21 +172,21 @@ def bundled_discovery_script() -> Path:
 
 
 def powershell_command() -> str:
-    configured = os.environ.get("QWEN_POWERSHELL_COMMAND", "").strip()
+    configured = os.environ.get("CREO_SOP_POWERSHELL_COMMAND", "").strip()
     if configured:
         return configured
     return shutil.which("pwsh.exe") or shutil.which("powershell.exe") or "powershell.exe"
 
 
 def resolve_runtime_config(run_workspace: Path) -> Path | None:
-    configured = os.environ.get("QWEN_CREO_RUNTIME_CONFIG", "").strip()
+    configured = os.environ.get("CREO_SOP_RUNTIME_CONFIG", "").strip()
     if configured:
         path = Path(configured).resolve()
         if not path.is_file():
             raise FileNotFoundError(f"Creo 运行配置不存在：{path}")
         return path
-    loadpoint = os.environ.get("QWEN_CREO_LOADPOINT", "").strip()
-    license_file = os.environ.get("QWEN_CREO_LICENSE_FILE", "").strip()
+    loadpoint = os.environ.get("CREO_SOP_LOADPOINT", "").strip()
+    license_file = os.environ.get("CREO_SOP_LICENSE_FILE", "").strip()
     if loadpoint or license_file:
         if not loadpoint or not license_file:
             raise ValueError("Creo 安装目录和许可证文件必须同时配置")
@@ -199,12 +199,12 @@ def resolve_runtime_config(run_workspace: Path) -> Path | None:
                     "schema_version": "creo-runtime/v1",
                     "creo_loadpoint": loadpoint,
                     "license_file": license_file,
-                    "creo_app": os.environ.get("QWEN_CREO_APP", "PMA"),
+                    "creo_app": os.environ.get("CREO_SOP_APP", "PMA"),
                     "creo_feature_name": os.environ.get(
-                        "QWEN_CREO_FEATURE_NAME", ""
+                        "CREO_SOP_FEATURE_NAME", ""
                     ),
-                    "java_command": os.environ.get("QWEN_JAVA_COMMAND", "java"),
-                    "javac_command": os.environ.get("QWEN_JAVAC_COMMAND", "javac"),
+                    "java_command": os.environ.get("CREO_SOP_JAVA_COMMAND", "java"),
+                    "javac_command": os.environ.get("CREO_SOP_JAVAC_COMMAND", "javac"),
                     "python_command": sys.executable,
                 },
                 ensure_ascii=False,

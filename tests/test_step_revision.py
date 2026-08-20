@@ -22,7 +22,9 @@ class StepRevisionTests(unittest.TestCase):
         )
 
     def test_presentation_change_invalidates_only_current_step(self) -> None:
-        revision = StepRevision(1, "b", RevisionKind.PRESENTATION, {"zoom": 1.1})
+        revision = StepRevision(
+            1, "b", RevisionKind.PRESENTATION, {"candidate_id": "candidate-a"}
+        )
         self.assertEqual(self.graph.invalidated_by(revision), frozenset({"b"}))
 
     def test_complete_state_change_invalidates_only_dependency_descendants(self) -> None:
@@ -35,7 +37,7 @@ class StepRevisionTests(unittest.TestCase):
         revision = StepRevision(1, "b", RevisionKind.COMPLETE_STATE, {})
         self.assertNotIn("d", self.graph.invalidated_by(revision))
 
-    def test_qwen_revision_cannot_invent_camera_or_arbitrary_path(self) -> None:
+    def test_revision_cannot_override_locked_camera_or_arbitrary_path(self) -> None:
         invalid = StepRevision(
             1,
             "b",

@@ -106,7 +106,7 @@ class CreoDiscoveryTests(unittest.TestCase):
                         "schema_version": "creo-runtime/v1",
                         "creo_loadpoint": r"C:\Program Files\PTC\Creo",
                         "license_file": r"C:\ProgramData\PTC\license.dat",
-                        "python_command": "QwenCreoSopAgent.exe",
+                        "python_command": "CreoSopAgent.exe",
                     }
                 ),
                 encoding="utf-8",
@@ -120,8 +120,8 @@ class CreoDiscoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder, patch.dict(
             os.environ,
             {
-                "QWEN_CREO_LOADPOINT": r"C:\Creo",
-                "QWEN_CREO_LICENSE_FILE": r"C:\Creo\license.dat",
+                "CREO_SOP_LOADPOINT": r"C:\Creo",
+                "CREO_SOP_LICENSE_FILE": r"C:\Creo\license.dat",
             },
             clear=True,
         ):

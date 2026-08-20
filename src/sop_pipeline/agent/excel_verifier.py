@@ -33,7 +33,7 @@ class ExcelComVerifier:
                     )
                 if worksheet.Shapes.Count < 1:
                     raise ValueError(f"Excel found no image: {worksheet.Name}")
-            with tempfile.TemporaryDirectory(prefix="qwen-sop-excel-audit-") as folder:
+            with tempfile.TemporaryDirectory(prefix="creo-sop-excel-audit-") as folder:
                 pdf = Path(folder) / "audit.pdf"
                 workbook.ExportAsFixedFormat(0, str(pdf.resolve()))
                 if not pdf.is_file() or pdf.stat().st_size == 0:

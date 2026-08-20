@@ -15,7 +15,7 @@ SKILL_PROGRESS: dict[str, tuple[int, int, str]] = {
     "discover-cad": (18, 30, "扫描 CAD 装配关系与约束"),
     "map-bom-cad": (30, 38, "映射 BOM 与 CAD 零部件"),
     "plan-assembly": (38, 45, "规划装配顺序与依赖"),
-    "clarify-plan": (45, 50, "整理确认项与推荐方案"),
+    "clarify-plan": (45, 50, "整理确认项与确定性默认值"),
     "compile-render-jobs": (50, 55, "编译稳定的出图任务"),
     "render-batch": (55, 88, "Creo 正在生成步骤图片"),
     "validate-repair": (88, 95, "检查图片并准备候选方案"),

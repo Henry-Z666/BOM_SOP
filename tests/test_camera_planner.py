@@ -11,6 +11,7 @@ from sop_pipeline.camera_planner import (
     opposite,
     score_camera_candidate,
     select_camera,
+    select_fixed_camera_for_stage,
 )
 from sop_pipeline.validation import validate_camera_contract
 
@@ -43,21 +44,69 @@ class CameraPlannerTests(unittest.TestCase):
         for value, expected in zip(opposite(direction), self.basis["opposite_position_direction_root"]):
             self.assertAlmostEqual(value, expected, places=12)
 
-    def test_candidates_never_cross_receiver_half_space(self):
+    def test_candidates_keep_signed_surface_evidence_without_treating_it_as_outward(self):
         face = classify_receiver_face([-0.99, 0.05, 0.02], self.basis)
         candidates = generate_camera_candidates(self.basis, face, [160, 0, 0])
-        self.assertEqual(len(candidates), 1)
-        self.assertEqual(candidates[0]["id"], "fixed_456")
-        for candidate in candidates:
-            self.assertGreater(dot(face["normal_root"], candidate["position_direction_root"]), 0.0)
+        self.assertEqual(len(candidates), 2)
+        self.assertTrue(all(
+            item["hard_gate"]["receiver_face_not_silhouette"]
+            for item in candidates
+        ))
+        self.assertEqual(
+            {
+                math.copysign(
+                    1.0,
+                    item["metrics"]["receiver_normal_signed_alignment"],
+                )
+                for item in candidates
+            },
+            {-1.0, 1.0},
+        )
+
+    def test_stage_camera_prefers_view_with_overlapping_context_behind_activity(self):
+        selected = select_fixed_camera_for_stage(
+            self.basis,
+            [0.0, 1.0, 0.0],
+            [0.0, 20.0, 0.0],
+            [{"min": [-2.0, -2.0, -2.0], "max": [2.0, 2.0, 2.0]}],
+            [{"min": [-20.0, 8.0, -20.0], "max": [20.0, 12.0, 20.0]}],
+        )
+
+        self.assertEqual(selected["id"], "fixed_456")
+        self.assertEqual(
+            selected["metrics"]["analytic_activity_occlusion"],
+            0.0,
+        )
+
+    def test_axis_aligned_faces_lock_one_compatible_camera_without_retry(self):
+        for normal in (
+            [1, 0, 0],
+            [-1, 0, 0],
+            [0, 1, 0],
+            [0, -1, 0],
+            [0, 0, 1],
+            [0, 0, -1],
+        ):
+            with self.subTest(normal=normal):
+                face = classify_receiver_face(normal, self.basis)
+                selected = generate_camera_candidates(self.basis, face, normal)[0]
+                self.assertTrue(
+                    selected["hard_gate"]["receiver_face_not_silhouette"]
+                )
+                self.assertTrue(
+                    selected["hard_gate"]["projected_explosion_nonzero"]
+                )
 
     def test_fixed_views_replay_saved_default_and_exact_centre_opposite(self):
         saved = absolute_view_matrix([0.79, 0.16, -0.59], [0.1, 0.2, 1.0])
         basis = calibrate_camera_basis("parent.asm.1", "hash", saved)
         face_2 = classify_receiver_face([0, 1, 0], basis)
-        face_5 = classify_receiver_face([0, -1, 0], basis)
-        fixed_123 = generate_camera_candidates(basis, face_2, [45, 142, -59])[0]
-        fixed_456 = generate_camera_candidates(basis, face_5, [45, -142, -59])[0]
+        candidates = {
+            item["id"]: item
+            for item in generate_camera_candidates(basis, face_2, [45, 142, -59])
+        }
+        fixed_123 = candidates["fixed_123"]
+        fixed_456 = candidates["fixed_456"]
         self.assertEqual(fixed_123["id"], "fixed_123")
         self.assertEqual(fixed_456["id"], "fixed_456")
         for actual_row, saved_row in zip(basis["fixed_123_view_matrix"][:3], saved[:3]):

@@ -12,13 +12,10 @@ from sop_pipeline.agent import (
     AgentCore,
     PipelineOrchestrator,
     RenderAttempt,
-    RevisionKind,
     RunStatus,
-    SemanticReview,
     SkillPipelineError,
     StepResolution,
     StepResult,
-    StepRevision,
     StepStatus,
 )
 from sop_pipeline.agent.creo_discovery import StaticCreoDiscovery
@@ -43,16 +40,6 @@ class ImageWorker:
 
     def close_session(self, session):
         del session
-
-
-class ChangingImageWorker(ImageWorker):
-    def render(self, session, task, attempt):
-        del attempt
-        self.calls.append(task.step_id)
-        shade = 220 - min(len(self.calls), 10) * 10
-        image = session / f"{task.task_id}.jpg"
-        Image.new("RGB", (1600, 1600), (shade, shade, shade)).save(image)
-        return RenderAttempt.passed("sha256:" + sha256(image.read_bytes()).hexdigest())
 
 
 class CandidateWorker(ImageWorker):
@@ -104,95 +91,6 @@ class AlwaysFailingWorker(ImageWorker):
         del session
         self.calls.append(task.step_id)
         return RenderAttempt.retryable("CREO_RUNTIME_CONFIG_MISSING")
-
-
-class FakeAdvisor:
-    def review_render(self, image_file, minimized_context):
-        del image_file, minimized_context
-        return SemanticReview(True, ())
-
-    def interpret_resolution(
-        self, step_id, instruction, revision, current_context=None
-    ):
-        del instruction, current_context
-        return StepRevision(
-            revision,
-            step_id,
-            RevisionKind.PRESENTATION,
-            {"camera_id": "fixed_456"},
-        )
-
-
-class RecoverableAdvisor(FakeAdvisor):
-    def __init__(self) -> None:
-        self.fail = True
-
-    def review_render(self, image_file, minimized_context):
-        if self.fail:
-            raise RuntimeError("temporary DashScope timeout")
-        return super().review_render(image_file, minimized_context)
-
-
-class QuestioningAdvisor(FakeAdvisor):
-    def review_render(self, image_file, minimized_context):
-        del image_file, minimized_context
-        return SemanticReview(False, ("构图待人工确认",))
-
-
-class QuestionThenPassAdvisor(FakeAdvisor):
-    def __init__(self) -> None:
-        self.review_count = 0
-
-    def review_render(self, image_file, minimized_context):
-        del image_file, minimized_context
-        self.review_count += 1
-        return SemanticReview(
-            self.review_count > 1,
-            () if self.review_count > 1 else ("构图待人工确认",),
-        )
-
-
-class ZoomAdvisor(FakeAdvisor):
-    def interpret_resolution(
-        self, step_id, instruction, revision, current_context=None
-    ):
-        del instruction, current_context
-        return StepRevision(
-            revision,
-            step_id,
-            RevisionKind.PRESENTATION,
-            {"zoom": 1.25, "pan": [0.0, 0.0]},
-        )
-
-
-class DirectionAdvisor(FakeAdvisor):
-    def interpret_resolution(
-        self, step_id, instruction, revision, current_context=None
-    ):
-        del instruction, current_context
-        return StepRevision(
-            revision,
-            step_id,
-            RevisionKind.INSTALLATION_GEOMETRY,
-            {"direction": [0.0, 0.0, 1.0]},
-        )
-
-
-class InspectingRecoveringWorker(RecoveringWorker):
-    def __init__(self) -> None:
-        super().__init__()
-        self.presentation_policies: list[tuple[str, float]] = []
-
-    def render(self, session, task, attempt):
-        presentation = task.payload.get("presentation", {})
-        variants = presentation.get("variants", [{}])
-        self.presentation_policies.append(
-            (
-                str(presentation.get("framing_profile", {}).get("policy", "")),
-                float(variants[0].get("zoom", 1.0)),
-            )
-        )
-        return super().render(session, task, attempt)
 
 
 def _fixture(root: Path):
@@ -323,7 +221,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "step-1"):
             AgentCore._assert_unaffected_unchanged(before, after, set())
 
-    def test_stale_validation_cannot_be_bypassed_by_replacing_locked_plan(self) -> None:
+    def test_direction_resolution_rerenders_after_locked_plan_is_repaired(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             bom, cad, graph = _fixture(root)
@@ -333,7 +231,6 @@ class PipelineOrchestratorTests(unittest.TestCase):
                     adapters={
                         "creo_discovery": StaticCreoDiscovery(graph),
                         "render_worker": ImageWorker(),
-                        "qwen_advisor": FakeAdvisor(),
                     }
                 ),
             )
@@ -385,16 +282,16 @@ class PipelineOrchestratorTests(unittest.TestCase):
                 value=repaired,
             )
 
-            with self.assertRaisesRegex(SkillPipelineError, "NO_NATIVE_RECEIVER_GEOMETRY"):
-                core.resolve(
-                    run_id,
-                    StepResolution(
-                        step_id=target_id,
-                        instruction="继续使用已恢复的原生安装几何",
-                    ),
-                )
+            completed = core.resolve(
+                run_id,
+                StepResolution(
+                    step_id=target_id,
+                    instruction="该零件沿设备Z轴正方向装入",
+                ),
+            )
 
-            self.assertFalse(
+            self.assertEqual(completed.status, RunStatus.COMPLETED)
+            self.assertTrue(
                 (run.workspace / "revisions" / "step-revision-0001.json").exists()
             )
 
@@ -409,7 +306,6 @@ class PipelineOrchestratorTests(unittest.TestCase):
                     adapters={
                         "creo_discovery": StaticCreoDiscovery(graph),
                         "render_worker": worker,
-                        "qwen_advisor": FakeAdvisor(),
                     }
                 ),
             )
@@ -477,7 +373,6 @@ class PipelineOrchestratorTests(unittest.TestCase):
                     adapters={
                         "creo_discovery": StaticCreoDiscovery(graph),
                         "render_worker": worker,
-                        "qwen_advisor": FakeAdvisor(),
                     }
                 ),
             )
@@ -499,7 +394,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
             )
             calls_before = list(worker.calls)
 
-            with self.assertRaisesRegex(SkillPipelineError, "请说明安装方向"):
+            with self.assertRaisesRegex(SkillPipelineError, "脚本版本只接受"):
                 core.resolve(
                     run_id,
                     StepResolution(
@@ -509,70 +404,6 @@ class PipelineOrchestratorTests(unittest.TestCase):
                 )
 
             self.assertEqual(worker.calls, calls_before)
-
-    def test_successful_rerender_uses_a_new_image_path_for_review_refresh(self) -> None:
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            bom, cad, graph = _fixture(root)
-            worker = ChangingImageWorker()
-            advisor = QuestionThenPassAdvisor()
-            core = AgentCore(
-                root / "workspace",
-                PipelineOrchestrator(
-                    adapters={
-                        "creo_discovery": StaticCreoDiscovery(graph),
-                        "render_worker": worker,
-                        "qwen_advisor": advisor,
-                    }
-                ),
-            )
-            run_id = core.create_run(bom, cad)
-            packet = core.analyze(run_id)
-            core.confirm(
-                run_id,
-                {
-                    item.item_id: item.recommended_option
-                    for item in packet.items
-                    if item.category == "CONFIRMATION"
-                },
-            )
-            pending = core.generate(run_id)
-            run = core.get_run(run_id)
-            target = next(
-                step for step in pending.steps if step.status.value == "QUESTIONED"
-            )
-            first_validation = json.loads(
-                (run.workspace / "results" / "validation-0001.json").read_text(
-                    encoding="utf-8"
-                )
-            )
-            first_item = next(
-                item
-                for item in first_validation["steps"]
-                if item["step_id"] == target.step_id
-            )
-
-            completed = core.resolve(
-                run_id,
-                StepResolution(
-                    step_id=target.step_id,
-                    instruction="翻转视角",
-                ),
-            )
-            second_validation = json.loads(
-                (run.workspace / "results" / "validation-0001.json").read_text(
-                    encoding="utf-8"
-                )
-            )
-            second_item = next(
-                item
-                for item in second_validation["steps"]
-                if item["step_id"] == target.step_id
-            )
-
-            self.assertEqual(completed.status, RunStatus.COMPLETED)
-            self.assertNotEqual(first_item["image_path"], second_item["image_path"])
-            self.assertNotEqual(first_item["output_hash"], second_item["output_hash"])
 
     def test_explicit_direction_resolution_unlocks_and_renders_blocked_step(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -585,7 +416,6 @@ class PipelineOrchestratorTests(unittest.TestCase):
                     adapters={
                         "creo_discovery": StaticCreoDiscovery(graph),
                         "render_worker": worker,
-                        "qwen_advisor": DirectionAdvisor(),
                     }
                 ),
             )
@@ -654,7 +484,6 @@ class PipelineOrchestratorTests(unittest.TestCase):
                     adapters={
                         "creo_discovery": StaticCreoDiscovery(graph),
                         "render_worker": worker,
-                        "qwen_advisor": DirectionAdvisor(),
                     }
                 ),
             )
@@ -723,7 +552,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
         self.assertFalse(decision["watermark"])
         self.assertEqual(delivery_bytes, original_bytes)
 
-    def test_qwen_can_accept_real_image_with_only_presentation_warning(self) -> None:
+    def test_deterministic_gates_keep_presentation_warning_for_review(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             bom, cad, graph = _fixture(root)
@@ -734,7 +563,6 @@ class PipelineOrchestratorTests(unittest.TestCase):
                     adapters={
                         "creo_discovery": StaticCreoDiscovery(graph),
                         "render_worker": worker,
-                        "qwen_advisor": FakeAdvisor(),
                     }
                 ),
             )
@@ -751,7 +579,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
 
             outcome = core.generate(run_id)
 
-        self.assertEqual(outcome.status, RunStatus.COMPLETED)
+        self.assertEqual(outcome.status, RunStatus.NEEDS_REVIEW)
         self.assertTrue(worker.calls)
 
     def test_zero_success_render_batch_blocks_before_placeholder_publication(self) -> None:
@@ -765,7 +593,6 @@ class PipelineOrchestratorTests(unittest.TestCase):
                     adapters={
                         "creo_discovery": StaticCreoDiscovery(graph),
                         "render_worker": worker,
-                        "qwen_advisor": FakeAdvisor(),
                     }
                 ),
             )
@@ -798,7 +625,6 @@ class PipelineOrchestratorTests(unittest.TestCase):
                     adapters={
                         "creo_discovery": StaticCreoDiscovery(graph),
                         "render_worker": worker,
-                        "qwen_advisor": FakeAdvisor(),
                     }
                 ),
             )
@@ -840,7 +666,6 @@ class PipelineOrchestratorTests(unittest.TestCase):
                     adapters={
                         "creo_discovery": StaticCreoDiscovery(graph),
                         "render_worker": worker,
-                        "qwen_advisor": FakeAdvisor(),
                     }
                 ),
             )
@@ -882,7 +707,6 @@ class PipelineOrchestratorTests(unittest.TestCase):
                     adapters={
                         "creo_discovery": StaticCreoDiscovery(graph),
                         "render_worker": worker,
-                        "qwen_advisor": FakeAdvisor(),
                     }
                 ),
             )
@@ -919,87 +743,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
                     ),
                 )
 
-    def test_questioned_real_image_can_be_accepted_without_rerendering(self) -> None:
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            bom, cad, graph = _fixture(root)
-            worker = PresentationWarningWorker()
-            core = AgentCore(
-                root / "workspace",
-                PipelineOrchestrator(
-                    adapters={
-                        "creo_discovery": StaticCreoDiscovery(graph),
-                        "render_worker": worker,
-                        "qwen_advisor": QuestioningAdvisor(),
-                    }
-                ),
-            )
-            run_id = core.create_run(bom, cad)
-            packet = core.analyze(run_id)
-            core.confirm(
-                run_id,
-                {
-                    item.item_id: item.recommended_option
-                    for item in packet.items
-                    if item.category == "CONFIRMATION"
-                },
-            )
-            pending = core.generate(run_id)
-            calls_before = list(worker.calls)
-            target = pending.steps[0]
-
-            completed = core.resolve(
-                run_id,
-                StepResolution(
-                    step_id=target.step_id,
-                    candidate_id="current-image",
-                ),
-            )
-
-            self.assertEqual(pending.status, RunStatus.NEEDS_REVIEW)
-            self.assertEqual(completed.status, RunStatus.COMPLETED)
-            self.assertEqual(worker.calls, calls_before)
-
-    def test_explicit_zoom_revision_cannot_reenable_frozen_framing(self) -> None:
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            bom, cad, graph = _fixture(root)
-            worker = InspectingRecoveringWorker()
-            core = AgentCore(
-                root / "workspace",
-                PipelineOrchestrator(
-                    adapters={
-                        "creo_discovery": StaticCreoDiscovery(graph),
-                        "render_worker": worker,
-                        "qwen_advisor": ZoomAdvisor(),
-                    }
-                ),
-            )
-            run_id = core.create_run(bom, cad)
-            packet = core.analyze(run_id)
-            core.confirm(
-                run_id,
-                {
-                    item.item_id: item.recommended_option
-                    for item in packet.items
-                    if item.category == "CONFIRMATION"
-                },
-            )
-            pending = core.generate(run_id)
-            worker.fail = False
-
-            with self.assertRaisesRegex(SkillPipelineError, "构图策略已冻结"):
-                core.resolve(
-                    run_id,
-                    StepResolution(
-                        step_id=pending.steps[0].step_id,
-                        instruction="以安装部位为中心放大",
-                    ),
-                )
-
-            self.assertNotIn(("manual_refit/v1", 1.25), worker.presentation_policies)
-
-    def test_natural_language_resolution_reruns_only_invalidated_step(self) -> None:
+    def test_fixed_camera_cannot_be_overridden_during_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             bom, cad, graph = _fixture(root)
@@ -1010,7 +754,48 @@ class PipelineOrchestratorTests(unittest.TestCase):
                     adapters={
                         "creo_discovery": StaticCreoDiscovery(graph),
                         "render_worker": worker,
-                        "qwen_advisor": FakeAdvisor(),
+                    }
+                ),
+            )
+            run_id = core.create_run(bom, cad)
+            packet = core.analyze(run_id)
+            core.confirm(
+                run_id,
+                {
+                    item.item_id: item.recommended_option
+                    for item in packet.items
+                    if item.category == "CONFIRMATION"
+                },
+            )
+            pending = core.generate(run_id)
+            worker.fail = False
+            calls_before = list(worker.calls)
+
+            with self.assertRaisesRegex(SkillPipelineError, "固定视角"):
+                core.resolve(
+                    run_id,
+                    StepResolution(
+                        step_id=pending.steps[0].step_id,
+                        instruction="切换固定视角",
+                        metadata={
+                            "structured_inputs": {"camera_id": "fixed_456"}
+                        },
+                    ),
+                )
+
+            self.assertEqual(worker.calls, calls_before)
+
+    def test_explicit_axis_direction_reruns_only_invalidated_step(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            bom, cad, graph = _fixture(root)
+            worker = RecoveringWorker()
+            core = AgentCore(
+                root / "workspace",
+                PipelineOrchestrator(
+                    adapters={
+                        "creo_discovery": StaticCreoDiscovery(graph),
+                        "render_worker": worker,
                     }
                 ),
             )
@@ -1030,49 +815,15 @@ class PipelineOrchestratorTests(unittest.TestCase):
 
             completed = core.resolve(
                 run_id,
-                StepResolution(step_id=target.step_id, instruction="翻转视角"),
+                StepResolution(
+                    step_id=target.step_id,
+                    instruction="该零件沿设备Z轴正方向装入",
+                ),
             )
 
             self.assertEqual(pending.status, RunStatus.NEEDS_REVIEW)
             self.assertEqual(completed.status, RunStatus.COMPLETED)
             self.assertEqual(worker.calls.count(target.step_id), 3)
-
-    def test_qwen_review_outage_is_retryable_and_reuses_render(self) -> None:
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            bom, cad, graph = _fixture(root)
-            worker = ImageWorker()
-            advisor = RecoverableAdvisor()
-            core = AgentCore(
-                root / "workspace",
-                PipelineOrchestrator(
-                    adapters={
-                        "creo_discovery": StaticCreoDiscovery(graph),
-                        "render_worker": worker,
-                        "qwen_advisor": advisor,
-                    }
-                ),
-            )
-            run_id = core.create_run(bom, cad)
-            packet = core.analyze(run_id)
-            core.confirm(
-                run_id,
-                {
-                    item.item_id: item.recommended_option
-                    for item in packet.items
-                    if item.category == "CONFIRMATION"
-                },
-            )
-
-            with self.assertRaises(SkillPipelineError):
-                core.generate(run_id)
-            calls_after_render = list(worker.calls)
-            advisor.fail = False
-            completed = core.resume(run_id)
-
-            self.assertEqual(completed.status, RunStatus.COMPLETED)
-            self.assertEqual(worker.calls, calls_after_render)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -206,7 +206,8 @@ def projected_length(vector: Iterable[float], position_direction: Iterable[float
 def _candidate(candidate_id: str, direction: Vector, receiver_normal: Vector,
                explode_vector: Vector, kind: str, up: Vector) -> dict[str, Any]:
     direction = normalize(direction)
-    visibility = dot(receiver_normal, direction)
+    signed_visibility = dot(receiver_normal, direction)
+    visibility = abs(signed_visibility)
     separation = projected_length(explode_vector, direction)
     matrix = absolute_view_matrix(direction, up)
     return {
@@ -217,13 +218,18 @@ def _candidate(candidate_id: str, direction: Vector, receiver_normal: Vector,
         "view_matrix": matrix,
         "metrics": {
             "receiver_normal_alignment": visibility,
+            "receiver_normal_signed_alignment": signed_visibility,
             "projected_explosion_length": separation,
+            "analytic_activity_occlusion": None,
             "receiver_boundary_visible": None,
             "hole_min_pixel_gap": None,
             "occlusion_score": None,
             "frame_coverage": None,
         },
         "hard_gate": {
+            # Creo SURFACE directions are oriented, but do not prove which
+            # side is the physically visible/outward side.  Either locked
+            # octant may therefore view the same receiver boundary.
             "receiver_outside_half_space": visibility > 0.0,
             "receiver_face_not_silhouette": visibility >= 0.35,
             "projected_explosion_nonzero": separation > 1.0e-6,
@@ -234,21 +240,190 @@ def _candidate(candidate_id: str, direction: Vector, receiver_normal: Vector,
 
 def generate_camera_candidates(basis: dict[str, Any], receiver_face: dict[str, Any],
                                explosion_vector_root: Iterable[float]) -> list[dict[str, Any]]:
-    """Return the single formal view allowed for this receiver face.
+    """Rank both locked views from root-coordinate receiver evidence.
 
-    Faces 1/2/3 always use the fixed equal-weight default octant; faces 4/5/6
-    always use its exact centre-symmetric opposite.  There are deliberately no
-    pitch, receiver-emphasis, or adjacent-octant fallbacks.
+    The first result is the only formal camera.  The opposite view remains in
+    the audit catalog, but is never selected by a render-time retry.  Equal
+    geometry scores keep ``fixed_123`` first, so identical CAD evidence always
+    locks the same matrix.
     """
     normal = normalize(receiver_face["normal_root"])
     explode = _vector(explosion_vector_root)
     up = normalize(basis.get("up_reference_root", [0.0, 0.0, 1.0]))
     fixed_123 = normalize(basis["fixed_123_position_direction_root"])
-    use_default = int(receiver_face["face_id"]) <= 3
-    direction = fixed_123 if use_default else opposite(fixed_123)
-    candidate_id = "fixed_123" if use_default else "fixed_456"
-    return [_candidate(candidate_id, direction, normal, explode,
-                       "fixed_saved_default_or_centre_opposite", up)]
+    candidates = [
+        _candidate(
+            "fixed_123",
+            fixed_123,
+            normal,
+            explode,
+            "root_coordinate_locked_two_view/v1",
+            up,
+        ),
+        _candidate(
+            "fixed_456",
+            opposite(fixed_123),
+            normal,
+            explode,
+            "root_coordinate_locked_two_view/v1",
+            up,
+        ),
+    ]
+
+    def rank(candidate: dict[str, Any]) -> tuple[int, float, float, int]:
+        gate = candidate["hard_gate"]
+        compatible = all(
+            bool(gate[name])
+            for name in (
+                "receiver_outside_half_space",
+                "receiver_face_not_silhouette",
+                "projected_explosion_nonzero",
+            )
+        )
+        metrics = candidate["metrics"]
+        return (
+            1 if compatible else 0,
+            float(metrics["receiver_normal_alignment"]),
+            float(metrics["projected_explosion_length"]),
+            1 if candidate["id"] == "fixed_123" else 0,
+        )
+
+    return sorted(candidates, key=rank, reverse=True)
+
+
+def select_fixed_camera_for_stage(
+    basis: dict[str, Any],
+    receiver_normal_root: Iterable[float],
+    explosion_vector_root: Iterable[float],
+    moving_bounds: list[dict[str, list[float]]],
+    context_bounds: list[dict[str, list[float]]],
+) -> dict[str, Any]:
+    """Choose one locked octant using CAD-only activity occlusion evidence.
+
+    Opposite isometric cameras have equal projected lengths, but not equal
+    front/back ordering.  A context solid contributes occlusion only when its
+    projected rectangle overlaps the exploded activity and its AABB centre is
+    closer to the camera.  This is intentionally a pre-render geometry rule;
+    it does not inspect pixels or retry a render.
+    """
+
+    face = classify_receiver_face(receiver_normal_root, basis)
+    candidates = generate_camera_candidates(
+        basis, face, explosion_vector_root
+    )
+    activity = _union_bounds(
+        [_translate_bounds(item, explosion_vector_root) for item in moving_bounds]
+    )
+    if activity is None:
+        return candidates[0]
+    scored: list[dict[str, Any]] = []
+    for candidate in candidates:
+        direction = candidate["position_direction_root"]
+        up = candidate["up_reference_root"]
+        activity_projection = _project_bounds(activity, direction, up)
+        occlusion = 0.0
+        for item in context_bounds:
+            context_projection = _project_bounds(item, direction, up)
+            if _depth_center(context_projection) <= _depth_center(
+                activity_projection
+            ):
+                continue
+            occlusion += _rectangle_overlap_fraction(
+                activity_projection, context_projection
+            )
+        updated = {
+            **candidate,
+            "metrics": {
+                **candidate["metrics"],
+                "analytic_activity_occlusion": round(occlusion, 9),
+            },
+        }
+        scored.append(updated)
+    return min(
+        scored,
+        key=lambda item: (
+            float(item["metrics"]["analytic_activity_occlusion"]),
+            -float(item["metrics"]["receiver_normal_alignment"]),
+            0 if item["id"] == "fixed_123" else 1,
+        ),
+    )
+
+
+def _translate_bounds(
+    bounds: dict[str, list[float]], vector: Iterable[float]
+) -> dict[str, list[float]]:
+    offset = _vector(vector)
+    return {
+        "min": [float(bounds["min"][index]) + offset[index] for index in range(3)],
+        "max": [float(bounds["max"][index]) + offset[index] for index in range(3)],
+    }
+
+
+def _union_bounds(
+    items: list[dict[str, list[float]]],
+) -> dict[str, list[float]] | None:
+    if not items:
+        return None
+    return {
+        "min": [min(item["min"][index] for item in items) for index in range(3)],
+        "max": [max(item["max"][index] for item in items) for index in range(3)],
+    }
+
+
+def _project_bounds(
+    bounds: dict[str, list[float]],
+    position_direction: Iterable[float],
+    up_reference: Iterable[float],
+) -> dict[str, float]:
+    back = normalize(position_direction)
+    right = normalize(cross(up_reference, back))
+    up = normalize(cross(back, right))
+    corners = [
+        [
+            float(bounds[x][0]),
+            float(bounds[y][1]),
+            float(bounds[z][2]),
+        ]
+        for x in ("min", "max")
+        for y in ("min", "max")
+        for z in ("min", "max")
+    ]
+    horizontal = [dot(point, right) for point in corners]
+    vertical = [dot(point, up) for point in corners]
+    depth = [dot(point, back) for point in corners]
+    return {
+        "x_min": min(horizontal),
+        "x_max": max(horizontal),
+        "y_min": min(vertical),
+        "y_max": max(vertical),
+        "depth_min": min(depth),
+        "depth_max": max(depth),
+    }
+
+
+def _depth_center(projection: dict[str, float]) -> float:
+    return (projection["depth_min"] + projection["depth_max"]) / 2.0
+
+
+def _rectangle_overlap_fraction(
+    activity: dict[str, float], context: dict[str, float]
+) -> float:
+    width = max(0.0, activity["x_max"] - activity["x_min"])
+    height = max(0.0, activity["y_max"] - activity["y_min"])
+    area = width * height
+    if area <= 1.0e-10:
+        return 0.0
+    overlap_width = max(
+        0.0,
+        min(activity["x_max"], context["x_max"])
+        - max(activity["x_min"], context["x_min"]),
+    )
+    overlap_height = max(
+        0.0,
+        min(activity["y_max"], context["y_max"])
+        - max(activity["y_min"], context["y_min"]),
+    )
+    return overlap_width * overlap_height / area
 
 
 def score_camera_candidate(candidate: dict[str, Any], *, receiver_boundary_visible: bool,

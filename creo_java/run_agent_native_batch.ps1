@@ -134,8 +134,8 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   }
   $selectedFitLevel = [double]$nativeSelectedFit.zoom_to_selected_level
   if ([double]::IsNaN($selectedFitLevel) -or [double]::IsInfinity($selectedFitLevel) -or
-      [Math]::Abs($selectedFitLevel - 0.42) -gt 1.0e-9) {
-    throw "Task $taskId must use the fixed native selected-fit margin 0.42."
+      [Math]::Abs($selectedFitLevel - 0.75) -gt 1.0e-9) {
+    throw "Task $taskId must use the fixed native selected-fit margin 0.75."
   }
   if ([string]$presentation.focus_context -ne 'stage_visible_bbox/v1') { throw "Task $taskId has an invalid presentation focus context." }
   if ([string]$presentation.framing_priority -ne 'installation_activity/v1') { throw "Task $taskId does not prioritize the installation activity." }

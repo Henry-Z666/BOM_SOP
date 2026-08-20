@@ -19,13 +19,6 @@ _OCCURRENCE_CODES = {
     "RECEIVER_OCCURRENCE_UNRESOLVED",
     "NO_NATIVE_RECEIVER_GEOMETRY",
 }
-_CAMERA_CODES = {
-    "CAMERA_RECEIVER_WRONG_HALF_SPACE",
-    "CAMERA_RECEIVER_SILHOUETTE",
-    "EXPLOSION_NOT_VISIBLE_IN_CAMERA",
-}
-
-
 def prepare_review_step(
     run_workspace: Path,
     validation_step: Mapping[str, Any],
@@ -175,25 +168,6 @@ def _guided_form(code: str, plan_step: Mapping[str, Any]) -> dict[str, Any] | No
                     "default": "",
                     "required": True,
                 },
-            ],
-        }
-    if code in _CAMERA_CODES:
-        default = str(plan_step.get("camera_id") or "fixed_123")
-        return {
-            "schema_version": "guided-review-form/v1",
-            "title": "确认固定视角",
-            "instruction": "只在两台已标定固定视角中选择。",
-            "sentence_template": "本步骤使用{camera_id}固定视角重新生成",
-            "submit_label": "按所选视角重新生成",
-            "fields": [
-                {
-                    "name": "camera_id",
-                    "label": "固定视角",
-                    "type": "choice",
-                    "options": ["fixed_123", "fixed_456"],
-                    "default": default,
-                    "required": True,
-                }
             ],
         }
     return None

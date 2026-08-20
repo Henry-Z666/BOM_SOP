@@ -17,4 +17,4 @@ when the evidence selects the exact BOM quantity or has a strict score boundary.
 all candidates in a confirmation item; never slice candidates by file or feature order.
 
 Return `bom-cad-map/v1` with every BOM row, expected quantity, full occurrence paths, status and
-plain-language evidence. Missing geometry remains missing and cannot be invented by Qwen.
+plain-language evidence. Missing geometry remains missing and cannot be invented from text.

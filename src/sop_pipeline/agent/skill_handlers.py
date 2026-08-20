@@ -4,7 +4,6 @@ from dataclasses import asdict, replace
 from copy import deepcopy
 from hashlib import sha256
 import json
-import os
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -22,8 +21,8 @@ from .creo_worker import AgentNativeCreoWorker
 from .desktop_workflow import (
     _mapping_questions,
     _planning_questions,
-    _scope_recommendations,
 )
+from .deterministic_resolution import structured_step_revision
 from .draft_planner import DraftInstallationStep, DraftPlan, create_draft_plan
 from .formal_render_planner import (
     FormalRenderPlan,
@@ -38,7 +37,6 @@ from .models import (
     SkillStatus,
     StepStatus,
 )
-from .qwen_adapter import DashScopeTransport, QwenAdvisor, explicit_axis_direction
 from .review import (
     ACCEPT_WITH_OVERRIDE,
     HUMAN_OVERRIDE_IMAGE_ID,
@@ -128,10 +126,7 @@ def intake_preflight(
         "schema_version": "preflight-report/v1",
         "passed": True,
         "runtime_configured": runtime_configured,
-        "qwen_configured": bool(
-            context.adapters.get("qwen_advisor")
-            or os.environ.get("DASHSCOPE_API_KEY", "").strip()
-        ),
+        "decision_mode": "deterministic_only/v1",
         "excel_verifier_configured": bool(context.adapters.get("workbook_verifier")),
         "model_file_count": len(model_files),
     }
@@ -317,17 +312,9 @@ def clarify_plan(
         formal = formal_render_plan_from_dict(
             context.read_json(_require_ref(invocation, "formal-render-plan"))
         )
-        advisor = _advisor(context.adapters)
-        recommendations, qwen_status = _scope_recommendations(
-            advisor,
-            bom,
-            draft,
-            formal,
-            cache_directory=context.run.workspace.parent.parent / "semantic-cache",
-        )
         questions = list(_base_questions(bom, inventory))
         questions.extend(_mapping_questions(mapping))
-        questions.extend(_planning_questions(formal, recommendations))
+        questions.extend(_planning_questions(formal))
         packet = ClarificationPacket(
             schema_version="clarification-packet/v1",
             summary=(
@@ -361,22 +348,14 @@ def clarify_plan(
                 "formal_ready_steps": formal.ready_steps,
                 "formal_questioned_steps": formal.questioned_steps,
                 "formal_plan_fingerprint": formal.fingerprint,
-                "qwen_scope_status": qwen_status,
-                "qwen_scope_recommendations": len(recommendations),
+                "decision_mode": "deterministic_only/v1",
             },
         )
-        recommendation_artifact = {
-            "schema_version": "plan-recommendations/v1",
-            "items": recommendations,
-        }
     except (KeyError, TypeError, ValueError) as error:
         return _blocked("CLARIFICATION_FAILED", str(error))
     return SkillHandlerOutput(
         status=SkillStatus.QUESTIONED if packet.items else SkillStatus.PASSED,
-        artifacts=(
-            SkillArtifactValue("clarification-packet", packet),
-            SkillArtifactValue("plan-recommendations", recommendation_artifact),
-        ),
+        artifacts=(SkillArtifactValue("clarification-packet", packet),),
         diagnostics=(
             (
                 Diagnostic(
@@ -842,10 +821,8 @@ def validate_repair(
         batch = context.read_json(_require_ref(invocation, "render-batch-"))
         jobs = _render_plan(context.read_json(_require_ref(invocation, "locked-render-jobs")))
         by_step = {task.step_id: task for task in jobs.tasks}
-        advisor = _advisor(context.adapters)
         validated: list[dict[str, Any]] = []
         candidate_groups: list[dict[str, Any]] = []
-        qwen_retryable_steps: list[str] = []
         questioned = False
         for item in batch.get("steps", []):
             step_id = str(item["step_id"])
@@ -881,40 +858,16 @@ def validate_repair(
                 if planning_issue:
                     issues.append(planning_issue)
             discovered_candidates: tuple[Path, ...] = ()
-            qwen_invoked = False
-            qwen_passed: bool | None = None
             geometry_passed = status is StepStatus.PASSED or bool(
                 item.get("deterministic_geometry_passed", False)
             )
             manual_acceptance_allowed = False
             if geometry_passed and image_path is not None and image_path.is_file():
-                if advisor is not None and not bool(item.get("restored", False)):
-                    try:
-                        qwen_invoked = True
-                        review = advisor.review_render(
-                            image_path,
-                            {
-                                "step_id": step_id,
-                                "title": task.payload.get("title", step_id),
-                                "moving_occurrences": task.payload.get("moving_occurrences", []),
-                                "receiver_occurrences": task.payload.get("receiver_occurrences", []),
-                                "camera_id": task.payload.get("camera_id"),
-                                "planning_diagnostics": task.payload.get("diagnostics", []),
-                                "deterministic_geometry_gate": "passed",
-                                "presentation_warnings": item.get(
-                                    "gate_failures", []
-                                ),
-                            },
-                        )
-                        qwen_passed = review.passed
-                        if review.passed and not planning_review_required:
-                            status = StepStatus.PASSED
-                        else:
-                            status = StepStatus.QUESTIONED
-                            issues.extend(review.issues)
-                    except (RuntimeError, ValueError) as error:
-                        issues.append(f"QWEN_REVIEW_RETRYABLE: {error}")
-                        qwen_retryable_steps.append(step_id)
+                status = (
+                    StepStatus.QUESTIONED
+                    if planning_review_required or status is StepStatus.QUESTIONED
+                    else StepStatus.PASSED
+                )
             else:
                 status = (
                     StepStatus.QUESTIONED
@@ -988,9 +941,8 @@ def validate_repair(
                 "attempted_actions": item.get("attempted_actions", []),
                 "suggested_actions": item.get("suggested_actions", []),
                 "retained_image": item.get("retained_image"),
-                "qwen_invoked": qwen_invoked,
-                "qwen_passed": qwen_passed,
-                "qwen_issues": issues,
+                "review_mode": "deterministic_only/v1",
+                "review_issues": issues,
                 "final_status": status.value,
                 "image_path": (
                     str(image_path.relative_to(context.run.workspace))
@@ -1027,11 +979,7 @@ def validate_repair(
                         if image_path
                         else None
                     ),
-                    "error_code": (
-                        "QWEN_SEMANTIC_QUESTION"
-                        if qwen_passed is False
-                        else item.get("error_code")
-                    ),
+                    "error_code": item.get("error_code"),
                     "error_message": item.get("error_message"),
                     "issues": issues,
                     "primary_code": item.get("primary_code"),
@@ -1068,25 +1016,6 @@ def validate_repair(
         }
     except (KeyError, OSError, TypeError, ValueError) as error:
         return _blocked("VALIDATION_FAILED", str(error))
-    if qwen_retryable_steps:
-        return SkillHandlerOutput(
-            status=SkillStatus.RETRYABLE,
-            artifacts=(
-                SkillArtifactValue("validation-result", validation),
-                SkillArtifactValue("candidate-set", candidates),
-            ),
-            diagnostics=(
-                Diagnostic(
-                    "QWEN_REVIEW_RETRYABLE",
-                    "Qwen图片语义复核暂时不可用，确定性渲染结果已保留。",
-                    tuple(qwen_retryable_steps),
-                ),
-            ),
-            retry_scope=RetryScope(
-                "step", tuple(qwen_retryable_steps), 3
-            ),
-            allowed_next=("validate-repair",),
-        )
     return SkillHandlerOutput(
         status=SkillStatus.QUESTIONED if questioned else SkillStatus.PASSED,
         artifacts=(
@@ -1476,14 +1405,6 @@ def resolve_step(
                 {"candidate_id": candidate_id},
             )
         else:
-            advisor = _advisor(context.adapters)
-            if advisor is None:
-                return SkillHandlerOutput(
-                    status=SkillStatus.RETRYABLE,
-                    diagnostics=(Diagnostic("QWEN_NOT_CONFIGURED", "文字释疑需要DashScope Qwen。"),),
-                    retry_scope=RetryScope("step", (step_id,), 3),
-                    allowed_next=("resolve-step",),
-                )
             validation = context.read_json(
                 _require_ref(invocation, "results/validation-")
             )
@@ -1543,26 +1464,22 @@ def resolve_step(
                     for item in normalized.get("rows", [])
                     if int(item.get("bom_row", -1)) in source_rows
                 ]
-            revision = advisor.interpret_resolution(
+            metadata = invocation.parameters.get("metadata", {})
+            structured_inputs = (
+                metadata.get("structured_inputs", {})
+                if isinstance(metadata, Mapping)
+                else {}
+            )
+            revision = structured_step_revision(
                 step_id,
                 instruction,
                 revision_number,
-                current_context=current_step,
+                structured_inputs=(
+                    structured_inputs
+                    if isinstance(structured_inputs, Mapping)
+                    else {}
+                ),
             )
-            if revision.kind is RevisionKind.COMPLETE_STATE:
-                raise ValueError(
-                    "文字模型不能修改依赖顺序或完整安装态；请返回生成前重新确认计划。"
-                )
-            if "direction" in revision.changes:
-                explicit_direction = explicit_axis_direction(instruction)
-                returned_direction = [
-                    float(value) for value in revision.changes["direction"]
-                ]
-                if explicit_direction is None or returned_direction != explicit_direction:
-                    raise ValueError(
-                        "安装方向必须来自用户明确给出的正/负 X、Y、Z 轴说明，"
-                        "不能由 Qwen 推断。"
-                    )
             unresolved_code = str(current_step.get("error_code") or "")
             if (
                 revision.kind is RevisionKind.PRESENTATION
@@ -1748,15 +1665,8 @@ def _apply_step_revision(plan: RenderPlan, payload: dict[str, Any]) -> RenderPla
         } & set(changes)
         if occurrence_fields:
             raise ValueError(
-                "occurrence 只能由确定性 BOM/CAD 映射修订，不能由文字模型写入"
+                "occurrence 只能由确定性 BOM/CAD 映射修订，不能由文本说明写入"
             )
-        if "camera_id" in changes:
-            camera_id = str(changes["camera_id"])
-            catalog = contract.get("camera_catalog", {})
-            if camera_id not in catalog:
-                raise ValueError("修订相机不在锁定的相机目录中")
-            contract["camera_id"] = camera_id
-            contract["camera"] = deepcopy(catalog[camera_id])
         presentation = dict(contract.get("presentation", {}))
         variants = [
             dict(value)
@@ -1766,8 +1676,6 @@ def _apply_step_revision(plan: RenderPlan, payload: dict[str, Any]) -> RenderPla
         if not variants:
             raise ValueError("锁定渲染任务缺少视角变体")
         variant = dict(variants[0])
-        if "camera_id" in changes:
-            variant["camera_id"] = str(changes["camera_id"])
         variant["variant_id"] = f"step-revision-{revision.revision}"
         presentation["variants"] = [variant]
         contract["presentation"] = presentation
@@ -1795,14 +1703,11 @@ def _apply_step_revision(plan: RenderPlan, payload: dict[str, Any]) -> RenderPla
             ]
         if "direction" in changes:
             _refresh_arrow_endpoints(contract)
-        if "direction" in changes or "camera_id" in changes:
+        if "direction" in changes:
             _link_revision_cameras(
                 contract,
                 presentation,
                 revision_number=revision.revision,
-                preferred_camera_id=(
-                    str(changes["camera_id"]) if "camera_id" in changes else None
-                ),
             )
             contract["diagnostics"] = [
                 code
@@ -1839,9 +1744,8 @@ def _link_revision_cameras(
     presentation: dict[str, Any],
     *,
     revision_number: int,
-    preferred_camera_id: str | None,
 ) -> None:
-    """Rank both fixed cameras against the revised installation direction."""
+    """Relock one fixed camera from revised root-coordinate geometry."""
 
     catalog = contract.get("camera_catalog", {})
     if not isinstance(catalog, dict):
@@ -1858,7 +1762,7 @@ def _link_revision_cameras(
     translation = [float(value) for value in contract.get("translation_vector_root", ())]
     if len(translation) != 3:
         raise ValueError("锁定渲染任务缺少三维爆炸向量")
-    ranked: list[tuple[tuple[int, int, float, float], str]] = []
+    ranked: list[tuple[tuple[int, float, float, int], str]] = []
     for camera_id in ("fixed_123", "fixed_456"):
         camera = catalog.get(camera_id)
         if not isinstance(camera, dict):
@@ -1881,9 +1785,9 @@ def _link_revision_cameras(
             (
                 (
                     1 if compatible else 0,
-                    1 if camera_id == preferred_camera_id else 0,
                     facing,
                     projected_length,
+                    1 if camera_id == "fixed_123" else 0,
                 ),
                 camera_id,
             )
@@ -1893,21 +1797,16 @@ def _link_revision_cameras(
     ranked.sort(key=lambda item: item[0], reverse=True)
     if not ranked[0][0][0]:
         raise ValueError("两台固定相机都不满足承接面与爆炸投影硬门")
-    linked_variants: list[dict[str, Any]] = []
-    for index, (_score, camera_id) in enumerate(ranked):
-        linked = dict(base_variant)
-        linked["camera_id"] = camera_id
-        linked["variant_id"] = (
-            f"step-revision-{revision_number}-camera-{index + 1}"
-        )
-        linked_variants.append(linked)
-    selected_id = str(linked_variants[0]["camera_id"])
+    selected_id = ranked[0][1]
+    linked = dict(base_variant)
+    linked["camera_id"] = selected_id
+    linked["variant_id"] = f"step-revision-{revision_number}-locked-camera"
     contract["camera_id"] = selected_id
     contract["camera"] = deepcopy(catalog[selected_id])
-    presentation["variants"] = linked_variants
+    presentation["variants"] = [linked]
     contract["attempted_actions"] = [
-        "已按修订后的安装方向重算 fixed_123/fixed_456 相机兼容性",
-        f"首选相机更新为 {selected_id}",
+        "已按修订后的安装方向重新验证根坐标系双视角",
+        f"唯一正式相机锁定为 {selected_id}",
     ]
 
 
@@ -2126,14 +2025,6 @@ def _base_questions(
             )
         )
     return tuple(questions)
-
-
-def _advisor(adapters: Mapping[str, Any]) -> Any | None:
-    advisor = adapters.get("qwen_advisor")
-    if advisor is not None:
-        return advisor
-    key = os.environ.get("DASHSCOPE_API_KEY", "").strip()
-    return QwenAdvisor(DashScopeTransport(key)) if key else None
 
 
 def _safe_id(value: str) -> str:

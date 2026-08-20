@@ -435,7 +435,10 @@ def _camera_gate_measurements(
         translation = tuple(float(value) for value in payload["translation_vector_root"])
         if len(translation) != 3:
             raise ValueError
-        receiver_dot = sum(normal[index] * view[index] for index in range(3))
+        receiver_signed_dot = sum(
+            normal[index] * view[index] for index in range(3)
+        )
+        receiver_dot = abs(receiver_signed_dot)
         along_view = sum(translation[index] * view[index] for index in range(3))
         projected = tuple(
             translation[index] - along_view * view[index] for index in range(3)
@@ -445,11 +448,13 @@ def _camera_gate_measurements(
         return {
             "camera_id": None,
             "camera_receiver_dot": None,
+            "camera_receiver_signed_dot": None,
             "projected_explosion_length": None,
         }
     return {
         "camera_id": camera_id,
         "camera_receiver_dot": receiver_dot,
+        "camera_receiver_signed_dot": receiver_signed_dot,
         "projected_explosion_length": projected_length,
     }
 

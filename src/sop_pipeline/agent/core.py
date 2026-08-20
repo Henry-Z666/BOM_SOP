@@ -181,20 +181,9 @@ class AgentCore:
             formal_plan = formal_render_plan_from_dict(
                 self._artifacts.read_json(run.workspace, "analysis/formal-render-plan.json")
             )
-            recommendation_path = run.workspace / "analysis" / "plan-recommendations.json"
-            recommendations: dict[str, str] = {}
-            if recommendation_path.is_file():
-                recommendation_data = self._artifacts.read_json(
-                    run.workspace, "analysis/plan-recommendations.json"
-                )
-                recommendations = {
-                    str(item["decision_id"]): str(item["recommended"])
-                    for item in recommendation_data.get("items", [])
-                }
             locked_render_plan = lock_formal_render_plan(
                 formal_plan,
                 plan.answers,
-                recommendations,
             )
         self._artifacts.write_json(
             run_id=run_id,

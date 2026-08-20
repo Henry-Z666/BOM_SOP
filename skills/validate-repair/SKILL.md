@@ -1,6 +1,6 @@
 ---
 name: validate-repair
-description: Apply deterministic geometry and arrow hard gates, optional Qwen visual review, bounded repair, and comparable candidate generation.
+description: Apply deterministic geometry, camera, arrow, and file-integrity hard gates with bounded non-camera repair.
 ---
 
 # Validate and repair
@@ -8,9 +8,9 @@ description: Apply deterministic geometry and arrow hard gates, optional Qwen vi
 Invoke `validate-repair` through `SkillRuntime` after rendering. It emits
 `validation-result/v2` and `candidate-set/v1`.
 
-Run deterministic gates before Qwen review. Never let Qwen waive assembly, occurrence,
-visibility, camera, transform, arrow, or image-size failures. Do not activate extra
-camera/PAN/Zoom framing renders. Produce two to four single-factor candidates only when the render
+Run deterministic gates only. Never waive assembly, occurrence, visibility, camera, transform,
+arrow, or image-integrity failures. Do not activate extra camera/PAN/Zoom framing renders.
+Produce two to four single-factor arrow-layout candidates only when the render
 artifact explicitly proves that all structural and geometric gates passed. When a real Creo
 image exists but fails a machine gate, retain the byte-identical image for informed human
 review; produce a placeholder only when no real image exists.
@@ -29,5 +29,5 @@ proof that the failed revision succeeded.
 
 Copy structured diagnostics into validation so the desktop review page can show the Chinese
 meaning, expected and actual measurements, actions already tried, and concrete next actions.
-Expose guided fields for missing key facts. Keep bounded deterministic retry before review and
+Expose guided fields for missing key facts. Keep bounded non-camera deterministic repair before review and
 carry its attempted actions into the review package.

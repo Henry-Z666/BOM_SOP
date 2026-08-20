@@ -30,7 +30,7 @@ class SkillPipelineError(RuntimeError):
 
 
 class PipelineOrchestrator:
-    """Deterministic Agent pipeline; models advise but never choose transitions."""
+    """Deterministic BOM-and-Creo pipeline with durable skill transitions."""
 
     def __init__(
         self,

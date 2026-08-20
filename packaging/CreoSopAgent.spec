@@ -1,5 +1,5 @@
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_submodules
 
 root = Path(SPECPATH).parent
 skill_names = (
@@ -8,12 +8,8 @@ skill_names = (
     "render-batch", "validate-repair", "publish-delivery", "resolve-step",
 )
 
-hiddenimports = [
-    "dashscope.aigc.generation",
-    "dashscope.aigc.multimodal_conversation",
-] + collect_submodules("sop_pipeline")
-datas = collect_data_files("dashscope")
-datas += [(str(root / "skills" / name), f"skills/{name}") for name in skill_names]
+hiddenimports = collect_submodules("sop_pipeline")
+datas = [(str(root / "skills" / name), f"skills/{name}") for name in skill_names]
 datas += [(str(root / "assets" / "sop-template.xlsx"), "assets")]
 datas += [
     (str(root / "creo_java" / "RuntimeConfig.ps1"), "creo_java"),
@@ -59,7 +55,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="QwenCreoSopAgent",
+    name="CreoSopAgent",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

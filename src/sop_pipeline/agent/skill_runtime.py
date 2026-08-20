@@ -70,7 +70,6 @@ _OUTPUT_PATHS: dict[str, dict[str, str]] = {
     },
     "clarify-plan": {
         "clarification-packet": "analysis/clarification-packet.json",
-        "plan-recommendations": "analysis/plan-recommendations.json",
     },
     "compile-render-jobs": {
         "locked-render-jobs": "plans/locked-render-jobs-{revision:04d}.json",
@@ -182,7 +181,7 @@ class SkillRuntime:
         return result
 
     def tool_definitions(self) -> tuple[dict[str, Any], ...]:
-        """Return provider-neutral JSON Schema descriptions for Qwen tools."""
+        """Return provider-neutral JSON Schema descriptions for external callers."""
 
         return tuple(
             {

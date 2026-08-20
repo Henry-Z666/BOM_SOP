@@ -17,7 +17,7 @@ Use `render-plan/v2` with `creo-render-task/v1`. Every formal task contains:
 - camera ID restricted to `fixed_123` or `fixed_456`;
 - `fixed-frame-presentation/v1` with `native-selected-fit/v1`;
 - `selection_scope=moving_and_receiver_occurrences/v1`;
-- `level_policy=fixed_native_selection_margin/v1` with `zoom_to_selected_level=0.42`, one command per render, and absolute PAN/ZOOM forbidden;
+- `level_policy=fixed_native_selection_margin/v1` with `zoom_to_selected_level=0.75`, one command per render, and absolute PAN/ZOOM forbidden;
 - native arrow anchors, output audit references, process text, and status.
 
 The validated task contract—not the publication workbook—is execution truth.

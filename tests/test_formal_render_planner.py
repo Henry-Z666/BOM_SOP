@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
+import math
 import unittest
 
 from sop_pipeline.agent.bom_cad_mapper import BomCadMap, BomOccurrenceMapping
@@ -154,7 +155,7 @@ class FormalRenderPlannerTests(unittest.TestCase):
     def test_native_selected_fit_uses_one_fixed_relative_margin(self) -> None:
         contract = _native_selected_fit_contract()
 
-        self.assertEqual(contract["zoom_to_selected_level"], 0.42)
+        self.assertEqual(contract["zoom_to_selected_level"], 0.75)
         self.assertEqual(
             contract["selection_scope"],
             "moving_and_receiver_occurrences/v1",
@@ -216,6 +217,276 @@ class FormalRenderPlannerTests(unittest.TestCase):
 
         self.assertEqual(child_step.status, "questioned")
         self.assertIn("NO_NATIVE_RECEIVER_GEOMETRY", child_step.diagnostics)
+
+    def test_rejects_constraint_anchor_outside_moving_occurrence_bounds(self) -> None:
+        bom, draft, mapping, graph = fixture()
+        moving = next(
+            item for item in graph["occurrences"] if item["occurrence_id"] == "10/2"
+        )
+        moving["bounds_root"] = {
+            "status": "available",
+            "source": "solid_geom_outline/v1",
+            "min": [-1.0, -1.0, 9.0],
+            "max": [1.0, 1.0, 11.0],
+        }
+        edge = next(
+            item for item in graph["constraints"] if item["id"] == "10-2-insert"
+        )
+        edge["component_reference"]["geometry"]["point_root"] = [0.0, 0.0, -100.0]
+
+        plan = compile_formal_render_plan(bom, draft, mapping, graph)
+        child_step = next(step for step in plan.steps if step.source_bom_rows == (5,))
+
+        self.assertEqual(child_step.status, "questioned")
+        self.assertEqual(child_step.arrow_anchors, ())
+        self.assertIn("MOVING_ARROW_ANCHOR_UNAVAILABLE", child_step.diagnostics)
+
+    def test_uses_creo_physical_anchor_when_constraint_surface_is_not_on_solid(self) -> None:
+        bom, draft, mapping, graph = fixture()
+        moving = next(
+            item for item in graph["occurrences"] if item["occurrence_id"] == "10/2"
+        )
+        moving["bounds_root"] = {
+            "status": "available",
+            "source": "solid_geom_outline/v1",
+            "min": [-1.0, -1.0, 9.0],
+            "max": [1.0, 1.0, 11.0],
+        }
+        moving["physical_anchor_root"] = [0.0, 0.0, 10.0]
+        edge = next(
+            item for item in graph["constraints"] if item["id"] == "10-2-insert"
+        )
+        edge["component_reference"]["geometry"]["point_root"] = [0.0, 0.0, -100.0]
+
+        plan = compile_formal_render_plan(bom, draft, mapping, graph)
+        child_step = next(step for step in plan.steps if step.source_bom_rows == (5,))
+
+        self.assertEqual(child_step.status, "ready")
+        self.assertEqual(child_step.arrow_anchors[0].complete_point_root, (0.0, 0.0, 10.0))
+        self.assertNotIn("MOVING_ARROW_ANCHOR_UNAVAILABLE", child_step.diagnostics)
+
+    def test_uses_solid_half_space_for_direction_when_origin_vector_is_weak(self) -> None:
+        bom, draft, mapping, graph = fixture()
+        moving = next(
+            item for item in graph["occurrences"] if item["occurrence_id"] == "10/2"
+        )
+        moving["transform"] = transform(100.0, 0.0, 1.0)
+        moving["bounds_root"] = {
+            "status": "available",
+            "source": "solid_geom_outline/v1",
+            "min": [99.0, -1.0, 0.5],
+            "max": [101.0, 1.0, 1.5],
+        }
+        moving["physical_anchor_root"] = [100.0, 0.0, 1.0]
+
+        plan = compile_formal_render_plan(bom, draft, mapping, graph)
+        child_step = next(step for step in plan.steps if step.source_bom_rows == (5,))
+
+        self.assertEqual(child_step.status, "ready")
+        self.assertGreater(child_step.translation_vector_root[2], 0.0)
+        self.assertNotIn("DIRECTION_SIGN_WEAK", child_step.diagnostics)
+
+    def test_uses_receiver_solid_clearance_when_surface_axis_origin_has_wrong_side(self) -> None:
+        bom, draft, mapping, graph = fixture()
+        receiver = next(
+            item for item in graph["occurrences"] if item["occurrence_id"] == "10/1"
+        )
+        moving = next(
+            item for item in graph["occurrences"] if item["occurrence_id"] == "10/2"
+        )
+        receiver["bounds_root"] = {
+            "status": "available",
+            "min": [-5.0, -5.0, 0.0],
+            "max": [5.0, 5.0, 8.0],
+        }
+        moving["bounds_root"] = {
+            "status": "available",
+            "min": [-1.0, -1.0, 9.0],
+            "max": [1.0, 1.0, 11.0],
+        }
+        moving["physical_anchor_root"] = [0.0, 0.0, 10.0]
+        edge = next(
+            item for item in graph["constraints"] if item["id"] == "10-2-insert"
+        )
+        edge["assembly_reference"]["geometry"]["point_root"] = [100.0, 0.0, 10.0]
+        edge["component_reference"]["geometry"]["point_root"] = [0.0, 0.0, 10.0]
+
+        plan = compile_formal_render_plan(bom, draft, mapping, graph)
+        child_step = next(step for step in plan.steps if step.source_bom_rows == (5,))
+
+        self.assertGreater(child_step.translation_vector_root[2], 0.0)
+        self.assertNotIn("DIRECTION_SIGN_WEAK", child_step.diagnostics)
+
+    def test_same_unsigned_axis_splits_when_occurrences_need_opposite_clearance(self) -> None:
+        bom, draft, mapping, graph = fixture()
+        rows = list(bom.rows)
+        rows[3] = replace(rows[3], quantity=2)
+        bom = replace(bom, rows=tuple(rows))
+        mappings = list(mapping.rows)
+        mappings[3] = replace(
+            mappings[3], expected_quantity=2, occurrence_ids=("10/2", "10/3")
+        )
+        mapping = replace(mapping, rows=tuple(mappings))
+        receiver = next(
+            item for item in graph["occurrences"] if item["occurrence_id"] == "10/1"
+        )
+        receiver["bounds_root"] = {
+            "status": "available",
+            "min": [-5.0, -5.0, -1.0],
+            "max": [5.0, 5.0, 1.0],
+        }
+        first = next(
+            item for item in graph["occurrences"] if item["occurrence_id"] == "10/2"
+        )
+        first["bounds_root"] = {
+            "status": "available",
+            "min": [-1.0, -1.0, 9.0],
+            "max": [1.0, 1.0, 11.0],
+        }
+        first["physical_anchor_root"] = [0.0, 0.0, 10.0]
+        graph["occurrences"].append(
+            {
+                "occurrence_id": "10/3",
+                "parent_occurrence": "10",
+                "part_no": "bolt.prt",
+                "transform": transform(0, 0, -10),
+                "physical_anchor_root": [0.0, 0.0, -10.0],
+                "bounds_root": {
+                    "status": "available",
+                    "min": [-1.0, -1.0, -11.0],
+                    "max": [1.0, 1.0, -9.0],
+                },
+            }
+        )
+        for edge in graph["constraints"]:
+            if edge["id"] == "10-2-insert":
+                edge["assembly_reference"]["geometry"]["point_root"] = [0.0, 0.0, 100.0]
+                edge["component_reference"]["geometry"]["point_root"] = [0.0, 0.0, 10.0]
+        second = constraint(
+            "10-3-insert", "10/3", "10/1", [0, 0, 1], [0, 0, 100]
+        )
+        second["component_reference"]["geometry"]["point_root"] = [0.0, 0.0, -10.0]
+        graph["constraints"].append(second)
+
+        plan = compile_formal_render_plan(bom, draft, mapping, graph)
+        bolt_steps = [step for step in plan.steps if step.source_bom_rows == (5,)]
+
+        self.assertEqual(len(bolt_steps), 2)
+        self.assertEqual(
+            {math.copysign(1.0, step.translation_vector_root[2]) for step in bolt_steps},
+            {-1.0, 1.0},
+        )
+
+    def test_long_bridge_switches_from_axial_to_clear_lateral_translation(self) -> None:
+        bom, draft, mapping, graph = fixture()
+        receiver = next(
+            item for item in graph["occurrences"] if item["occurrence_id"] == "10/1"
+        )
+        moving = next(
+            item for item in graph["occurrences"] if item["occurrence_id"] == "10/2"
+        )
+        receiver["bounds_root"] = {
+            "status": "available",
+            "min": [-8.0, -220.0, -20.0],
+            "max": [8.0, 220.0, 0.0],
+        }
+        moving["bounds_root"] = {
+            "status": "available",
+            "min": [-1.0, -165.0, -1.0],
+            "max": [1.0, 165.0, 1.0],
+        }
+        moving["physical_anchor_root"] = [0.0, 160.0, 0.0]
+        edge = next(
+            item for item in graph["constraints"] if item["id"] == "10-2-insert"
+        )
+        edge["assembly_reference"]["geometry"] = {
+            "status": "available",
+            "direction_root": [0.0, 1.0, 0.0],
+            "point_root": [0.0, 160.0, 0.0],
+        }
+        edge["component_reference"]["geometry"] = {
+            "status": "available",
+            "direction_root": [0.0, 1.0, 0.0],
+            "point_root": [0.0, 160.0, 0.0],
+        }
+
+        plan = compile_formal_render_plan(bom, draft, mapping, graph)
+        child_step = next(step for step in plan.steps if step.source_bom_rows == (5,))
+
+        self.assertAlmostEqual(child_step.translation_vector_root[1], 0.0)
+        self.assertGreater(child_step.translation_vector_root[2], 0.0)
+
+    def test_severely_overlapping_normal_uses_contact_backed_lateral_axis(self) -> None:
+        bom, draft, mapping, graph = fixture()
+        far = next(
+            item for item in graph["occurrences"] if item["occurrence_id"] == "20"
+        )
+        far["transform"] = transform(2000.0, 0.0, 0.0)
+        receiver = next(
+            item for item in graph["occurrences"] if item["occurrence_id"] == "10/1"
+        )
+        moving = next(
+            item for item in graph["occurrences"] if item["occurrence_id"] == "10/2"
+        )
+        receiver["bounds_root"] = {
+            "status": "available",
+            "min": [-40.0, -20.0, -220.0],
+            "max": [40.0, 20.0, 220.0],
+        }
+        moving["bounds_root"] = {
+            "status": "available",
+            "min": [-33.0, -16.5, -7.5],
+            "max": [33.0, 16.5, 7.5],
+        }
+        moving["physical_anchor_root"] = [0.0, -16.0, 0.0]
+        edge = next(
+            item for item in graph["constraints"] if item["id"] == "10-2-insert"
+        )
+        edge["assembly_reference"]["geometry"] = {
+            "status": "available",
+            "direction_root": [0.0, 0.0, 1.0],
+            "point_root": [0.0, 0.0, 0.0],
+        }
+        edge["component_reference"]["geometry"] = {
+            "status": "available",
+            "direction_root": [0.0, 0.0, 1.0],
+            "point_root": [0.0, -16.0, 0.0],
+        }
+
+        plan = compile_formal_render_plan(bom, draft, mapping, graph)
+        child_step = next(step for step in plan.steps if step.source_bom_rows == (5,))
+
+        self.assertGreater(child_step.translation_vector_root[1], 0.0)
+        self.assertAlmostEqual(child_step.translation_vector_root[2], 0.0)
+
+    def test_prefers_constraint_with_physical_anchor_over_higher_rank_datum(self) -> None:
+        bom, draft, mapping, graph = fixture()
+        moving = next(
+            item for item in graph["occurrences"] if item["occurrence_id"] == "10/2"
+        )
+        moving["bounds_root"] = {
+            "status": "available",
+            "source": "solid_geom_outline/v1",
+            "min": [-1.0, -1.0, 9.0],
+            "max": [1.0, 1.0, 11.0],
+        }
+        insert = next(
+            item for item in graph["constraints"] if item["id"] == "10-2-insert"
+        )
+        insert["component_reference"]["geometry"]["point_root"] = [0.0, 0.0, -100.0]
+        mate = constraint("10-2-mate", "10/2", "10/1", [0, 0, 1], [0, 0, 0], "MATE")
+        mate["component_reference"]["geometry"] = dict(
+            mate["component_reference"]["geometry"]
+        )
+        mate["component_reference"]["geometry"]["point_root"] = [0.0, 0.0, 10.0]
+        graph["constraints"].append(mate)
+
+        plan = compile_formal_render_plan(bom, draft, mapping, graph)
+        child_step = next(step for step in plan.steps if step.source_bom_rows == (5,))
+
+        self.assertEqual(child_step.status, "ready")
+        self.assertEqual(child_step.constraint_ids, ("10-2-mate",))
+        self.assertEqual(child_step.arrow_anchors[0].complete_point_root, (0.0, 0.0, 10.0))
 
     def test_parent_occurrence_uses_descendant_reference_anchor(self) -> None:
         bom, draft, mapping, graph = fixture()
@@ -363,19 +634,15 @@ class FormalRenderPlannerTests(unittest.TestCase):
             untouched,
         )
 
-    def test_uncertain_scope_uses_bounded_recommendation_and_round_trips(self) -> None:
+    def test_uncertain_scope_requires_an_explicit_bounded_choice(self) -> None:
         bom, draft, mapping, graph = fixture()
         plan = compile_formal_render_plan(bom, draft, mapping, graph)
 
-        locked = lock_formal_render_plan(
-            plan,
-            {"subassembly-scope-0006": "不确定，按推荐方案生成"},
-            {"subassembly-scope-0006": "whole"},
-        )
-        restored = formal_render_plan_from_dict(asdict(locked))
-
-        self.assertEqual(locked.scope_decisions["subassembly-scope-0006"], "whole")
-        self.assertEqual(restored, locked)
+        with self.assertRaisesRegex(ValueError, "无法识别子装配范围答案"):
+            lock_formal_render_plan(
+                plan,
+                {"subassembly-scope-0006": "不确定"},
+            )
 
     def test_lock_requires_every_scope_answer(self) -> None:
         bom, draft, mapping, graph = fixture()
@@ -433,7 +700,7 @@ class FormalRenderPlannerTests(unittest.TestCase):
                 "schema_version": "native-selected-fit/v1",
                 "command": "ProCmdZoomIntoOutline",
                 "selection_scope": "moving_and_receiver_occurrences/v1",
-                "zoom_to_selected_level": 0.42,
+                "zoom_to_selected_level": 0.75,
                 "level_policy": "fixed_native_selection_margin/v1",
                 "max_commands_per_render": 1,
                 "absolute_pan_zoom_forbidden": True,
@@ -483,6 +750,16 @@ class FormalRenderPlannerTests(unittest.TestCase):
                 "min": [origin[index] - 5.0 for index in range(3)],
                 "max": [origin[index] + 5.0 for index in range(3)],
             }
+        origins = {
+            node["occurrence_id"]: node["transform"]["origin"]
+            for node in graph["occurrences"]
+        }
+        for edge in graph["constraints"]:
+            reference = edge.get("component_reference")
+            occurrence = reference.get("occurrence_id") if reference else None
+            if occurrence in origins and reference["geometry"].get("status") == "available":
+                reference["geometry"] = dict(reference["geometry"])
+                reference["geometry"]["point_root"] = origins[occurrence]
         plan = compile_formal_render_plan(bom, draft, mapping, graph)
         locked = lock_formal_render_plan(
             plan,

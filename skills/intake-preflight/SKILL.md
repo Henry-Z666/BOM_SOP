@@ -1,6 +1,6 @@
 ---
 name: intake-preflight
-description: Validate the two user inputs and local Creo, Excel, J-Link, storage, and DashScope configuration before a Qwen Creo SOP run starts.
+description: Validate the two user inputs and local Creo, Excel, J-Link, and storage configuration before a deterministic Creo SOP run starts.
 ---
 
 # Intake preflight

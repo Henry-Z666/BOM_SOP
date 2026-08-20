@@ -3,7 +3,6 @@ from __future__ import annotations
 from concurrent.futures import Future
 import os
 import unittest
-from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -97,16 +96,11 @@ class DesktopResolutionFlowTests(unittest.TestCase):
         finally:
             window.close()
 
-    def test_default_quick_prompts_only_include_bounded_view_change(self) -> None:
+    def test_default_quick_prompts_do_not_offer_camera_override(self) -> None:
         window = MainWindow(_PendingResolutionService())  # type: ignore[arg-type]
 
         try:
-            self.assertIn("flip-view", window.quick_prompt_buttons)
-            self.assertEqual(set(window.quick_prompt_buttons), {"flip-view"})
-            self.assertEqual(
-                window.quick_prompt_buttons["flip-view"].text(),
-                "翻转视角",
-            )
+            self.assertEqual(window.quick_prompt_buttons, {})
         finally:
             window.close()
 
@@ -209,26 +203,6 @@ class DesktopResolutionFlowTests(unittest.TestCase):
         self.assertIn("已重渲染修订视角", joined)
         self.assertIn("回退相机参数", joined)
         self.assertIn("已保留上一张有效图片", joined)
-
-    def test_saved_dashscope_key_is_activated_when_application_opens(self) -> None:
-        service = _PendingResolutionService()
-        with (
-            patch(
-                "sop_pipeline.desktop.app.load_dashscope_key",
-                return_value="sk-saved-once",
-            ),
-            patch.dict(os.environ, {"DASHSCOPE_API_KEY": ""}),
-        ):
-            window = MainWindow(service)  # type: ignore[arg-type]
-            try:
-                self.assertEqual(
-                    os.environ["DASHSCOPE_API_KEY"],
-                    "sk-saved-once",
-                )
-                self.assertIn("已安全保存", window.dashscope_status.text())
-            finally:
-                window.close()
-
 
 if __name__ == "__main__":
     unittest.main()

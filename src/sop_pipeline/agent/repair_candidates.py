@@ -60,31 +60,8 @@ class BoundedRepairPlanner:
                     {"arrow_layout": "audited_merge"},
                 ),
             )
-        if failures & {"SUBJECT_TOO_SMALL", "ARROW_TOO_SMALL"}:
-            return self._group(
-                step_id,
-                "zoom",
-                ({"zoom": 1.5}, {"zoom": 2.1}),
-            )
-        if failures & {
-            "SUBJECT_NOT_DETECTED",
-            "SUBJECT_TOO_LARGE",
-            "SUBJECT_CLIPPED",
-            "EXCESSIVE_CONTEXT_CLIPPING",
-            "ARROW_NOT_VISIBLE",
-            "ARROW_CLIPPED",
-        }:
-            return self._group(
-                step_id,
-                "zoom",
-                ({"zoom": 0.85}, {"zoom": 0.8}),
-            )
-        if failures & {"IMAGE_DIMENSIONS_MISMATCH", "IMAGE_INVALID"}:
-            return self._group(
-                step_id,
-                "framing",
-                ({"framing": "center"}, {"framing": "fit_square"}),
-            )
+        # Camera, framing and scale are frozen by the root-coordinate render plan.
+        # Presentation warnings therefore never create an alternate render.
         return ()
 
     @staticmethod

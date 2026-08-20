@@ -16,7 +16,7 @@ from .models import (
 
 
 class LocalAnalysisWorkflow:
-    """Deterministic two-input analysis used before Qwen phrasing and Creo discovery."""
+    """Deterministic two-input analysis used before Creo discovery."""
 
     def analyze(self, run: RunRecord) -> AnalysisResult:
         bom = normalize_bom(run.bom_file)

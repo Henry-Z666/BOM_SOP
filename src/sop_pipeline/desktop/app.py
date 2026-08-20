@@ -37,11 +37,6 @@ from .quick_prompts import (
     DEFAULT_QUICK_PROMPT_PROVIDER,
     QuickPromptProvider,
 )
-from .secret_store import (
-    load_dashscope_key,
-    save_dashscope_key,
-    select_dashscope_key,
-)
 from .service import DesktopAgentService
 
 
@@ -115,13 +110,7 @@ class MainWindow(QMainWindow):
         self.quick_prompt_provider = (
             quick_prompt_provider or DEFAULT_QUICK_PROMPT_PROVIDER
         )
-        self.settings = QSettings("QwenCreoSopAgent", "QwenCreoSopAgent")
-        self.saved_dashscope_key = load_dashscope_key(self.settings)
-        if self.saved_dashscope_key:
-            # Resume/history actions can launch a worker without visiting the
-            # new-analysis path. Activate the persisted key as soon as the
-            # application starts so every child Agent process inherits it.
-            os.environ["DASHSCOPE_API_KEY"] = self.saved_dashscope_key
+        self.settings = QSettings("CreoSopAgent", "CreoSopAgent")
         self.current_run_id: str | None = None
         self.progress_started_at = ""
         self.operation_active = False
@@ -132,7 +121,7 @@ class MainWindow(QMainWindow):
         self.progress_timer = QTimer(self)
         self.progress_timer.setInterval(750)
         self.progress_timer.timeout.connect(self._refresh_progress)
-        self.setWindowTitle("Qwen Creo SOP Agent")
+        self.setWindowTitle("Creo SOP Agent")
         self.resize(920, 680)
         self.setAcceptDrops(True)
 
@@ -174,18 +163,6 @@ class MainWindow(QMainWindow):
             )
         )
         self.excel_path = QLineEdit(self.settings.value("excel_path", ""))
-        self.dashscope_key = QLineEdit()
-        self.dashscope_key.setEchoMode(QLineEdit.Password)
-        self.dashscope_key.setPlaceholderText(
-            "已安全保存，留空继续使用；输入新 Key 可替换"
-            if self.saved_dashscope_key
-            else "首次输入后安全保存；也可读取 DASHSCOPE_API_KEY"
-        )
-        self.dashscope_status = QLabel(
-            "已安全保存，重启后会自动使用，无需重新输入"
-            if self.saved_dashscope_key
-            else "尚未保存；首次成功提交后将自动安全保存"
-        )
         setup_form.addRow("Creo 安装目录", self.creo_path)
         setup_form.addRow("Creo 许可证文件", self.license_path)
         setup_form.addRow("J-Link", QLabel("随 Agent 提供，通过已安装 Creo 的官方接口运行"))
@@ -232,18 +209,11 @@ class MainWindow(QMainWindow):
         cad_row.addWidget(choose_cad)
         form.addRow("BOM", bom_row)
         form.addRow("CAD 文件夹", cad_row)
-        self.dashscope_key_label = QLabel(
-            "DashScope Key（已配置）"
-            if self.saved_dashscope_key
-            else "DashScope Key（首次配置）"
-        )
-        form.addRow(self.dashscope_key_label, self.dashscope_key)
-        form.addRow("Key 状态", self.dashscope_status)
         self.experience_mode = QCheckBox(
-            "体验模式：离线语义复核（默认仍生成全部步骤）"
+            "开发验收模式：使用轻量工作簿校验器（默认仍生成全部步骤）"
         )
         self.experience_mode.setChecked(
-            os.environ.get("QWEN_CREO_EXPERIENCE_MODE") == "1"
+            os.environ.get("CREO_SOP_EXPERIENCE_MODE") == "1"
         )
         form.addRow("开发验收", self.experience_mode)
         layout.addWidget(inputs)
@@ -433,41 +403,15 @@ class MainWindow(QMainWindow):
         if not creo_path or not license_path:
             self._show_error("首次使用请填写 Creo 安装目录和许可证文件。")
             return
-        dashscope_key, persist_dashscope_key = select_dashscope_key(
-            self.dashscope_key.text(),
-            self.saved_dashscope_key,
-            os.environ.get("DASHSCOPE_API_KEY", ""),
-        )
-        if not dashscope_key and not self.experience_mode.isChecked():
-            self._show_error("首次使用请填写 DashScope Key，用于 Qwen 工艺理解和图片复核。")
-            return
         self.settings.setValue("creo_path", self.creo_path.text().strip())
         self.settings.setValue("license_path", self.license_path.text().strip())
         self.settings.setValue("excel_path", self.excel_path.text().strip())
-        if dashscope_key and persist_dashscope_key:
-            try:
-                save_dashscope_key(self.settings, dashscope_key)
-                self.settings.sync()
-            except OSError as error:
-                self._show_error(f"无法安全保存 DashScope Key：{error}")
-                return
-            self.saved_dashscope_key = dashscope_key
-            self.dashscope_key.clear()
-            self.dashscope_key.setPlaceholderText(
-                "已安全保存，留空继续使用；输入新 Key 可替换"
-            )
-            self.dashscope_key_label.setText("DashScope Key（已配置）")
-            self.dashscope_status.setText(
-                "已安全保存，重启后会自动使用，无需重新输入"
-            )
-        os.environ["QWEN_CREO_LOADPOINT"] = creo_path
-        os.environ["QWEN_CREO_LICENSE_FILE"] = license_path
-        if dashscope_key:
-            os.environ["DASHSCOPE_API_KEY"] = dashscope_key
+        os.environ["CREO_SOP_LOADPOINT"] = creo_path
+        os.environ["CREO_SOP_LICENSE_FILE"] = license_path
         if self.experience_mode.isChecked():
-            os.environ["QWEN_CREO_EXPERIENCE_MODE"] = "1"
+            os.environ["CREO_SOP_EXPERIENCE_MODE"] = "1"
         else:
-            os.environ.pop("QWEN_CREO_EXPERIENCE_MODE", None)
+            os.environ.pop("CREO_SOP_EXPERIENCE_MODE", None)
         self.progress_title.setText("正在理解 BOM 与 CAD")
         self.progress_bar.setValue(0)
         self.progress_previous_page = self.input_page
@@ -866,7 +810,7 @@ class MainWindow(QMainWindow):
             )
             self.instruct_button.setEnabled(bool(entry.get("step_id")))
             self.review_guidance.setText("当前步骤处理失败，可修改选择或说明后重试。")
-        QMessageBox.critical(self, "Qwen Creo SOP Agent", message)
+        QMessageBox.critical(self, "Creo SOP Agent", message)
 
     def _set_operation_active(self, active: bool) -> None:
         self.operation_active = active
@@ -919,13 +863,13 @@ def main() -> int:
         worker_args = [argument for argument in sys.argv[1:] if argument != "--agent-worker"]
         return worker_main(worker_args)
     app = QApplication(sys.argv)
-    app.setApplicationName("Qwen Creo SOP Agent")
-    workspace_override = os.environ.get("QWEN_CREO_AGENT_WORKSPACE", "").strip()
+    app.setApplicationName("Creo SOP Agent")
+    workspace_override = os.environ.get("CREO_SOP_AGENT_WORKSPACE", "").strip()
     if workspace_override:
         workspace = Path(workspace_override).expanduser().resolve()
     else:
         local_data = Path(os.environ.get("LOCALAPPDATA", Path.home()))
-        workspace = local_data / "QwenCreoSopAgent"
+        workspace = local_data / "CreoSopAgent"
     service = DesktopAgentService(SubprocessAgentBackend(workspace))
     window = MainWindow(service)
     window.show()
@@ -934,7 +878,7 @@ def main() -> int:
 
 def _runtime_config_defaults() -> dict[str, str]:
     defaults = {"creo_loadpoint": "", "license_file": ""}
-    config_path = os.environ.get("QWEN_CREO_RUNTIME_CONFIG", "").strip()
+    config_path = os.environ.get("CREO_SOP_RUNTIME_CONFIG", "").strip()
     if not config_path:
         return defaults
     try:

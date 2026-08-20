@@ -24,5 +24,5 @@ foreach ($className in $requiredClasses) {
 & $PythonCommand -m PyInstaller --noconfirm --clean `
   --distpath ([System.IO.Path]::GetFullPath($DistPath)) `
   --workpath ([System.IO.Path]::GetFullPath($WorkPath)) `
-  (Join-Path $PSScriptRoot 'QwenCreoSopAgent.spec')
+  (Join-Path $PSScriptRoot 'CreoSopAgent.spec')
 exit $LASTEXITCODE

@@ -1,7 +1,0 @@
-interface:
-  display_name: "Creo Assembly SOP Generator (Qwen)"
-  short_description: "Use Qwen model to orchestrate the Creo SOP pipeline via function calling"
-  default_prompt: "Use $generate-creo-assembly-sop to generate validated installation images and an SOP from a BOM and a final Creo assembly."
-  model_provider: "dashscope"
-  model_name: "qwen-max"
-  api_style: "dashscope-python-sdk"

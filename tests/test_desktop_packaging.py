@@ -7,12 +7,12 @@ import unittest
 class DesktopPackagingTests(unittest.TestCase):
     def test_desktop_entrypoint_and_pyinstaller_spec_exist(self) -> None:
         pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
-        spec = Path("packaging/QwenCreoSopAgent.spec").read_text(encoding="utf-8")
+        spec = Path("packaging/CreoSopAgent.spec").read_text(encoding="utf-8")
         build_script = Path("packaging/build.ps1").read_text(encoding="utf-8")
         entrypoint = Path("packaging/entrypoint.py").read_text(encoding="utf-8")
         app = Path("src/sop_pipeline/desktop/app.py").read_text(encoding="utf-8")
 
-        self.assertIn("qwen-creo-sop-agent", pyproject)
+        self.assertIn("creo-sop-agent", pyproject)
         self.assertIn("PySide6", pyproject)
         self.assertIn('excludes=["openai"]', spec)
         self.assertIn('"sop-template.xlsx"', spec)
@@ -29,7 +29,6 @@ class DesktopPackagingTests(unittest.TestCase):
         self.assertIn("NativeArrowWorker.class", build_script)
         self.assertIn("sop_pipeline.desktop.app", entrypoint)
         self.assertNotIn("creo_worker", app)
-        self.assertNotIn("qwen_adapter", app)
         self.assertIn("--agent-worker", app)
         self.assertIn("返回上一步", app)
         self.assertIn("后台任务运行中；请先暂停", app)

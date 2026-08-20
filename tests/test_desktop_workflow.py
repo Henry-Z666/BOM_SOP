@@ -9,46 +9,11 @@ from openpyxl import load_workbook
 
 from sop_pipeline.agent import AgentCore, DesktopWorkflow, RunStatus
 from sop_pipeline.agent.creo_discovery import StaticCreoDiscovery
-from sop_pipeline.agent.desktop_workflow import _scope_recommendations
-from sop_pipeline.agent.formal_render_planner import compile_formal_render_plan
-from sop_pipeline.agent.qwen_adapter import PlanChoiceRecommendation
 from tests.test_agent_analysis import _xlsx
-from tests.test_formal_render_planner import fixture as planning_fixture
 from tests.test_pipeline_orchestrator import _fixture as pipeline_fixture
 
 
 class DesktopWorkflowTests(unittest.TestCase):
-    def test_qwen_scope_recommendation_is_stable_from_local_fingerprint_cache(self) -> None:
-        class CountingAdvisor:
-            def __init__(self) -> None:
-                self.calls = 0
-
-            def recommend_plan_choices(self, items):
-                self.calls += 1
-                return tuple(
-                    PlanChoiceRecommendation(
-                        str(item["decision_id"]), "whole", "作为已完成合件安装"
-                    )
-                    for item in items
-                )
-
-        bom, draft, mapping, graph = planning_fixture()
-        plan = compile_formal_render_plan(bom, draft, mapping, graph)
-        advisor = CountingAdvisor()
-        with tempfile.TemporaryDirectory() as folder:
-            cache = Path(folder)
-            first, first_status = _scope_recommendations(
-                advisor, bom, draft, plan, cache_directory=cache
-            )
-            second, second_status = _scope_recommendations(
-                advisor, bom, draft, plan, cache_directory=cache
-            )
-
-        self.assertEqual(first, second)
-        self.assertEqual(advisor.calls, 1)
-        self.assertEqual(first_status, "passed")
-        self.assertEqual(second_status, "cached")
-
     def test_real_discovery_facts_are_registered_before_confirmation(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

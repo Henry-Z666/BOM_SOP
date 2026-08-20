@@ -12,6 +12,7 @@ import com.ptc.pfc.pfcSolid.*;
 import com.ptc.pfc.pfcSelect.*;
 
 import java.io.*;
+import java.util.*;
 
 /** Fact-only, asynchronous Creo Java Free OTK assembly extractor. */
 public final class AutoCadDiscovery {
@@ -97,6 +98,17 @@ public final class AutoCadDiscovery {
       {high.get(0), high.get(1), high.get(2)}
     };
   }
+  private static boolean pointWithinLocalOutline(Solid solid, Point3D candidate) throws jxthrowable {
+    double[][] outline = localOutline(solid);
+    if (outline == null || candidate == null) return false;
+    double dx = outline[1][0] - outline[0][0];
+    double dy = outline[1][1] - outline[0][1];
+    double dz = outline[1][2] - outline[0][2];
+    double tolerance = Math.max(1.0e-5, Math.sqrt(dx*dx + dy*dy + dz*dz) * 1.0e-6);
+    for (int i = 0; i < 3; i++)
+      if (candidate.get(i) < outline[0][i] - tolerance || candidate.get(i) > outline[1][i] + tolerance) return false;
+    return true;
+  }
   private static String rootBounds(double[][] local, double[][] toRoot) {
     if (local == null) return "{\"status\":\"unavailable\"}";
     double[] low = new double[]{Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY};
@@ -129,6 +141,56 @@ public final class AutoCadDiscovery {
     for (int i = 0; i < 3; i++) sample.set(i, (low.get(i) + high.get(i)) / 2.0);
     return surface.EvalClosestPointOnSurface(sample);
   }
+  private static double[] physicalAnchor(Session session, Model model, double[][] toRoot) throws jxthrowable {
+    if (model instanceof Assembly) {
+      Features components = ((Assembly)model).ListFeaturesByType(Boolean.FALSE, FeatureType.FEATTYPE_COMPONENT);
+      List<ComponentFeat> ordered = new ArrayList<>();
+      for (int i = 0; components != null && i < components.getarraysize(); i++) ordered.add((ComponentFeat)components.get(i));
+      ordered.sort(Comparator.comparingInt(component -> {
+        try { return component.GetId(); }
+        catch (jxthrowable error) { throw new RuntimeException(error); }
+      }));
+      for (ComponentFeat component : ordered) {
+        try {
+          Model child = session.RetrieveModel(component.GetModelDescr());
+          double[] anchor = physicalAnchor(session, child, multiply(matrix(component.GetPosition()), toRoot));
+          if (anchor != null) return anchor;
+        } catch (Throwable ignored) {}
+      }
+      return null;
+    }
+    if (!(model instanceof Solid)) return null;
+    Solid solid = (Solid)model;
+    try {
+      SolidBody body = solid.GetDefaultBody(); Surfaces surfaces = body == null ? null : body.ListSurfaces();
+      List<Surface> ordered = new ArrayList<>();
+      for (int i = 0; surfaces != null && i < surfaces.getarraysize(); i++) ordered.add(surfaces.get(i));
+      ordered.sort(Comparator.comparingInt(surface -> {
+        try { return surface.GetId(); }
+        catch (jxthrowable error) { throw new RuntimeException(error); }
+      }));
+      for (Surface surface : ordered) {
+        try { return transformPoint(toRoot, surfaceAnchor(surface)); }
+        catch (Throwable ignored) {}
+      }
+    } catch (Throwable ignored) {}
+    try {
+      ModelItems surfaces = solid.ListItems(ModelItemType.ITEM_SURFACE);
+      List<Surface> ordered = new ArrayList<>();
+      for (int i = 0; surfaces != null && i < surfaces.getarraysize(); i++) ordered.add((Surface)surfaces.get(i));
+      ordered.sort(Comparator.comparingInt(surface -> {
+        try { return surface.GetId(); }
+        catch (jxthrowable error) { throw new RuntimeException(error); }
+      }));
+      for (Surface surface : ordered) {
+        try {
+          Point3D anchor = surfaceAnchor(surface);
+          if (pointWithinLocalOutline(solid, anchor)) return transformPoint(toRoot, anchor);
+        } catch (Throwable ignored) {}
+      }
+    } catch (Throwable ignored) {}
+    return null;
+  }
   private static String constraintType(ComponentConstraintType type) {
     int value = type.getValue();
     if (value == ComponentConstraintType._ASM_CONSTRAINT_MATE) return "MATE";
@@ -159,19 +221,21 @@ public final class AutoCadDiscovery {
       if (item instanceof Surface) { surface = (Surface)item; source = "surface"; }
       else if (item instanceof Axis) { surface = ((Axis)item).GetSurf(); source = "axis_surface"; }
       if (surface == null) return "{\"status\":\"unavailable\"}";
+      // Prefer a sampled point on the selected surface.  Some Creo datum or
+      // construction surfaces expose no finite XYZ extent; their coordinate
+      // origin is still a valid point on the receiver plane, but downstream
+      // arrow planning must separately prove a physical moving-solid anchor.
       Point3D anchor = null; Vector3D direction;
-      try { anchor = selection.GetPoint(); } catch (Throwable ignored) {}
+      try { anchor = surfaceAnchor(surface); } catch (Throwable ignored) {}
       if (surface instanceof TransformedSurface) {
         Transform3D surfaceCoordinates = ((TransformedSurface)surface).GetCoordSys();
         direction = surfaceCoordinates.GetZAxis();
         if (anchor == null) anchor = surfaceCoordinates.GetOrigin();
       } else {
-        if (anchor == null) anchor = surfaceAnchor(surface);
-        UVParams parameters = null; try { parameters = selection.GetParams(); } catch (Throwable ignored) {}
-        if (parameters == null) parameters = surface.EvalParameters(anchor);
+        if (anchor == null) throw new IllegalStateException("surface has no evaluable point");
+        UVParams parameters = surface.EvalParameters(anchor);
         direction = surface.Eval3DData(parameters).GetNormal();
       }
-      if (anchor == null) anchor = surfaceAnchor(surface);
       return "{\"status\":\"available\",\"source\":\"" + source + "\",\"point_root\":"
         + array(transformPoint(toRoot, anchor)) + ",\"direction_root\":" + array(transformVector(toRoot, direction)) + "}";
     } catch (Throwable unavailable) {
@@ -227,11 +291,14 @@ public final class AutoCadDiscovery {
       } catch (Throwable unavailableChild) {
         System.err.println("[DISCOVERY-TRACE] child_scan_skipped=" + path);
       }
+      double[] physicalAnchorRoot = null;
+      try { physicalAnchorRoot = physicalAnchor(session, child, componentToRoot); } catch (Throwable ignored) {}
       append(nodes, "{\"id\":\"" + esc(path) + "\",\"occurrence_id\":\"" + esc(path)
         + "\",\"component_path\":" + intArray(componentPath) + ",\"parent_occurrence\":\"" + esc(pathId(parentPath))
         + "\",\"feature_id\":" + component.GetId() + ",\"part_no\":\"" + esc(model.GetFileName())
         + "\",\"model_name\":\"" + esc(model.GetFullName()) + "\",\"transform\":" + transform(componentToRoot)
-        + ",\"bounds_root\":" + rootBounds(outline, componentToRoot) + "}");
+        + ",\"bounds_root\":" + rootBounds(outline, componentToRoot)
+        + ",\"physical_anchor_root\":" + (physicalAnchorRoot == null ? "null" : array(physicalAnchorRoot)) + "}");
       ComponentConstraints constraints = component.GetConstraints();
       for (int j = 0; constraints != null && j < constraints.getarraysize(); j++) {
         ComponentConstraint c = constraints.get(j);

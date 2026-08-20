@@ -100,7 +100,7 @@ class GatePolicyTests(unittest.TestCase):
         self.assertIn("未分类", policy.user_message)
         self.assertTrue(policy.suggested_action)
 
-    def test_direction_revision_relinks_both_fixed_cameras(self) -> None:
+    def test_direction_revision_locks_one_ranked_fixed_camera(self) -> None:
         contract = {
             "receiver_normal_root": [-1.0, 0.0, 0.0],
             "translation_vector_root": [-80.0, 0.0, 0.0],
@@ -130,13 +130,12 @@ class GatePolicyTests(unittest.TestCase):
             contract,
             presentation,
             revision_number=2,
-            preferred_camera_id="fixed_123",
         )
 
         self.assertEqual(contract["camera_id"], "fixed_456")
         self.assertEqual(
             [item["camera_id"] for item in presentation["variants"]],
-            ["fixed_456", "fixed_123"],
+            ["fixed_456"],
         )
         self.assertEqual(presentation["variants"][0]["zoom"], 1.2)
         self.assertEqual(presentation["variants"][0]["pan"], [0.1, -0.1])

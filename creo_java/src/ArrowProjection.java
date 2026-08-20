@@ -63,6 +63,13 @@ public final class ArrowProjection {
     return point(surface.EvalClosestPointOnSurface(point(sample)));
   }
 
+  private static boolean pointWithinOutline(Solid solid,double[] local) throws jxthrowable {
+    Outline3D outline=solid.GetGeomOutline(); double[] low=point(outline.get(0)),high=point(outline.get(1));
+    double diagonal=norm(sub(high,low)),tolerance=Math.max(1.0e-5,diagonal*1.0e-6);
+    for(int i=0;i<3;i++) if(local[i]<low[i]-tolerance||local[i]>high[i]+tolerance) return false;
+    return true;
+  }
+
   private static intseq appendPath(intseq prefix, int componentId) throws jxthrowable {
     intseq result=intseq.create();
     for(int i=0;i<prefix.getarraysize();i++) result.append(prefix.get(i));
@@ -72,18 +79,18 @@ public final class ArrowProjection {
   /** Adds deterministic anchors from one physical solid occurrence. */
   private static void collectSolidCandidates(Solid leaf,intseq path,String source,List<Candidate> candidates,int[] sampleFailures) throws jxthrowable {
     try {
-      ModelItems surfaces=leaf.ListItems(ModelItemType.ITEM_SURFACE);
+      SolidBody body=leaf.GetDefaultBody(); Surfaces surfaces=body==null?null:body.ListSurfaces();
       for(int i=0;surfaces!=null&&i<surfaces.getarraysize();i++){
-        Surface surface=(Surface)surfaces.get(i);
+        Surface surface=surfaces.get(i);
         try { candidates.add(new Candidate(surface.GetId(),source,surfaceAnchor(surface),path)); }
         catch(Throwable ignored) { sampleFailures[0]++; }
       }
     } catch(Throwable ignored) { sampleFailures[0]++; }
     if(!candidates.isEmpty()) return;
     try {
-      SolidBody body=leaf.GetDefaultBody(); Surfaces surfaces=body==null?null:body.ListSurfaces();
+      ModelItems surfaces=leaf.ListItems(ModelItemType.ITEM_SURFACE);
       for(int i=0;surfaces!=null&&i<surfaces.getarraysize();i++){
-        Surface surface=surfaces.get(i);
+        Surface surface=(Surface)surfaces.get(i);
         try { candidates.add(new Candidate(surface.GetId(),source.replace("model_","body_"),surfaceAnchor(surface),path)); }
         catch(Throwable ignored) { sampleFailures[0]++; }
       }
@@ -131,26 +138,25 @@ public final class ArrowProjection {
     if(preferredCompleteRoot!=null){
       if(preferredCompleteRoot.length!=3) throw new IllegalArgumentException("planned arrow anchor must have three coordinates");
       Transform3D inverse=pfcBase.Transform3D_Create(complete.GetMatrix()); inverse.Invert();
-      Candidate planned=new Candidate(-2,"planned_constraint_anchor",transform(inverse,preferredCompleteRoot),ids);
-      planned.completeRoot=preferredCompleteRoot.clone(); candidates.add(planned);
+      double[] plannedLocal=transform(inverse,preferredCompleteRoot);
+      if(pointWithinOutline(leaf,plannedLocal)) {
+        Candidate planned=new Candidate(-2,"planned_constraint_anchor",plannedLocal,ids);
+        planned.completeRoot=preferredCompleteRoot.clone(); candidates.add(planned);
+      } else {
+        System.err.println("[RENDER] planned_arrow_anchor_rejected occurrence="+pathId(ids)+" reason=outside_solid_outline");
+        if(leaf instanceof Assembly)
+          collectDescendantAnchor(session,(Assembly)leaf,ids,candidates,sampleFailures);
+        else collectSolidCandidates(leaf,ids,"model_surface_after_planned_rejection",candidates,sampleFailures);
+      }
     } else {
-      collectSolidCandidates(leaf,ids,"model_surface",candidates,sampleFailures);
-      if(candidates.isEmpty() && leaf instanceof Assembly)
+      if(leaf instanceof Assembly)
         collectDescendantAnchor(session,(Assembly)leaf,ids,candidates,sampleFailures);
+      else collectSolidCandidates(leaf,ids,"model_surface",candidates,sampleFailures);
     }
     candidates.sort(Comparator.comparingInt(c->c.surfaceId));
     List<Candidate> unique=new ArrayList<>();
     for(Candidate candidate:candidates){boolean duplicate=false;for(Candidate prior:unique)if(norm(sub(candidate.local,prior.local))<1e-5){duplicate=true;break;}if(!duplicate)unique.add(candidate);}
-    if(unique.isEmpty()) {
-      // Some lightweight/sealed vendor parts expose no evaluable surfaces
-      // through asynchronous J-Link.  Keep the arrow auditable and avoid
-      // guessing a screen pixel: the occurrence origin is a deterministic
-      // local CAD coordinate and is transformed through the exact same
-      // ComponentPath before and after the pure translation.  The audit makes
-      // this lower-confidence fallback explicit for later review.
-      unique.add(new Candidate(-1,"occurrence_origin_fallback",new double[]{0.0,0.0,0.0},ids));
-      System.err.println("[RENDER] arrow_anchor_fallback occurrence="+pathId(ids)+" source=occurrence_origin");
-    }
+    if(unique.isEmpty()) throw new IllegalStateException("no_physical_arrow_anchor occurrence="+pathId(ids));
     System.err.println("[RENDER] arrow_anchor_candidates occurrence="+pathId(ids)+" count="+unique.size()+" surface_sample_failures="+sampleFailures[0]);
     for(Candidate candidate:unique) if(candidate.completeRoot==null) candidate.completeRoot=transform(pfcAssembly.CreateComponentPath(root,candidate.anchorPath).GetTransform(true),candidate.local);
     return new MovingOccurrence(pathId(ids),ids,complete,unique);

@@ -7,7 +7,7 @@ The selected-fit contract must declare:
 ```text
 selection_scope = moving_and_receiver_occurrences/v1
 level_policy = fixed_native_selection_margin/v1
-zoom_to_selected_level = 0.42
+zoom_to_selected_level = 0.75
 max_commands_per_render = 1
 absolute_pan_zoom_forbidden = true
 ```

@@ -8,19 +8,6 @@ from pathlib import Path
 import tempfile
 
 from sop_pipeline.agent import AgentCore, PipelineOrchestrator, SkillStatus
-from sop_pipeline.agent.qwen_adapter import SemanticReview
-
-
-class _SmokeAdvisor:
-    """Offline semantic boundary for the real Creo/Agent structure smoke."""
-
-    def recommend_plan_choices(self, items):
-        del items
-        return ()
-
-    def review_render(self, image_file: Path, contract):
-        del image_file, contract
-        return SemanticReview(passed=True, issues=())
 
 
 def _hash_files(root: Path) -> dict[str, str]:
@@ -142,6 +129,28 @@ def main() -> int:
     parser.add_argument("--runtime-config", type=Path)
     parser.add_argument("--step-count", type=int, default=1)
     parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Run the complete confirmed plan through render, validation, and publication.",
+    )
+    parser.add_argument(
+        "--plan-only",
+        action="store_true",
+        help="Stop after compiling jobs and print execution-mode counts.",
+    )
+    parser.add_argument(
+        "--step-id",
+        help="Render one exact compiled step ID instead of selecting by position.",
+    )
+    parser.add_argument(
+        "--step-ids",
+        help="Render a comma-separated set of exact compiled step IDs.",
+    )
+    parser.add_argument(
+        "--main-process",
+        help="Limit target selection to one compiled main_process_id.",
+    )
+    parser.add_argument(
         "--selection",
         choices=("default", "scale-spread"),
         default="default",
@@ -152,13 +161,13 @@ def main() -> int:
         runtime_config = args.runtime_config.resolve()
         if not runtime_config.is_file():
             raise FileNotFoundError(runtime_config)
-        os.environ["QWEN_CREO_RUNTIME_CONFIG"] = str(runtime_config)
+        os.environ["CREO_SOP_RUNTIME_CONFIG"] = str(runtime_config)
 
     workspace = args.workspace or Path(
-        tempfile.mkdtemp(prefix="qwen-creo-agent-smoke-")
+        tempfile.mkdtemp(prefix="creo-sop-agent-smoke-")
     )
     before = _hash_files(args.cad)
-    workflow = PipelineOrchestrator(adapters={"qwen_advisor": _SmokeAdvisor()})
+    workflow = PipelineOrchestrator()
     core = AgentCore(workspace, workflow)
     run_id = core.create_run(args.bom, args.cad)
     packet = core.analyze(run_id)
@@ -171,6 +180,84 @@ def main() -> int:
     runtime = workflow.runtime
     if runtime is None:
         raise RuntimeError("Agent did not bind SkillRuntime")
+    if args.plan_only:
+        compiled = runtime.execute(
+            run_id,
+            "compile-render-jobs",
+            (f"plans/locked-render-plan-{revision.revision:04d}.json",),
+        )
+        if compiled.status is not SkillStatus.PASSED:
+            raise RuntimeError(f"render compilation failed: {compiled.diagnostics}")
+        jobs = runtime.artifacts.read_json(
+            core.get_run(run_id).workspace, compiled.artifacts[0].relative_path
+        )
+        mode_counts: dict[str, int] = {}
+        diagnostic_counts: dict[str, int] = {}
+        for task in jobs["tasks"]:
+            mode = str(task.get("payload", {}).get("execution_mode", ""))
+            mode_counts[mode] = mode_counts.get(mode, 0) + 1
+            for code in task.get("payload", {}).get("diagnostics", []):
+                diagnostic_counts[str(code)] = diagnostic_counts.get(str(code), 0) + 1
+        after = _hash_files(args.cad)
+        if before != after:
+            raise RuntimeError("source CAD hashes changed during planning run")
+        print(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "workspace": str(workspace),
+                    "execution_modes": mode_counts,
+                    "diagnostics": diagnostic_counts,
+                    "cad_files": len(before),
+                    "cad_unchanged": True,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    if args.full:
+        outcome = core.generate(run_id)
+        run_workspace = core.get_run(run_id).workspace
+        after = _hash_files(args.cad)
+        if before != after:
+            raise RuntimeError("source CAD hashes changed during full Agent run")
+        render_result = runtime.artifacts.read_json(
+            run_workspace, f"results/render-batch-{revision.revision:04d}.json"
+        )
+        publication = runtime.artifacts.read_json(
+            run_workspace, f"results/publication-{revision.revision:04d}.json"
+        )
+        delivery = Path(publication["delivery_directory"])
+        delivery_files = sorted(
+            path.relative_to(delivery).as_posix()
+            for path in delivery.rglob("*")
+            if path.is_file()
+        )
+        status_counts: dict[str, int] = {}
+        for step in outcome.steps:
+            status_counts[step.status.value] = status_counts.get(step.status.value, 0) + 1
+        print(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "workspace": str(workspace),
+                    "run_status": outcome.status.value,
+                    "step_statuses": status_counts,
+                    "render_metrics": render_result.get("metrics", {}),
+                    "rendered_images": len(list((run_workspace / "rendered").glob("*.jpg"))),
+                    "arrow_audits": len(list((run_workspace / "rendered").glob("*.arrow.json"))),
+                    "delivery": str(delivery),
+                    "publication_pending": publication["pending"],
+                    "delivery_files": delivery_files,
+                    "cad_files": len(before),
+                    "cad_unchanged": True,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
     compiled = runtime.execute(
         run_id,
         "compile-render-jobs",
@@ -180,11 +267,46 @@ def main() -> int:
         raise RuntimeError(f"render compilation failed: {compiled.diagnostics}")
     jobs_path = compiled.artifacts[0].relative_path
     jobs = runtime.artifacts.read_json(core.get_run(run_id).workspace, jobs_path)
-    targets = (
-        _select_scale_spread(jobs["tasks"], args.step_count)
-        if args.selection == "scale-spread"
-        else _select_targets(jobs["tasks"], args.step_count)
-    )
+    selection_pool = list(jobs["tasks"])
+    if args.main_process:
+        selection_pool = [
+            task
+            for task in selection_pool
+            if str(task.get("main_process_id")) == args.main_process
+        ]
+        if not selection_pool:
+            raise ValueError(f"unknown main process: {args.main_process}")
+    if args.step_id and args.step_ids:
+        raise ValueError("--step-id and --step-ids are mutually exclusive")
+    if args.step_id or args.step_ids:
+        requested_ids = (
+            [args.step_id]
+            if args.step_id
+            else [
+                value.strip()
+                for value in str(args.step_ids).split(",")
+                if value.strip()
+            ]
+        )
+        targets = [
+            task
+            for task in selection_pool
+            if str(task.get("step_id")) in requested_ids
+        ]
+        found_ids = {str(task.get("step_id")) for task in targets}
+        missing_ids = [value for value in requested_ids if value not in found_ids]
+        if missing_ids or len(targets) != len(requested_ids):
+            raise ValueError(
+                "unknown or duplicate step IDs: " + ", ".join(missing_ids)
+            )
+        target_order = {step_id: index for index, step_id in enumerate(requested_ids)}
+        targets.sort(key=lambda task: target_order[str(task.get("step_id"))])
+    else:
+        targets = (
+            _select_scale_spread(selection_pool, args.step_count)
+            if args.selection == "scale-spread"
+            else _select_targets(selection_pool, args.step_count)
+        )
     target_ids = [str(task["step_id"]) for task in targets]
     render_parameters = {
         "step_ids": target_ids,

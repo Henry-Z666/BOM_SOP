@@ -271,7 +271,7 @@ def _native_selected_fit_contract() -> dict[str, Any]:
         "schema_version": "native-selected-fit/v1",
         "command": "ProCmdZoomIntoOutline",
         "selection_scope": "moving_and_receiver_occurrences/v1",
-        "zoom_to_selected_level": 0.42,
+        "zoom_to_selected_level": 0.75,
         "level_policy": "fixed_native_selection_margin/v1",
         "max_commands_per_render": 1,
         "absolute_pan_zoom_forbidden": True,
