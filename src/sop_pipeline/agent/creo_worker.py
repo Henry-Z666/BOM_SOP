@@ -757,6 +757,7 @@ class AgentNativeCreoWorker:
                     target[0] + ratio * (focus_center[0] - target[0]),
                     target[1] + ratio * (focus_center[1] - target[1]),
                 )
+                response_at_zoom = _scale_screen_pan_response(response, ratio)
             else:
                 projected_center = project_lower_left_anchored_zoom_center(
                     current_center=focus_center,
@@ -764,11 +765,12 @@ class AgentNativeCreoWorker:
                     target_zoom=derived_zoom,
                     frame_pixels=(1600, 1600),
                 )
+                response_at_zoom = response
             derived_pan = _solve_pan(
                 target,
                 pan,
                 projected_center,
-                response,
+                response_at_zoom,
                 _effective_pan_bound(
                     float(task.payload["presentation"]["centering"]["max_abs_pan"]),
                     derived_zoom,
@@ -951,6 +953,10 @@ class AgentNativeCreoWorker:
         plan_directory = session.internal_directory / _safe_name(task.task_id)
         plan_directory.mkdir(parents=True, exist_ok=True)
         plan_path = plan_directory / f"render-plan-{_safe_name(label)}.json"
+        image_path = session.output_directory / f"{task.task_id}.jpg"
+        audit_path = session.output_directory / f"{task.task_id}.arrow.json"
+        retained_image = image_path.read_bytes() if image_path.is_file() else None
+        retained_audit = audit_path.read_bytes() if audit_path.is_file() else None
         payload = _write_transient_render_plan(
             plan_path,
             task,
@@ -970,11 +976,28 @@ class AgentNativeCreoWorker:
         if error is not None:
             return _batch_failure(error)
         report = self.validator.validate(
-            session.output_directory / f"{task.task_id}.jpg",
-            session.output_directory / f"{task.task_id}.arrow.json",
+            image_path,
+            audit_path,
             payload,
             variant_index=0,
         )
+        if (
+            retained_image is not None
+            and (
+                report.composition is None
+                or report.composition.center_pixel is None
+            )
+        ):
+            image_path.write_bytes(retained_image)
+            if retained_audit is not None:
+                audit_path.write_bytes(retained_audit)
+            retained_report = self.validator.validate(
+                image_path,
+                audit_path,
+                task.payload,
+                variant_index=0,
+            )
+            return _gate_attempt(image_path, retained_report.failures)
         if report.passed:
             _freeze_framing_profile(
                 session,
@@ -1344,6 +1367,23 @@ def _solve_pan(
         response=response,
         max_abs_pan=max_abs_pan,
     ).pan
+
+
+def _scale_screen_pan_response(
+    response: ScreenPanResponse,
+    zoom_ratio: float,
+) -> ScreenPanResponse:
+    """Project a measured PAN Jacobian to a native focused Zoom level."""
+
+    if not math.isfinite(zoom_ratio) or zoom_ratio <= 0.0:
+        raise ScreenCenteringError("Zoom ratio must be finite and positive")
+    x = tuple(value * zoom_ratio for value in response.pixels_per_pan_x)
+    y = tuple(value * zoom_ratio for value in response.pixels_per_pan_y)
+    return ScreenPanResponse(
+        pixels_per_pan_x=(x[0], x[1]),
+        pixels_per_pan_y=(y[0], y[1]),
+        determinant=response.determinant * zoom_ratio * zoom_ratio,
+    )
 
 
 def _screen_pan_response_key(

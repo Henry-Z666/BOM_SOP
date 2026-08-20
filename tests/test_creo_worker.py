@@ -17,10 +17,12 @@ from PIL import Image, ImageDraw
 from sop_pipeline.agent.creo_worker import (
     AgentNativeCreoWorker,
     _effective_pan_bound,
+    _scale_screen_pan_response,
     _screen_pan_response_key,
 )
 from sop_pipeline.agent.creo_worker import SubprocessCommandRunner
 from sop_pipeline.agent.render_scheduler import RenderPlan, RenderTask
+from sop_pipeline.agent.screen_centering import ScreenPanResponse
 
 
 def _windows_pid_is_running(pid: int) -> bool:
@@ -465,6 +467,19 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
             _screen_pan_response_key(payload, camera_id="fixed_123", zoom=1.0),
             _screen_pan_response_key(payload, camera_id="fixed_123", zoom=2.75),
         )
+
+    def test_native_zoom_scales_cached_pan_response(self) -> None:
+        response = ScreenPanResponse(
+            pixels_per_pan_x=(1000.0, 50.0),
+            pixels_per_pan_y=(100.0, -900.0),
+            determinant=-905000.0,
+        )
+
+        scaled = _scale_screen_pan_response(response, 3.0)
+
+        self.assertEqual(scaled.pixels_per_pan_x, (3000.0, 150.0))
+        self.assertEqual(scaled.pixels_per_pan_y, (300.0, -2700.0))
+        self.assertEqual(scaled.determinant, -8145000.0)
 
     def test_pan_response_cache_is_not_reused_across_scale_buckets(self) -> None:
         first = _scale_bucket_task(

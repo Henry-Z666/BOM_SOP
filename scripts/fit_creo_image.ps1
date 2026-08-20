@@ -35,9 +35,25 @@ try {
     $encoder = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object MimeType -eq 'image/jpeg' | Select-Object -First 1
     $quality = New-Object System.Drawing.Imaging.EncoderParameters(1)
     $quality.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]100)
-    $temporary = Join-Path (Split-Path -Parent $full) (([System.IO.Path]::GetFileNameWithoutExtension($full)) + '.fixed-' + [guid]::NewGuid().ToString('N') + '.jpg')
+    # Keep the temporary name short. Probe output directories are already deep,
+    # and GDI+ may surface a generic Save error when the full temporary path
+    # approaches the legacy Windows path limit.
+    $temporary = Join-Path (Split-Path -Parent $full) ('.f-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.jpg')
     try {
-      $bitmap.Save($temporary, $encoder, $quality)
+      $saved = $false
+      for ($saveAttempt = 1; $saveAttempt -le 3; $saveAttempt++) {
+        try {
+          $bitmap.Save($temporary, $encoder, $quality)
+          $saved = $true
+          break
+        }
+        catch {
+          Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+          if ($saveAttempt -eq 3) { throw }
+          Start-Sleep -Milliseconds (100 * $saveAttempt)
+        }
+      }
+      if (-not $saved) { throw "Unable to save fixed-frame JPEG: $full" }
     } finally { $quality.Dispose() }
   } finally { $bitmap.Dispose() }
 } finally { $source.Dispose() }
