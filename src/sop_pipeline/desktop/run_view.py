@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from math import isfinite, sqrt
 from pathlib import Path
 from typing import Any
 
@@ -135,6 +136,9 @@ def review_packet(workspace: Path, run_id: str) -> dict[str, Any]:
             "available_actions": review_contract["available_actions"],
             "guided_form": review_contract["guided_form"],
             "attempt_history": review_contract["attempt_history"],
+            "deterministic_facts": _deterministic_facts(
+                plan_contracts.get(step_id, {})
+            ),
         }
         selected_group = groups.get(step_id, {})
         group_candidates = (
@@ -190,8 +194,9 @@ def review_packet(workspace: Path, run_id: str) -> dict[str, Any]:
                     "recommended": True,
                     "image_path": str(image_path) if image_path else "",
                     **review_fields,
-                    "issues": issues or ["图片已通过基础几何硬门，等待人工确认。"],
-                    "label": f"{display_name} · 当前图片（可直接采用）",
+                    "issues": issues
+                    or ["图片已通过几何硬门；相机和爆炸向量均已锁定。"],
+                    "label": f"{display_name} · 已锁定图片（可直接采用）",
                 }
             )
             candidate_count += 1
@@ -213,7 +218,10 @@ def review_packet(workspace: Path, run_id: str) -> dict[str, Any]:
                     "image_path": override_path,
                     **review_fields,
                     "issues": issues
-                    or ["机器校验未通过；可修正重生成，或在确认风险后采用此原图。"],
+                    or [
+                        "机器校验未通过；有结构化事实表单时可确认后重生成，"
+                        "否则需修复 BOM/Creo 数据或知情采用原图。"
+                    ],
                     "label": f"{display_name} · 机器未通过（可人工审核原图）",
                 }
             )
@@ -261,7 +269,11 @@ def review_packet(workspace: Path, run_id: str) -> dict[str, Any]:
                 "recommended": False,
                 "image_path": str(image_path) if image_path else "",
                 **review_fields,
-                "issues": issues or ["本步骤没有可交付图片，需要按说明修正后重新生成。"],
+                "issues": issues
+                or [
+                    "本步骤没有可交付图片；需补齐 BOM/Creo 几何事实，"
+                    "自由文本不能创建坐标或相机。"
+                ],
                 "label": f"{display_name} · 待重新生成（占位图）",
             }
         )
@@ -270,13 +282,15 @@ def review_packet(workspace: Path, run_id: str) -> dict[str, Any]:
         message = "没有待处理步骤。"
     elif candidate_count:
         message = (
-            "请选择步骤查看完整证据。合格候选图可直接采用；机器未通过但已生成的"
-            "原图可在确认风险后人工采用，或填写关键信息重新生成。"
+            "请选择步骤查看已锁定的 Creo 几何、爆炸向量和固定相机。"
+            "合格图片可直接采用；机器未通过的原图可知情采用，"
+            "只有出现结构化轴符号表单时才允许重新生成。"
         )
     else:
         message = (
-            "本次没有候选图通过基础几何硬门。下方显示的是待重新生成步骤和占位图；"
-            "请选择步骤，查看原因后输入普通语言修正说明。"
+            "本次没有可采用的真实 Creo 图片。请选择步骤查看缺失事实；"
+            "需修复 BOM/Creo 映射或接收面证据，自由文本不能生成坐标、"
+            "切换相机或触发替代构图。"
         )
     return {
         "schema_version": "desktop-review-packet/v1",
@@ -313,6 +327,71 @@ def _review_diagnostics(step: dict[str, Any]) -> dict[str, Any]:
         ],
         "retained_image": str(step.get("retained_image") or ""),
     }
+
+
+def _deterministic_facts(step: dict[str, Any]) -> list[str]:
+    """Summarize locked geometry without granting the UI edit authority."""
+
+    if not isinstance(step, dict) or not step:
+        return []
+    facts: list[str] = []
+    camera_id = str(step.get("camera_id") or "").strip()
+    if camera_id:
+        facts.append(f"正式相机 {camera_id}（固定双视角中唯一锁定结果）")
+    normal = _finite_vector(step.get("receiver_normal_root"))
+    translation = _finite_vector(step.get("translation_vector_root"))
+    if normal is not None:
+        facts.append(f"Creo 接口法向 {_vector_label(normal)}")
+    if translation is not None:
+        facts.append(f"爆炸向量 {_vector_label(translation)}（纯平移）")
+    if normal is not None and translation is not None:
+        normal_length = _length(normal)
+        translation_length = _length(translation)
+        cosine = abs(
+            sum(left * right for left, right in zip(normal, translation))
+        ) / (normal_length * translation_length)
+        if cosine >= 0.999:
+            facts.append("展示模式：沿接口法向")
+        else:
+            facts.append("展示模式：接收面内侧向爆开，接口法向仍保留为装配真值")
+    moving_count = len(step.get("moving_occurrences", []))
+    receiver_count = len(step.get("receiver_occurrences", []))
+    if moving_count or receiver_count:
+        facts.append(f"活动 occurrence {moving_count} 个，接收 occurrence {receiver_count} 个")
+    if camera_id:
+        facts.append("渲染后禁止换相机、PAN、Zoom 或替代构图")
+    return facts
+
+
+def _finite_vector(value: object) -> tuple[float, float, float] | None:
+    try:
+        vector = tuple(float(item) for item in value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if len(vector) != 3 or not all(isfinite(item) for item in vector):
+        return None
+    if _length(vector) <= 1.0e-12:
+        return None
+    return vector
+
+
+def _length(value: tuple[float, float, float]) -> float:
+    return sqrt(sum(item * item for item in value))
+
+
+def _vector_label(value: tuple[float, float, float]) -> str:
+    length = _length(value)
+    unit = tuple(item / length for item in value)
+    dominant = max(range(3), key=lambda index: abs(unit[index]))
+    if all(
+        abs(unit[index]) <= 1.0e-6
+        for index in range(3)
+        if index != dominant
+    ):
+        sign = "+" if unit[dominant] >= 0.0 else "-"
+        return f"{sign}{'XYZ'[dominant]}（长度 {length:.3f}）"
+    values = ", ".join(f"{item:.4f}" for item in unit)
+    return f"根坐标单位向量 [{values}]（长度 {length:.3f}）"
 
 
 def _review_step_display_name(

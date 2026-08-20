@@ -179,6 +179,11 @@ class ProgressViewTests(unittest.TestCase):
                                 "step_id": "step-1",
                                 "title": "安装阀门",
                                 "source_bom_rows": [12],
+                                "camera_id": "fixed_456",
+                                "receiver_normal_root": [0.0, 0.0, 1.0],
+                                "translation_vector_root": [120.0, 0.0, 0.0],
+                                "moving_occurrences": [[1, 8]],
+                                "receiver_occurrences": [[1, 2]],
                             },
                             {
                                 "step_id": "step-2",
@@ -201,6 +206,12 @@ class ProgressViewTests(unittest.TestCase):
         self.assertIn("BOM 第 12 行", packet["items"][0]["label"])
         self.assertIn("安装阀门", packet["items"][0]["label"])
         self.assertTrue(packet["items"][0]["image_path"].endswith("step-1-candidate-1.png"))
+        facts = "；".join(packet["items"][0]["deterministic_facts"])
+        self.assertIn("fixed_456", facts)
+        self.assertIn("Creo 接口法向 +Z", facts)
+        self.assertIn("爆炸向量 +X", facts)
+        self.assertIn("接收面内侧向爆开", facts)
+        self.assertIn("禁止换相机", facts)
         self.assertEqual(packet["items"][1]["kind"], "placeholder")
         self.assertEqual(packet["items"][1]["step_number"], 2)
         self.assertIn("没有可交付图片", packet["items"][1]["issues"][0])
@@ -285,7 +296,8 @@ class ProgressViewTests(unittest.TestCase):
             packet = review_packet(workspace, "run-1")
 
         self.assertEqual(packet["candidate_count"], 0)
-        self.assertIn("没有候选图通过", packet["message"])
+        self.assertIn("没有可采用的真实 Creo 图片", packet["message"])
+        self.assertIn("自由文本不能生成坐标", packet["message"])
 
     def test_questioned_real_image_can_be_adopted_without_generated_variants(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

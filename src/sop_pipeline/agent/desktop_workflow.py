@@ -88,10 +88,10 @@ def _planning_questions(
                 category="CONFIRMATION",
                 question=(
                     "部分安装对象只有最终位置或 FIX 约束，无法从 CAD 证明接收面和离开方向。"
-                    "是否先保留为待确认候选并继续生成其他步骤？"
+                    "是否保留为待确认步骤，并继续生成其余有 Creo 证据的步骤？"
                 ),
-                options=("保留待确认候选并继续", "返回检查 CAD 约束"),
-                recommended_option="保留待确认候选并继续",
+                options=("保留待确认步骤并继续", "返回检查 CAD 约束"),
+                recommended_option="保留待确认步骤并继续",
                 evidence=(
                     "涉及 BOM 行：" + ", ".join(str(value) for value in rows[:20]),
                     "Agent 没有使用零件中心到总装中心的猜测向量。",

@@ -10,7 +10,7 @@ from uuid import uuid4
 
 SKILL_PROGRESS: dict[str, tuple[int, int, str]] = {
     "intake-preflight": (1, 5, "检查输入与运行环境"),
-    "normalize-bom": (5, 12, "理解 BOM 表格、层级与数量"),
+    "normalize-bom": (5, 12, "解析 BOM 表格、层级与数量"),
     "lock-assembly": (12, 18, "锁定最终总装与版本"),
     "discover-cad": (18, 30, "扫描 CAD 装配关系与约束"),
     "map-bom-cad": (30, 38, "映射 BOM 与 CAD 零部件"),
@@ -18,8 +18,8 @@ SKILL_PROGRESS: dict[str, tuple[int, int, str]] = {
     "clarify-plan": (45, 50, "整理确认项与确定性默认值"),
     "compile-render-jobs": (50, 55, "编译稳定的出图任务"),
     "render-batch": (55, 88, "Creo 正在生成步骤图片"),
-    "validate-repair": (88, 95, "检查图片并准备候选方案"),
-    "resolve-step": (50, 55, "理解修正意见并计算重做范围"),
+    "validate-repair": (88, 95, "检查结构化硬门与待确认事实"),
+    "resolve-step": (50, 55, "应用结构化事实确认并计算重做范围"),
     "publish-delivery": (95, 100, "生成 SOP 与交付目录"),
 }
 

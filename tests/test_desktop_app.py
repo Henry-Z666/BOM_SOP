@@ -101,6 +101,7 @@ class DesktopResolutionFlowTests(unittest.TestCase):
 
         try:
             self.assertEqual(window.quick_prompt_buttons, {})
+            self.assertTrue(window.quick_prompt_container.isHidden())
         finally:
             window.close()
 
@@ -124,7 +125,7 @@ class DesktopResolutionFlowTests(unittest.TestCase):
                             "name": "axis",
                             "label": "安装轴",
                             "type": "choice",
-                            "options": ["X", "Y", "Z"],
+                            "options": ["Z"],
                             "default": "Z",
                         },
                         {
@@ -148,19 +149,79 @@ class DesktopResolutionFlowTests(unittest.TestCase):
                 "该零件沿设备总装Z轴负方向装入",
             )
             self.assertNotIn("flip-view", window.quick_prompt_buttons)
-            self.assertEqual(window.choose_candidate_button.text(), "知情采用此原图")
+            self.assertEqual(
+                window.choose_candidate_button.text(),
+                "知情采用原图（保留机器失败）",
+            )
+            self.assertTrue(window.instruct_button.isEnabled())
         finally:
             window.close()
 
-    def test_review_instruction_explains_human_facing_identifiers(self) -> None:
+    def test_review_instruction_is_audit_only_and_cannot_override_cad(self) -> None:
         window = MainWindow(_PendingResolutionService())  # type: ignore[arg-type]
 
         try:
             guidance = window.review_instruction_help.text()
-            self.assertIn("无需重复步骤序号", guidance)
-            self.assertIn("部件名称", guidance)
-            self.assertIn("图号或物料编码", guidance)
-            self.assertIn("请勿填写系统内部 occurrence 编号", guidance)
+            self.assertIn("结构化正负号表单", guidance)
+            self.assertIn("必须修复 BOM/Creo 数据", guidance)
+            self.assertIn("不能用备注补造", guidance)
+            self.assertIn("仅记录", window.review_instruction_label.text())
+        finally:
+            window.close()
+
+    def test_missing_guided_geometry_disables_ineffective_rerender(self) -> None:
+        window = MainWindow(_PendingResolutionService())  # type: ignore[arg-type]
+        item = QListWidgetItem("缺少接收面")
+        item.setData(
+            Qt.UserRole,
+            {
+                "kind": "placeholder",
+                "step_id": "step-3",
+                "step_number": 3,
+                "error_code": "NO_NATIVE_RECEIVER_GEOMETRY",
+                "image_path": "",
+                "guided_form": None,
+                "deterministic_facts": [],
+            },
+        )
+
+        window._candidate_clicked(item)
+
+        try:
+            self.assertFalse(window.instruct_button.isEnabled())
+            self.assertEqual(
+                window.instruct_button.text(),
+                "需修复 BOM/Creo 事实后重试",
+            )
+            self.assertIn("尚未形成完整", window.review_contract.text())
+        finally:
+            window.close()
+
+    def test_review_displays_locked_camera_and_explosion_facts(self) -> None:
+        window = MainWindow(_PendingResolutionService())  # type: ignore[arg-type]
+        item = QListWidgetItem("已锁定结果")
+        item.setData(
+            Qt.UserRole,
+            {
+                "kind": "current",
+                "step_id": "step-4",
+                "step_number": 4,
+                "image_path": "",
+                "deterministic_facts": [
+                    "正式相机 fixed_456（固定双视角中唯一锁定结果）",
+                    "爆炸向量 +Y（长度 120.000）（纯平移）",
+                    "展示模式：接收面内侧向爆开，接口法向仍保留为装配真值",
+                ],
+            },
+        )
+
+        window._candidate_clicked(item)
+
+        try:
+            summary = window.review_contract.text()
+            self.assertIn("fixed_456", summary)
+            self.assertIn("+Y", summary)
+            self.assertIn("侧向爆开", summary)
         finally:
             window.close()
 

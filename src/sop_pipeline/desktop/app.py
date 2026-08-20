@@ -62,6 +62,13 @@ _CATEGORY_LABELS = {
 }
 
 
+_DETERMINISTIC_POLICY = (
+    "纯本地确定性流程：BOM 决定层级与顺序，最终 Creo 总装决定 occurrence、"
+    "接收面、爆炸方向和坐标。每步只锁定 fixed_123 / fixed_456 中的一台相机，"
+    "正式渲染后不会因图片审查切换视角、改 Zoom 或生成替代构图。"
+)
+
+
 def _actionable_review_details(entry: dict[str, object]) -> list[str]:
     details: list[str] = []
     category = str(entry.get("category") or "").strip()
@@ -145,7 +152,18 @@ class MainWindow(QMainWindow):
         title = QLabel("从 BOM 和 CAD 文件夹开始")
         title.setStyleSheet("font-size: 24px; font-weight: 600;")
         layout.addWidget(title)
-        layout.addWidget(QLabel("拖入 BOM，选择 CAD 文件夹。生成前只需确认一次。"))
+        subtitle = QLabel(
+            "拖入 BOM，选择 CAD 文件夹。全程不调用 AI 或网络语义服务。"
+        )
+        subtitle.setWordWrap(True)
+        layout.addWidget(subtitle)
+        policy = QLabel(_DETERMINISTIC_POLICY)
+        policy.setWordWrap(True)
+        policy.setStyleSheet(
+            "padding: 10px; border: 1px solid #356859; border-radius: 4px;"
+            "background: #173a33; color: #d7f5e8;"
+        )
+        layout.addWidget(policy)
 
         setup = QGroupBox("首次配置")
         self.setup_group = setup
@@ -244,6 +262,12 @@ class MainWindow(QMainWindow):
         heading = QLabel("生成前确认")
         heading.setStyleSheet("font-size: 22px; font-weight: 600;")
         layout.addWidget(heading)
+        confirm_policy = QLabel(
+            "此页只确认会改变 BOM 工艺范围或已测 Creo 轴正负号的事实。"
+            "相机、取景和 occurrence 不接受自由文本覆盖。"
+        )
+        confirm_policy.setWordWrap(True)
+        layout.addWidget(confirm_policy)
         self.confirm_summary = QLabel()
         self.confirm_summary.setWordWrap(True)
         layout.addWidget(self.confirm_summary)
@@ -287,7 +311,7 @@ class MainWindow(QMainWindow):
         pause = QPushButton("暂停（保留检查点）")
         pause.clicked.connect(self._pause)
         layout.addWidget(pause)
-        self.review_button = QPushButton("处理疑惑步骤")
+        self.review_button = QPushButton("处理待确认事实")
         self.review_button.setEnabled(False)
         self.review_button.clicked.connect(lambda: self.pages.setCurrentWidget(self.review_page))
         layout.addWidget(self.review_button)
@@ -297,7 +321,7 @@ class MainWindow(QMainWindow):
     def _build_review_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        heading = QLabel("处理待确认步骤")
+        heading = QLabel("复核确定性结果与待确认事实")
         heading.setStyleSheet("font-size: 22px; font-weight: 600;")
         layout.addWidget(heading)
         self.review_guidance = QLabel()
@@ -309,7 +333,7 @@ class MainWindow(QMainWindow):
         self.candidate_gallery.itemClicked.connect(self._candidate_clicked)
         body.addWidget(self.candidate_gallery, 1)
         preview_column = QVBoxLayout()
-        self.review_preview = QLabel("请选择左侧步骤或候选图")
+        self.review_preview = QLabel("请选择左侧待确认步骤")
         self.review_preview.setAlignment(Qt.AlignCenter)
         self.review_preview.setMinimumSize(480, 300)
         self.review_preview.setStyleSheet("border: 1px solid #666; background: #111;")
@@ -317,6 +341,12 @@ class MainWindow(QMainWindow):
         self.review_reason = QLabel("选中后显示检查结果。")
         self.review_reason.setWordWrap(True)
         preview_column.addWidget(self.review_reason)
+        self.review_contract = QLabel("选中后显示已锁定的 Creo 几何与相机事实。")
+        self.review_contract.setWordWrap(True)
+        self.review_contract.setStyleSheet(
+            "padding: 8px; border: 1px solid #356859; border-radius: 3px;"
+        )
+        preview_column.addWidget(self.review_contract)
         self.review_image_path = QLineEdit()
         self.review_image_path.setReadOnly(True)
         self.review_image_path.setPlaceholderText("选中后显示图片完整路径")
@@ -325,20 +355,20 @@ class MainWindow(QMainWindow):
         layout.addLayout(body, 1)
         self.review_instruction = QTextEdit()
         self.review_instruction.setPlaceholderText(
-            "自由文本仅作审核说明；坐标方向必须使用当前步骤提供的结构化表单。"
+            "可记录采用或退回原因；此处文字不会生成坐标、改 occurrence、切换相机或触发重构图。"
         )
         self.review_instruction.setMaximumHeight(100)
         self.review_instruction_label = QLabel(
-            "对当前步骤的审核说明"
+            "审核备注（仅记录，不改变几何或视角）"
         )
         layout.addWidget(self.review_instruction_label)
         self.review_instruction_help = QLabel(
-            "回复规范：当前选中步骤已自动绑定，无需重复步骤序号；"
-            "优先写部件名称，重名时补充图号或物料编码；"
-            "BOM 行号可用于排查，请勿填写系统内部 occurrence 编号。"
+            "当前步骤已自动绑定。安装方向只有在 Creo 已锁定轴时才显示结构化正负号表单；"
+            "缺少 occurrence、接收面或安装轴时必须修复 BOM/Creo 数据，不能用备注补造。"
         )
         self.review_instruction_help.setWordWrap(True)
         layout.addWidget(self.review_instruction_help)
+        layout.addWidget(self.review_instruction)
         self.guided_group = QGroupBox("只填写关键信息")
         self.guided_form_layout = QFormLayout(self.guided_group)
         self.guided_instruction = QLabel()
@@ -352,18 +382,19 @@ class MainWindow(QMainWindow):
         self.guided_widgets: dict[str, QWidget] = {}
         self.current_guided_form: dict[str, object] | None = None
         layout.addWidget(self.guided_group)
-        self.quick_prompt_layout = QHBoxLayout()
+        self.quick_prompt_container = QWidget()
+        self.quick_prompt_layout = QHBoxLayout(self.quick_prompt_container)
+        self.quick_prompt_layout.setContentsMargins(0, 0, 0, 0)
         self.quick_prompt_buttons: dict[str, QPushButton] = {}
-        layout.addLayout(self.quick_prompt_layout)
+        layout.addWidget(self.quick_prompt_container)
         self._refresh_quick_prompts()
-        layout.addWidget(self.review_instruction)
         actions = QHBoxLayout()
         back = QPushButton("返回上一步")
         back.clicked.connect(lambda: self.pages.setCurrentWidget(self.progress_page))
-        self.choose_candidate_button = QPushButton("采用选中的候选图")
+        self.choose_candidate_button = QPushButton("采用当前已锁定图片")
         self.choose_candidate_button.setEnabled(False)
         self.choose_candidate_button.clicked.connect(self._resolve_candidate)
-        self.instruct_button = QPushButton("按说明重新生成当前步骤")
+        self.instruct_button = QPushButton("等待结构化几何证据")
         self.instruct_button.setEnabled(False)
         self.instruct_button.clicked.connect(self._resolve_instruction)
         self.open_delivery_button = QPushButton("打开交付目录")
@@ -411,7 +442,7 @@ class MainWindow(QMainWindow):
             os.environ["CREO_SOP_EXPERIENCE_MODE"] = "1"
         else:
             os.environ.pop("CREO_SOP_EXPERIENCE_MODE", None)
-        self.progress_title.setText("正在理解 BOM 与 CAD")
+        self.progress_title.setText("正在解析 BOM 与 Creo 装配")
         self.progress_bar.setValue(0)
         self.progress_previous_page = self.input_page
         self._set_operation_active(True)
@@ -458,7 +489,9 @@ class MainWindow(QMainWindow):
             self.confirmation_boxes[item["item_id"]] = combo
             self.questions_layout.addWidget(card)
         if not self.confirmation_boxes:
-            self.questions_layout.addWidget(QLabel("未发现必须人工选择的歧义，可按推荐方案继续。"))
+            self.questions_layout.addWidget(
+                QLabel("未发现需要人工确认的事实，可直接锁定确定性计划并生成。")
+            )
         self.questions_layout.addStretch()
         self.pages.setCurrentWidget(self.confirm_page)
 
@@ -470,7 +503,9 @@ class MainWindow(QMainWindow):
             for item_id, combo in self.confirmation_boxes.items()
         }
         self.progress_title.setText("正在生成 SOP")
-        self.progress_detail.setText("单个步骤失败不会停止无关步骤。")
+        self.progress_detail.setText(
+            "每步先锁定爆炸向量与一台固定相机；渲染后不换视角、不改取景。"
+        )
         self.progress_previous_page = self.confirm_page
         self._set_operation_active(True)
         self.pages.setCurrentWidget(self.progress_page)
@@ -492,8 +527,10 @@ class MainWindow(QMainWindow):
             )
             self.review_button.setEnabled(False)
         else:
-            self.progress_title.setText("部分步骤需要确认")
-            self.progress_detail.setText("其他步骤已继续生成，请处理疑惑步骤。")
+            self.progress_title.setText("部分几何事实需要确认")
+            self.progress_detail.setText(
+                "其他无依赖步骤已继续；待确认项只能使用 Creo 证据或结构化轴符号处理。"
+            )
             self._load_candidate_gallery(outcome)
             self.review_button.setEnabled(True)
             self.pages.setCurrentWidget(self.review_page)
@@ -507,7 +544,7 @@ class MainWindow(QMainWindow):
         self._load_candidate_gallery(outcome)
         if outcome.get("status") == "COMPLETED":
             self.review_guidance.setText(
-                "全部疑惑步骤已处理完成，SOP 与步骤图片已更新。"
+                "全部待确认事实已处理完成，SOP 与步骤图片已更新。"
             )
         self.pages.setCurrentWidget(self.review_page)
 
@@ -536,6 +573,7 @@ class MainWindow(QMainWindow):
         else:
             self.review_preview.setText("没有待处理步骤")
             self.review_image_path.clear()
+            self.review_contract.setText("没有待确认的 Creo 几何或相机事实。")
             self.review_reason.setText("本任务没有可供选择或重新生成的步骤。")
 
     def _refresh_quick_prompts(
@@ -546,8 +584,11 @@ class MainWindow(QMainWindow):
             if child.widget():
                 child.widget().deleteLater()
         self.quick_prompt_buttons.clear()
-        self.quick_prompt_layout.addWidget(QLabel("快捷输入："))
-        for prompt in self.quick_prompt_provider.prompts(context):
+        prompts = self.quick_prompt_provider.prompts(context)
+        self.quick_prompt_container.setVisible(bool(prompts))
+        if prompts:
+            self.quick_prompt_layout.addWidget(QLabel("兼容快捷输入："))
+        for prompt in prompts:
             button = QPushButton(prompt.label)
             button.setToolTip(prompt.text)
             button.clicked.connect(
@@ -579,11 +620,11 @@ class MainWindow(QMainWindow):
         if step_number:
             title_suffix = f"“{step_title}”" if step_title else ""
             self.review_instruction_label.setText(
-                f"对第 {step_number} 步{title_suffix}的修正说明（普通语言即可）"
+                f"第 {step_number} 步{title_suffix}审核备注（仅记录）"
             )
         else:
             self.review_instruction_label.setText(
-                "对当前步骤的修正说明（普通语言即可）"
+                "当前步骤审核备注（仅记录）"
             )
         image_path = str(entry.get("image_path", ""))
         self.review_image_path.setText(image_path)
@@ -603,10 +644,22 @@ class MainWindow(QMainWindow):
             "检查说明："
             + ("；".join(reason_parts) if reason_parts else "需要人工确认图片表现。")
         )
+        facts = [
+            str(value).strip()
+            for value in entry.get("deterministic_facts", [])
+            if str(value).strip()
+        ]
+        self.review_contract.setText(
+            "已锁定：" + "；".join(facts)
+            if facts
+            else "当前步骤尚未形成完整的 Creo 几何与固定相机合同。"
+        )
         pixmap = QPixmap(image_path) if image_path else QPixmap()
         if pixmap.isNull():
             self.review_preview.setPixmap(QPixmap())
-            self.review_preview.setText("图片文件不存在，请按说明重新生成此步骤。")
+            self.review_preview.setText(
+                "图片文件不存在，请查看缺失的 BOM/Creo 几何事实。"
+            )
         else:
             self.review_preview.setText("")
             self.review_preview.setPixmap(
@@ -618,11 +671,11 @@ class MainWindow(QMainWindow):
             )
         is_candidate = entry.get("kind") in {"candidate", "current", "failed_image"}
         if entry.get("kind") == "failed_image":
-            choose_label = "知情采用此原图"
+            choose_label = "知情采用原图（保留机器失败）"
         elif entry.get("kind") == "current":
-            choose_label = "采用当前图片"
+            choose_label = "采用当前已锁定图片"
         else:
-            choose_label = "采用选中的候选图"
+            choose_label = "采用兼容历史候选图"
         self.choose_candidate_button.setText(choose_label)
         self.choose_candidate_button.setEnabled(is_candidate)
         guided = entry.get("guided_form")
@@ -630,9 +683,13 @@ class MainWindow(QMainWindow):
             self.instruct_button.setText(
                 str(guided.get("submit_label") or "按关键信息重新生成")
             )
+            self.instruct_button.setEnabled(bool(entry.get("step_id")))
         else:
-            self.instruct_button.setText("按说明重新生成当前步骤")
-        self.instruct_button.setEnabled(bool(entry.get("step_id")))
+            self.instruct_button.setText("需修复 BOM/Creo 事实后重试")
+            self.instruct_button.setToolTip(
+                "自由文本不能创建 occurrence、接收面、坐标、相机或取景参数。"
+            )
+            self.instruct_button.setEnabled(False)
 
     def _load_guided_form(self, value: object) -> None:
         while self.guided_form_layout.rowCount() > 2:
@@ -761,16 +818,19 @@ class MainWindow(QMainWindow):
 
     def _resolve_instruction(self) -> None:
         entry = self.current_review_item or {}
+        if self.current_guided_form is None:
+            self._show_error(
+                "当前问题没有可提交的结构化几何表单。请修复 BOM/Creo 映射或补齐接收面证据；"
+                "审核备注不能用于生成坐标或切换视角。"
+            )
+            return
         structured_inputs: dict[str, str] = {}
-        if self.current_guided_form is not None:
-            structured_inputs = self._guided_values()
-            missing = [name for name, value in structured_inputs.items() if not value]
-            if missing:
-                self._show_error("请填写全部关键信息后再重新生成。")
-                return
-            instruction = self.guided_sentence.text().strip()
-        else:
-            instruction = self.review_instruction.toPlainText().strip()
+        structured_inputs = self._guided_values()
+        missing = [name for name, value in structured_inputs.items() if not value]
+        if missing:
+            self._show_error("请填写全部关键信息后再重新生成。")
+            return
+        instruction = self.guided_sentence.text().strip()
         if not self.current_run_id or not entry.get("step_id"):
             self._show_error("请先从左侧选择要重新生成的步骤。")
             return
@@ -805,10 +865,15 @@ class MainWindow(QMainWindow):
         if self.pages.currentWidget() is self.review_page:
             entry = self.current_review_item or {}
             self.choose_candidate_button.setEnabled(
-                entry.get("kind") in {"candidate", "current"}
+                entry.get("kind") in {"candidate", "current", "failed_image"}
             )
-            self.instruct_button.setEnabled(bool(entry.get("step_id")))
-            self.review_guidance.setText("当前步骤处理失败，可修改选择或说明后重试。")
+            self.instruct_button.setEnabled(
+                bool(entry.get("step_id"))
+                and isinstance(entry.get("guided_form"), dict)
+            )
+            self.review_guidance.setText(
+                "当前步骤处理失败；只能修改结构化事实选择，或修复 BOM/Creo 数据后重试。"
+            )
         QMessageBox.critical(self, "Creo SOP Agent", message)
 
     def _set_operation_active(self, active: bool) -> None:
