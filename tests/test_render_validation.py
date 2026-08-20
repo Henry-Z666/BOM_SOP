@@ -31,11 +31,6 @@ def _native_payload(**changes) -> dict:
             "focus_context": "stage_visible_bbox/v1",
             "framing_priority": "installation_activity/v1",
             "zoom_anchor": "installation_activity_center/v1",
-            "native_refit": {
-                "schema_version": "native-focus-refit/v1",
-                "fit_occurrences": "moving_only/v1",
-                "restore_stage_context_without_refit": True,
-            },
             "center_gate": {
                 "schema_version": "native-composition-center-gate/v1",
                 "target_pixel": [800, 800],
@@ -272,7 +267,7 @@ class RenderValidationTests(unittest.TestCase):
         self.assertIn("ACTIVITY_NOT_CENTERED", report.failures)
         self.assertIn("ARROW_NOT_CENTERED", report.failures)
 
-    def test_native_selected_fit_uses_creo_selection_center_not_context_midpoint(self) -> None:
+    def test_native_selected_fit_still_enforces_final_raster_center(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             image, audit = _write_native_files(root, None)
@@ -288,9 +283,9 @@ class RenderValidationTests(unittest.TestCase):
             payload["presentation"]["native_selected_fit"] = {
                 "schema_version": "native-selected-fit/v1",
                 "command": "ProCmdZoomIntoOutline",
-                "selection_scope": "moving_occurrences/v1",
-                "zoom_to_selected_level": 0.35,
-                "level_policy": "cad_installation_envelope/v3",
+                "selection_scope": "moving_and_receiver_occurrences/v1",
+                "zoom_to_selected_level": 0.42,
+                "level_policy": "fixed_native_selection_margin/v1",
                 "max_commands_per_render": 1,
                 "absolute_pan_zoom_forbidden": True,
             }
@@ -298,7 +293,9 @@ class RenderValidationTests(unittest.TestCase):
                 image, audit, payload
             )
 
-        self.assertTrue(report.passed, report.failures)
+        self.assertFalse(report.passed)
+        self.assertIn("ACTIVITY_NOT_CENTERED", report.failures)
+        self.assertIn("ARROW_NOT_CENTERED", report.failures)
 
     def test_balanced_subject_arrow_midpoint_is_the_centering_hard_gate(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

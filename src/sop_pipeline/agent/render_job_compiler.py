@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from .framing_scale import FramingScaleError, build_framing_scale_evidence
 from .formal_render_planner import FormalRenderPlan, FormalRenderStep
 from .render_scheduler import RenderPlan, RenderTask
 
@@ -199,15 +198,14 @@ def _compile_camera_catalog(plan: FormalRenderPlan) -> dict[str, dict[str, Any]]
 def _compile_presentation(
     plan: FormalRenderPlan, step: FormalRenderStep
 ) -> dict[str, Any]:
-    framing_profile = _framing_profile_contract(plan, step)
+    framing_profile = _framing_profile_contract()
     if step.camera_id is None:
         return {
             "schema_version": "fixed-frame-presentation/v1",
             "focus_context": "stage_visible_bbox/v1",
             "framing_priority": "installation_activity/v1",
             "zoom_anchor": "installation_activity_center/v1",
-            "native_refit": _native_refit_contract(),
-            "native_selected_fit": _native_selected_fit_contract(framing_profile),
+            "native_selected_fit": _native_selected_fit_contract(),
             "framing_profile": framing_profile,
             "center_gate": _center_gate(),
             "variants": [],
@@ -218,8 +216,7 @@ def _compile_presentation(
         "focus_context": "stage_visible_bbox/v1",
         "framing_priority": "installation_activity/v1",
         "zoom_anchor": "installation_activity_center/v1",
-        "native_refit": _native_refit_contract(),
-        "native_selected_fit": _native_selected_fit_contract(framing_profile),
+        "native_selected_fit": _native_selected_fit_contract(),
         "framing_profile": framing_profile,
         "center_gate": _center_gate(),
         "variants": [
@@ -260,65 +257,22 @@ def _center_gate() -> dict[str, Any]:
     }
 
 
-def _framing_profile_contract(
-    plan: FormalRenderPlan, step: FormalRenderStep
-) -> dict[str, Any]:
-    frozen = {
+def _framing_profile_contract() -> dict[str, Any]:
+    return {
         "schema_version": "native-selected-framing-policy/v1",
         "policy": "native_zoom_to_selected/v1",
-        "scale_signature": "creo_selected_object_bbox/v1",
+        "selection_scope": "moving_and_receiver_occurrences/v1",
         "on_failure": "question_single_frame/v1",
     }
-    if step.camera_id is None:
-        return frozen
-    camera = _compile_camera_catalog(plan).get(step.camera_id)
-    if camera is None:
-        return frozen
-    try:
-        evidence = build_framing_scale_evidence(
-            occurrence_bounds_root=plan.occurrence_bounds_root,
-            moving_occurrences=step.moving_occurrences,
-            receiver_occurrences=step.receiver_occurrences,
-            visible_occurrences=step.visible_occurrences,
-            translation_vector_root=step.translation_vector_root,
-            stage_scope_occurrence=step.stage_scope_occurrence,
-            camera=camera,
-        )
-    except FramingScaleError:
-        return frozen
-    return {**frozen, "scale_evidence": evidence}
 
 
-def _native_selected_fit_contract(framing_profile: dict[str, Any]) -> dict[str, Any]:
-    level = 0.28
-    evidence = framing_profile.get("scale_evidence", {})
-    if isinstance(evidence, dict) and evidence.get("status") == "available":
-        moving = evidence.get("moving_projected_size_root", [])
-        installation = evidence.get("installation_projected_size_root", [])
-        try:
-            moving_size = max(float(value) for value in moving)
-            installation_size = max(float(value) for value in installation)
-            if moving_size > 0.0 and installation_size > 0.0:
-                level = round(
-                    max(0.14, min(0.42, 0.42 * moving_size / installation_size)),
-                    2,
-                )
-        except (TypeError, ValueError):
-            pass
+def _native_selected_fit_contract() -> dict[str, Any]:
     return {
         "schema_version": "native-selected-fit/v1",
         "command": "ProCmdZoomIntoOutline",
-        "selection_scope": "moving_occurrences/v1",
-        "zoom_to_selected_level": level,
-        "level_policy": "cad_installation_envelope/v3",
+        "selection_scope": "moving_and_receiver_occurrences/v1",
+        "zoom_to_selected_level": 0.42,
+        "level_policy": "fixed_native_selection_margin/v1",
         "max_commands_per_render": 1,
         "absolute_pan_zoom_forbidden": True,
-    }
-
-
-def _native_refit_contract() -> dict[str, Any]:
-    return {
-        "schema_version": "native-focus-refit/v1",
-        "fit_occurrences": "moving_only/v1",
-        "restore_stage_context_without_refit": True,
     }

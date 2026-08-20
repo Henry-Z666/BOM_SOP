@@ -69,6 +69,7 @@ def native_task() -> RenderTask:
             "arrow_renderer": "creo_display_list/v1",
             "plan_index": 0,
             "moving_occurrences": ["10/2"],
+            "receiver_occurrences": ["10/1"],
             "receiver_normal_root": [1.0, 0.0, 0.0],
             "translation_vector_root": [0.0, 0.0, 10.0],
             "arrow_anchors": [{"occurrence_id": "10/2"}],
@@ -84,24 +85,19 @@ def native_task() -> RenderTask:
                 "focus_context": "stage_visible_bbox/v1",
                 "framing_priority": "installation_activity/v1",
                 "zoom_anchor": "installation_activity_center/v1",
-                "native_refit": {
-                    "schema_version": "native-focus-refit/v1",
-                    "fit_occurrences": "moving_only/v1",
-                    "restore_stage_context_without_refit": True,
-                },
                 "native_selected_fit": {
                     "schema_version": "native-selected-fit/v1",
                     "command": "ProCmdZoomIntoOutline",
-                    "selection_scope": "moving_occurrences/v1",
-                    "zoom_to_selected_level": 0.28,
-                    "level_policy": "cad_installation_envelope/v3",
+                    "selection_scope": "moving_and_receiver_occurrences/v1",
+                    "zoom_to_selected_level": 0.42,
+                    "level_policy": "fixed_native_selection_margin/v1",
                     "max_commands_per_render": 1,
                     "absolute_pan_zoom_forbidden": True,
                 },
                 "framing_profile": {
                     "schema_version": "native-selected-framing-policy/v1",
                     "policy": "native_zoom_to_selected/v1",
-                    "scale_signature": "creo_selected_object_bbox/v1",
+                    "selection_scope": "moving_and_receiver_occurrences/v1",
                     "on_failure": "question_single_frame/v1",
                 },
                 "center_gate": {
@@ -151,7 +147,8 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         )
 
         self.assertIn('UIGetCommand("ProCmdZoomIntoOutline")', renderer)
-        self.assertIn("MAX_RENDER_RASTERS_PER_TASK = 1", worker)
+        self.assertIn("MAX_RENDER_RASTERS_PER_ATTEMPT = 1", worker)
+        self.assertIn("native-framing-audit/v1", batch)
         self.assertIn("$zoom -ne 1.0", batch)
 
     def test_worker_renders_exactly_one_native_frame(self) -> None:
@@ -183,12 +180,34 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
                 start_index=0,
                 count=1,
                 variant_index=0,
-                budget_task_id=task.task_id,
+                budget_task_id=f"{task.task_id}:attempt-1",
             )
 
         self.assertEqual(result.disposition, "passed")
         self.assertEqual(denied, "RENDER_FRAME_BUDGET_EXCEEDED")
         self.assertEqual(len(runner.commands), 1)
+
+    def test_system_retry_gets_one_new_native_frame(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            task = native_task()
+            plan = RenderPlan("render-plan/v2", (task,))
+            runner = NativeRecordingRunner(workspace / "internal/prepared-models")
+            worker = AgentNativeCreoWorker(
+                powershell="pwsh",
+                batch_script=Path("native.ps1"),
+                models_root=Path("cad"),
+                render_plan_json=Path("plan.json"),
+                runner=runner,
+            )
+            session = worker.open_session(workspace, plan)
+
+            first = worker.render(session, task, 1)
+            second = worker.render(session, task, 2)
+
+        self.assertEqual(first.disposition, "passed")
+        self.assertEqual(second.disposition, "passed")
+        self.assertEqual(len(runner.commands), 2)
 
     def test_failed_gate_keeps_single_real_frame_for_review(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

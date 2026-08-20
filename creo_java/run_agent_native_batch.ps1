@@ -101,6 +101,7 @@ $formatVector = { param($values) ((@($values) | ForEach-Object { ([double]$_).To
 $manifestRows = New-Object Collections.Generic.List[string]
 $renderedFiles = New-Object Collections.Generic.List[string]
 $auditFiles = New-Object Collections.Generic.List[string]
+$framingAudits = New-Object Collections.Generic.List[object]
 for ($index = $StartIndex; $index -lt $stop; $index++) {
   $task = $tasks[$index]
   $payload = $task.payload
@@ -122,24 +123,19 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   if ($translation.Count -ne 3) { throw "Task $taskId has no pure translation vector." }
   $presentation = $payload.presentation
   if ([string]$presentation.schema_version -ne 'fixed-frame-presentation/v1') { throw "Task $taskId has no supported presentation contract." }
-  if ([string]$presentation.native_refit.schema_version -ne 'native-focus-refit/v1' -or
-      [string]$presentation.native_refit.fit_occurrences -ne 'moving_only/v1' -or
-      [bool]$presentation.native_refit.restore_stage_context_without_refit -ne $true) {
-    throw "Task $taskId has no supported native focus-refit contract."
-  }
   $nativeSelectedFit = $presentation.native_selected_fit
   if ([string]$nativeSelectedFit.schema_version -ne 'native-selected-fit/v1' -or
       [string]$nativeSelectedFit.command -ne 'ProCmdZoomIntoOutline' -or
-      [string]$nativeSelectedFit.selection_scope -ne 'moving_occurrences/v1' -or
-      [string]$nativeSelectedFit.level_policy -ne 'cad_installation_envelope/v3' -or
+      [string]$nativeSelectedFit.selection_scope -ne 'moving_and_receiver_occurrences/v1' -or
+      [string]$nativeSelectedFit.level_policy -ne 'fixed_native_selection_margin/v1' -or
       [int]$nativeSelectedFit.max_commands_per_render -ne 1 -or
       [bool]$nativeSelectedFit.absolute_pan_zoom_forbidden -ne $true) {
     throw "Task $taskId has no supported native selected-fit contract."
   }
   $selectedFitLevel = [double]$nativeSelectedFit.zoom_to_selected_level
   if ([double]::IsNaN($selectedFitLevel) -or [double]::IsInfinity($selectedFitLevel) -or
-      $selectedFitLevel -lt 0.1 -or $selectedFitLevel -gt 2.0) {
-    throw "Task $taskId has an invalid native selected-fit level."
+      [Math]::Abs($selectedFitLevel - 0.42) -gt 1.0e-9) {
+    throw "Task $taskId must use the fixed native selected-fit margin 0.42."
   }
   if ([string]$presentation.focus_context -ne 'stage_visible_bbox/v1') { throw "Task $taskId has an invalid presentation focus context." }
   if ([string]$presentation.framing_priority -ne 'installation_activity/v1') { throw "Task $taskId does not prioritize the installation activity." }
@@ -201,6 +197,12 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   ) -join "`t"))
   $renderedFiles.Add($image)
   $auditFiles.Add($audit)
+  $framingAudits.Add([pscustomobject]@{
+    task_id = $taskId
+    image_file = [IO.Path]::GetFileName($image)
+    zoom_to_selected_level = $selectedFitLevel
+    selection_scope = [string]$nativeSelectedFit.selection_scope
+  })
   Write-Output ("[AGENT_RENDER] task {0} presentation_variant {1} camera {2} zoom {3}" -f $taskId,$VariantIndex,$cameraId,$zoom)
 }
 
@@ -401,5 +403,27 @@ foreach ($image in $renderedFiles) {
     }
   }
   finally { $bitmap.Dispose() }
+}
+foreach ($item in $framingAudits) {
+  $auditPath = Join-Path $output ([string]$item.task_id + '.framing.json')
+  $temporaryAudit = $auditPath + '.tmp'
+  $auditPayload = [ordered]@{
+    schema_version = 'native-framing-audit/v1'
+    task_id = [string]$item.task_id
+    image_file = [string]$item.image_file
+    creo_version_datecode = Split-Path -Leaf ([string]$runtime.CreoLoadpoint)
+    command = 'ProCmdZoomIntoOutline'
+    command_verified = $true
+    selection_scope = [string]$item.selection_scope
+    zoom_to_selected_level = [double]$item.zoom_to_selected_level
+    max_commands_per_render = 1
+    absolute_pan_zoom_forbidden = $true
+  }
+  [IO.File]::WriteAllText(
+    $temporaryAudit,
+    (($auditPayload | ConvertTo-Json -Depth 4) + "`n"),
+    [Text.UTF8Encoding]::new($false)
+  )
+  Move-Item -LiteralPath $temporaryAudit -Destination $auditPath -Force
 }
 Write-Output ("[AGENT_RENDER] complete {0} tasks" -f $manifestRows.Count)

@@ -19,7 +19,7 @@ from .render_validation import (
 )
 
 
-MAX_RENDER_RASTERS_PER_TASK = 1
+MAX_RENDER_RASTERS_PER_ATTEMPT = 1
 
 
 class CommandRunner(Protocol):
@@ -160,7 +160,7 @@ class AgentNativeCreoWorker:
             start_index=plan_index,
             count=1,
             variant_index=variant_index,
-            budget_task_id=task.task_id,
+            budget_task_id=f"{task.task_id}:attempt-{attempt}",
         )
         if execution_error is not None:
             return _batch_failure(execution_error)
@@ -197,7 +197,7 @@ class AgentNativeCreoWorker:
         budget_task_id: str,
     ) -> str | None:
         used = session.render_frames_by_task.get(budget_task_id, 0)
-        if used + count > MAX_RENDER_RASTERS_PER_TASK:
+        if used + count > MAX_RENDER_RASTERS_PER_ATTEMPT:
             return "RENDER_FRAME_BUDGET_EXCEEDED"
         session.render_frames_by_task[budget_task_id] = used + count
         command = [

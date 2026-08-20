@@ -1,78 +1,54 @@
 # Contracts and hard gates
 
-## Authoritative assembly manifest
+This file is the single current contract authority for the Agent and executable Skills.
 
-Record at least:
+## Authoritative assembly
 
-- schema/version;
-- exact final ASM filename and Creo file version;
-- SHA-256 at batch start;
-- root coordinate system;
-- actual opened model/version;
-- `fixed_123` and `fixed_456` matrices or position/up vectors.
+Record the exact final ASM filename/version, SHA-256, root coordinate system, actual opened model/version, and calibrated `fixed_123`/`fixed_456` camera basis. Abort when the locked file or hash changes.
 
-Abort the batch if the file version or hash changes.
+## Formal render task
 
-## Formal step contract
+Use `render-plan/v2` with `creo-render-task/v1`. Every formal task contains:
 
-Use the current repository formal schema (`creo-render-jobs/v3` with `creo-stage-camera-contract/v3`, or a later unified step contract). Each job must contain:
-
-- stable job ID and BOM step scope;
-- authoritative assembly manifest reference;
-- complete root occurrence paths for moving, receiver, and visible sets;
-- BOM quantity and model/drawing evidence;
-- root-coordinate translation vector and its receiver-normal evidence;
+- stable task/step ID and BOM scope;
+- full root paths for moving, receiver, and visible occurrence sets;
+- authoritative assembly record and source-backed quantity evidence;
+- receiver-backed root translation and unchanged rotations;
 - camera ID restricted to `fixed_123` or `fixed_456`;
-- explicit framing parameters;
-- arrow policy and output audit paths;
-- source-backed process text and status.
+- `fixed-frame-presentation/v1` with `native-selected-fit/v1`;
+- `selection_scope=moving_and_receiver_occurrences/v1`;
+- `level_policy=fixed_native_selection_margin/v1` with `zoom_to_selected_level=0.42`, one command per render, and absolute PAN/ZOOM forbidden;
+- native arrow anchors, output audit references, process text, and status.
 
-The formal execution truth is the validated contract, not the Excel publication workbook.
+The validated task contract—not the publication workbook—is execution truth.
 
-## Arrow projection audit
+## Required audits
 
-Use `same_cad_point/v1` or newer. For each arrow record:
-
-- covered occurrence paths;
-- stable local anchor and surface identifier;
-- complete and exploded root coordinates;
-- screen-plane coordinates used for layout;
-- merge state and covered occurrences;
-- final status.
-
-The root-coordinate difference between arrow endpoints must equal the occurrence translation with the arrow pointing exploded-to-complete.
+- `arrow-projection/v1` records covered occurrence paths, anchor source, complete/exploded root points, direction, merge coverage, and status. Endpoint difference equals the audited translation.
+- `native-framing-audit/v1` records task/image identity, Creo version/datecode, verified `ProCmdZoomIntoOutline`, selection scope, level, one-command limit, and absolute PAN/ZOOM prohibition.
 
 ## Hard render gates
 
 A formal image passes only when all apply:
 
-- actual assembly name/version/hash matches the manifest;
+- actual assembly name/version/hash matches the lock;
 - every moving and receiver occurrence resolves by full path;
-- rendered moving occurrence count matches BOM quantity;
-- visible set equals the forward stage contract and contains no future occurrence;
-- all required receivers are visible;
-- moving and complete sets use the same occurrence identities;
-- only translation changes; all rotation matrices are unchanged;
-- camera is exactly one of the two calibrated fixed matrices;
-- moving object, receiver, and installation boundary are readable in frame;
-- the final image keeps the whole-machine context (`sop-context/v1`); a part-isolated cut-out frame fails the gate;
-- receiver face does not visually degenerate into a thin line;
-- arrow count equals moving occurrence count or an explicit merge covers all occurrences;
-- every arrow uses the same local CAD point at both states and points toward installation;
-- arrow projections meet minimum length, frame, and non-overlap thresholds;
-- no datum, weld symbol, annotation, UI, or unrelated assembly content is visible;
-- output dimensions and fixed-frame policy match the job contract.
+- moving count matches BOM quantity;
+- visible set exactly matches the forward stage and contains no future occurrence;
+- required receivers are visible;
+- explosion is pure translation with unchanged rotations;
+- camera is one of the two locked fixed matrices;
+- moving item, receiver, installation boundary, and receiver face are readable;
+- final raster composition passes compiled size, centering, clipping, and fixed-frame thresholds;
+- arrow count/merge coverage, same-CAD-point direction, size, border, and non-overlap gates pass;
+- no datum, annotation, weld cosmetic, UI, or unrelated geometry appears;
+- output is exactly 1600×1600 and the fixed crop did not rescale pixels.
 
-Failure blocks automatic publication and triggers bounded correction/rerender of the affected
-step. If a real image exists, it remains available for informed human review. An explicit human
-override grants delivery eligibility without changing the machine failure result.
+Failure blocks automatic publication. A real raster may remain for review; bounded system retry is allowed only at scheduler level and never creates extra framing variants inside one attempt.
 
 ## Publication gates
 
-- Machine-passed render jobs or real images covered by a verified `human-review-decision/v1`
-  may enter the workbook. The decision must bind the exact path and SHA-256, retain the machine
-  status, and require byte-identical publication with no watermark or image transformation.
-- Placeholders and missing images may never be manually approved.
-- Preserve BOM order and one-step-per-sheet/page template semantics.
+- Only machine-passed or explicitly human-approved steps enter a formal workbook.
+- Preserve BOM order and the current dynamic page layout.
 - Populate material, quantity, process, control, and tooling fields from traceable sources.
-- Validate sheet count, image count, image references, print areas, merged cells, and visible page layout.
+- Validate sheet/image counts, relationships, print areas, merged cells, and visible page layout.

@@ -23,7 +23,7 @@ GUI 只是 Agent 的界面，不包含 Creo、Qwen 或 Excel 的业务逻辑。�
 - 按共享 CAD 接口执行密封件→封闭件→保持件的物理顺序，并将跨安装层密封件拆成独立步骤组。
 - 在生成前统一展示一次确认页；用户不确定时可采用推荐方案。
 - 由 Creo/J-Link 原生 `DisplayList3D` 绘制同 CAD 锚点箭头，不使用后期像素箭头。
-- 使用 `fixed_123`、`fixed_456` 两个确定性视角；当前正式路径仅允许 Creo 原生 `Zoom to Selected`，每任务一张正式帧，不接受外部 PAN/ZOOM。
+- 使用 `fixed_123`、`fixed_456` 两个确定性视角；当前正式路径把移动件与接收件共同交给 Creo 原生 `Zoom to Selected`，每次尝试一张正式帧，不接受外部 PAN/ZOOM。
 - 一个常驻 Creo Worker 复用模型副本，逐步骤保存检查点，默认 20 个任务后重启。
 - 硬门校验、有限修复、候选图、局部释疑重跑和动态 SOP 出版。
 - Qwen 仅处理语义理解、受限推荐和图片语义复核；不能改变 CAD 事实、状态机或输出路径。
@@ -138,10 +138,9 @@ python ./scripts/smoke_agent_single_step.py `
 详细规范见：
 
 - [产品契约](docs/qwen-agent-product-contract.md)
-- [实施计划](docs/qwen-agent-implementation-plan.md)
 - [运行状态与步骤隔离 ADR](docs/adr/0001-durable-run-state-and-step-isolation.md)
-- [安装图规划规则](docs/render-planning-rules.md)
-- [对话与旧水箱成果迁移审计](docs/rule-migration-audit.md)
+- [正式渲染规则](rules/render-rules.md)
+- [合同与硬门](rules/contracts.md)
 - [原生箭头与可迁移推导](docs/arrow-generation-and-portability.md)
-- [Zoom 推导机制](docs/zoom-derivation-and-portability.md)
+- [Creo 原生自适应取景](docs/creo-native-adaptive-framing.md)
 - [SOP 出版规则](docs/spreadsheet-sop-publication.md)

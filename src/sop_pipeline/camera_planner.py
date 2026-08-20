@@ -57,7 +57,8 @@ def absolute_view_matrix(position_direction: Iterable[float],
 
     Creo uses a row-vector transform (translation is in row four), therefore
     screen-right, screen-up and camera-back are the first three *columns*.
-    Translation is zero because Creo Refit/CENTER owns framing.
+    Translation is zero because this matrix locks orientation only;
+    `ProCmdZoomIntoOutline` performs native selected-object framing separately.
     """
     back = normalize(position_direction)
     up_ref = normalize(up_reference)
@@ -283,23 +284,3 @@ def select_camera(candidates: list[dict[str, Any]]) -> dict[str, Any]:
     # max() is stable for equal keys, so declared candidate order remains the
     # deterministic tie-breaker and keeps the primary view ahead of fallbacks.
     return max(pool, key=lambda candidate: float(candidate.get("score", 0.0)))
-
-
-def camera_spec(camera: dict[str, Any], zoom: float | None = None, center: bool = True,
-                pan: Iterable[float] | None = None) -> str:
-    direction = _vector(camera["position_direction_root"])
-    up = _vector(camera.get("up_reference_root", [0.0, 0.0, 1.0]))
-    parts = ["ABS:" + ":".join(f"{value:.12g}" for value in direction),
-             "UP:" + ":".join(f"{value:.12g}" for value in up)]
-    if zoom is not None:
-        if zoom <= 0.0:
-            raise ValueError("ZOOM 必须大于零")
-        parts.append(f"ZOOM:{zoom:.12g}")
-    if center:
-        parts.append("CENTER")
-    if pan is not None:
-        pan_values = [float(value) for value in pan]
-        if len(pan_values) != 2:
-            raise ValueError("PAN 必须包含两个分量")
-        parts.append("PAN:" + ":".join(f"{value:.12g}" for value in pan_values))
-    return ",".join(parts)

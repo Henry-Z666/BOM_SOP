@@ -158,16 +158,6 @@ class DeterministicNativeRenderValidator:
         ):
             failures.append("PRESENTATION_CONTRACT_INVALID")
             return None, None
-        native_refit = presentation.get("native_refit")
-        if (
-            not isinstance(native_refit, dict)
-            or native_refit.get("schema_version") != "native-focus-refit/v1"
-            or native_refit.get("fit_occurrences")
-            != "moving_only/v1"
-            or native_refit.get("restore_stage_context_without_refit") is not True
-        ):
-            failures.append("PRESENTATION_CONTRACT_INVALID")
-            return None, None
         framing_profile = presentation.get("framing_profile", {})
         if isinstance(framing_profile, dict) and framing_profile.get("policy") == "native_zoom_to_selected/v1":
             selected_fit = presentation.get("native_selected_fit")
@@ -179,11 +169,13 @@ class DeterministicNativeRenderValidator:
                 not isinstance(selected_fit, dict)
                 or selected_fit.get("schema_version") != "native-selected-fit/v1"
                 or selected_fit.get("command") != "ProCmdZoomIntoOutline"
-                or selected_fit.get("selection_scope") != "moving_occurrences/v1"
-                or selected_fit.get("level_policy") != "cad_installation_envelope/v3"
+                or selected_fit.get("selection_scope")
+                != "moving_and_receiver_occurrences/v1"
+                or selected_fit.get("level_policy")
+                != "fixed_native_selection_margin/v1"
                 or selected_fit.get("max_commands_per_render") != 1
                 or selected_fit.get("absolute_pan_zoom_forbidden") is not True
-                or not 0.1 <= selected_fit_level <= 2.0
+                or not math.isclose(selected_fit_level, 0.42, abs_tol=1.0e-9)
             ):
                 failures.append("PRESENTATION_CONTRACT_INVALID")
                 return None, None
@@ -294,20 +286,16 @@ class DeterministicNativeRenderValidator:
         # of the staged subject and the native arrow.  Applying both limits to
         # the two centres independently makes the gate mathematically
         # impossible whenever their separation exceeds the sum of the limits,
-        # even when their declared midpoint is exactly at the target.  Validate
-        # the same focus used by the PAN solver; arrow visibility, size and
-        # clipping remain independent hard gates above.
+        # even when their declared midpoint is exactly at the target. Validate
+        # the installation focus on the final native-selected-fit raster;
+        # arrow visibility, size and clipping remain independent hard gates.
         focus_center = metrics.center_pixel
         if focus_center is not None and arrow_metrics.center_pixel is not None:
             focus_center = (
                 (focus_center[0] + arrow_metrics.center_pixel[0]) / 2.0,
                 (focus_center[1] + arrow_metrics.center_pixel[1]) / 2.0,
             )
-        native_selected_policy = (
-            isinstance(framing_profile, dict)
-            and framing_profile.get("policy") == "native_zoom_to_selected/v1"
-        )
-        if focus_center is not None and not native_selected_policy:
+        if focus_center is not None:
             focus_offset = math.hypot(
                 focus_center[0] - target_pixel[0],
                 focus_center[1] - target_pixel[1],

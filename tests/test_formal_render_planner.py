@@ -151,42 +151,18 @@ def fixture() -> tuple[NormalizedBom, DraftPlan, BomCadMap, dict]:
 
 
 class FormalRenderPlannerTests(unittest.TestCase):
-    def test_native_selected_fit_scales_continuously_with_installation_envelope(self) -> None:
-        long_installation = _native_selected_fit_contract(
-            {
-                "scale_evidence": {
-                    "status": "available",
-                    "moving_projected_size_root": [80.0, 100.0],
-                    "installation_projected_size_root": [320.0, 400.0],
-                }
-            }
-        )
-        compact_installation = _native_selected_fit_contract(
-            {
-                "scale_evidence": {
-                    "status": "available",
-                    "moving_projected_size_root": [200.0, 240.0],
-                    "installation_projected_size_root": [250.0, 300.0],
-                }
-            }
-        )
+    def test_native_selected_fit_uses_one_fixed_relative_margin(self) -> None:
+        contract = _native_selected_fit_contract()
 
-        self.assertEqual(long_installation["zoom_to_selected_level"], 0.14)
-        self.assertEqual(compact_installation["zoom_to_selected_level"], 0.34)
-
-    def test_native_selected_fit_covers_receiver_activity_envelope(self) -> None:
-        contract = _native_selected_fit_contract(
-            {
-                "scale_evidence": {
-                    "status": "available",
-                    "moving_projected_size_root": [80.0, 100.0],
-                    "installation_projected_size_root": [320.0, 400.0],
-                    "context_projected_size_root": [700.0, 800.0],
-                }
-            }
+        self.assertEqual(contract["zoom_to_selected_level"], 0.42)
+        self.assertEqual(
+            contract["selection_scope"],
+            "moving_and_receiver_occurrences/v1",
         )
-
-        self.assertEqual(contract["zoom_to_selected_level"], 0.14)
+        self.assertEqual(
+            contract["level_policy"],
+            "fixed_native_selection_margin/v1",
+        )
 
     def test_uses_child_reference_from_parent_level_creo_constraint(self) -> None:
         bom, draft, mapping, graph = fixture()
@@ -456,9 +432,9 @@ class FormalRenderPlannerTests(unittest.TestCase):
             {
                 "schema_version": "native-selected-fit/v1",
                 "command": "ProCmdZoomIntoOutline",
-                "selection_scope": "moving_occurrences/v1",
-                "zoom_to_selected_level": 0.28,
-                "level_policy": "cad_installation_envelope/v3",
+                "selection_scope": "moving_and_receiver_occurrences/v1",
+                "zoom_to_selected_level": 0.42,
+                "level_policy": "fixed_native_selection_margin/v1",
                 "max_commands_per_render": 1,
                 "absolute_pan_zoom_forbidden": True,
             },
@@ -497,7 +473,7 @@ class FormalRenderPlannerTests(unittest.TestCase):
             "native-composition-center-gate/v1",
         )
 
-    def test_real_cad_bounds_feed_native_selected_fit_contract(self) -> None:
+    def test_native_selected_fit_does_not_compile_a_scale_cache(self) -> None:
         bom, draft, mapping, graph = fixture()
         for node in graph["occurrences"]:
             origin = node["transform"]["origin"]
@@ -524,7 +500,11 @@ class FormalRenderPlannerTests(unittest.TestCase):
 
         self.assertEqual(profile["policy"], "native_zoom_to_selected/v1")
         self.assertEqual(profile["schema_version"], "native-selected-framing-policy/v1")
-        self.assertEqual(profile["scale_signature"], "creo_selected_object_bbox/v1")
+        self.assertEqual(
+            profile["selection_scope"],
+            "moving_and_receiver_occurrences/v1",
+        )
+        self.assertNotIn("scale_evidence", profile)
         self.assertEqual(profile["on_failure"], "question_single_frame/v1")
         self.assertNotIn("centering", task.payload["presentation"])
         self.assertNotIn("output_path", str(task.payload))

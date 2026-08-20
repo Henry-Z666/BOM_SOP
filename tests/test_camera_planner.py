@@ -4,7 +4,6 @@ import unittest
 from sop_pipeline.camera_planner import (
     absolute_view_matrix,
     calibrate_camera_basis,
-    camera_spec,
     classify_receiver_face,
     determinant3,
     dot,
@@ -110,13 +109,6 @@ class CameraPlannerTests(unittest.TestCase):
                                         frame_coverage=0.7)
         self.assertFalse(failed["eligible"])
         self.assertEqual(select_camera([failed, passed])["id"], passed["id"])
-
-    def test_camera_spec_contains_only_absolute_orientation(self):
-        spec = camera_spec({"position_direction_root": [1, -1, 1], "up_reference_root": [0, 0, 1]}, 2.0)
-        self.assertEqual(spec, "ABS:1:-1:1,UP:0:0:1,ZOOM:2,CENTER")
-        self.assertNotIn("X:", spec)
-        self.assertEqual(camera_spec({"position_direction_root": [1, -1, 1]}, 1.5, False, [0.2, -0.1]),
-                         "ABS:1:-1:1,UP:0:0:1,ZOOM:1.5,PAN:0.2:-0.1")
 
     def test_v3_contract_rejects_relative_rotation(self):
         face = classify_receiver_face([1, 0, 0], self.basis)
