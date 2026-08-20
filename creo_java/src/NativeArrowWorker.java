@@ -67,7 +67,6 @@ public final class NativeArrowWorker {
     Files.createDirectories(commands);
     Files.createDirectories(manifests);
     Files.createDirectories(results);
-    // Internal commands include diagnostic probes and correction renders.
     // Formal-task restart policy is owned by RenderScheduler, not this spool.
     int maxCommands = Integer.parseInt(args[3]);
     int idleSeconds = Integer.parseInt(args[4]);

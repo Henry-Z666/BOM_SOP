@@ -9,9 +9,8 @@ param(
   [string]$RunWorkspaceRoot = '',
   [string]$WorkerRoot = '',
   [string]$RuntimeConfig = '',
-  # This is an internal render-command failsafe.  The Python scheduler owns
-  # the product contract and restarts the Worker after 20 formal tasks; one
-  # formal task may legitimately consume many probe/correction commands.
+  # This is an internal render-command failsafe. The Python scheduler owns
+  # the product contract and sends exactly one render command per formal task.
   [ValidateRange(1, 100)][int]$MaxWorkerCommands = 100,
   [ValidateRange(10, 3600)][int]$WorkerIdleSeconds = 300,
   [ValidateRange(10, 3600)][int]$TimeoutSeconds = 600,
@@ -132,7 +131,7 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   if ([string]$nativeSelectedFit.schema_version -ne 'native-selected-fit/v1' -or
       [string]$nativeSelectedFit.command -ne 'ProCmdZoomIntoOutline' -or
       [string]$nativeSelectedFit.selection_scope -ne 'moving_occurrences/v1' -or
-      [string]$nativeSelectedFit.level_policy -ne 'cad_installation_envelope/v2' -or
+      [string]$nativeSelectedFit.level_policy -ne 'cad_installation_envelope/v3' -or
       [int]$nativeSelectedFit.max_commands_per_render -ne 1 -or
       [bool]$nativeSelectedFit.absolute_pan_zoom_forbidden -ne $true) {
     throw "Task $taskId has no supported native selected-fit contract."
@@ -145,16 +144,6 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   if ([string]$presentation.focus_context -ne 'stage_visible_bbox/v1') { throw "Task $taskId has an invalid presentation focus context." }
   if ([string]$presentation.framing_priority -ne 'installation_activity/v1') { throw "Task $taskId does not prioritize the installation activity." }
   if ([string]$presentation.zoom_anchor -ne 'installation_activity_center/v1') { throw "Task $taskId has an invalid zoom anchor." }
-  if ([string]$presentation.centering.schema_version -ne 'adaptive-screen-center/v1') { throw "Task $taskId has no adaptive centering contract." }
-  if ([string]$presentation.centering.initial_estimate -ne 'cad_activity_origin/v1') { throw "Task $taskId has an invalid centering initial estimate." }
-  if ([string]$presentation.centering.focus_center -ne 'midpoint_subject_arrow/v1') { throw "Task $taskId has an invalid centering focus definition." }
-  if ([string]$presentation.centering.probe_policy -ne 'on_gate_failure/v1') { throw "Task $taskId has an invalid centering probe policy." }
-  if ([string]$presentation.centering.response_cache_scope -ne 'camera_frame_environment/v2') { throw "Task $taskId has an invalid PAN response cache scope." }
-  if ([int]$presentation.centering.max_probe_rounds -ne 2) { throw "Task $taskId has an invalid PAN probe round limit." }
-  if ([string]$presentation.zoom_recovery.schema_version -ne 'centered-span-zoom/v1') { throw "Task $taskId has no supported Zoom recovery contract." }
-  if ([double]$presentation.zoom_recovery.target_subject_span -ne 0.55) { throw "Task $taskId has an invalid Zoom target span." }
-  if ([double]$presentation.zoom_recovery.min_zoom -ne 0.4 -or [double]$presentation.zoom_recovery.max_zoom -ne 32.0) { throw "Task $taskId has invalid Zoom recovery bounds." }
-  if ([int]$presentation.zoom_recovery.max_rounds -ne 3) { throw "Task $taskId has an invalid Zoom recovery round limit." }
   $variants = @($presentation.variants)
   if ($VariantIndex -ge $variants.Count) { throw "Task $taskId has no presentation variant $VariantIndex." }
   $variant = $variants[$VariantIndex]
@@ -168,8 +157,8 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
     throw "Task $taskId has an invalid camera basis."
   }
   $zoom = [double]$variant.zoom
-  if ([double]::IsNaN($zoom) -or [double]::IsInfinity($zoom) -or $zoom -lt 0.4 -or $zoom -gt 32.0) {
-    throw "Task $taskId has a zoom outside the compiled repair bounds."
+  if ([double]::IsNaN($zoom) -or [double]::IsInfinity($zoom) -or $zoom -ne 1.0) {
+    throw "Task $taskId must use the native selected-fit Zoom."
   }
   $cameraSpec = 'ABS:' + (& $formatVector $camera.position_direction_root)
   $cameraSpec += ',UP:' + (& $formatVector $camera.up_reference_root)
@@ -178,15 +167,9 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   if ($pan.Count -ne 2) { throw "Task $taskId has an invalid pan offset." }
   $panX = [double]$pan[0]
   $panY = [double]$pan[1]
-  $maxPan = [double]$presentation.centering.max_abs_pan
-  if ($maxPan -ne 1.0) { throw "Task $taskId has an unsupported PAN bound." }
-  # max_abs_pan is the Zoom=1 envelope.  Creo's corner-anchored native Zoom
-  # requires proportionally more normalized PAN to preserve the same screen
-  # centre; this must match AgentNativeCreoWorker._effective_pan_bound.
-  $effectiveMaxPan = $maxPan * [Math]::Max(1.0, $zoom)
-  if ([double]::IsNaN($panX) -or [double]::IsInfinity($panX) -or [Math]::Abs($panX) -gt $effectiveMaxPan -or
-      [double]::IsNaN($panY) -or [double]::IsInfinity($panY) -or [Math]::Abs($panY) -gt $effectiveMaxPan) {
-    throw "Task $taskId has a pan offset outside the compiled repair bounds."
+  if ([double]::IsNaN($panX) -or [double]::IsInfinity($panX) -or $panX -ne 0.0 -or
+      [double]::IsNaN($panY) -or [double]::IsInfinity($panY) -or $panY -ne 0.0) {
+    throw "Task $taskId must use the native selected-fit center."
   }
   $focusOccurrences = @($moving + $receivers | Sort-Object -Unique)
   $anchorRows = New-Object Collections.Generic.List[string]

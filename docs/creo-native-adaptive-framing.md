@@ -2,7 +2,7 @@
 
 ## 结论
 
-Creo Parametric 已经提供符合本项目需求的原生能力，探针不应继续作为正式构图的主路径。
+Creo Parametric 已经提供符合本项目需求的原生能力，正式构图应只使用原生选择包围盒。
 
 首选能力是 **Zoom to Selected（缩放至选定项）**：Creo 根据选定零件、特征或几何的包围范围自动缩放，并把选定对象放到图形窗口中心。它不是给定绝对 PAN/ZOOM 坐标。[PTC 的选择说明](https://support.ptc.com/help/creo/creo_pma/r12/usascii/fundamentals/fundamentals/About_Filters.html)明确说明该命令会缩放图形窗口并将选定特征放在窗口中心；[操作步骤](https://support.ptc.com/help/creo/creo_pma/r12/usascii/fundamentals/fundamentals/To_Zoom_on_the_Model.html)说明它适用于几何、零件或特征。
 
@@ -16,7 +16,7 @@ Creo Parametric 已经提供符合本项目需求的原生能力，探针不应�
 | `WWindow.Refit()` | 当前窗口中显示模型的范围 | 直接 OTK Java 方法 | 稳定的无选择后备 |
 | `ScreenTransform.SetZoom/SetPan` | 调用方提供的缩放因子和窗口比例坐标 | 直接 OTK Java 方法 | 不是自适应能力，不应作为主构图 |
 
-`ScreenTransform` 的 Zoom 只是缩放因子，PAN 是相对窗口宽高的数值；它不会自动知道部件大小。[PTC ScreenTransform 文档](https://support.ptc.com/help/creo_toolkit/otk_java_plus/usascii/creo_toolkit/user_guide/Transforming_Window_Coordinates.html)。因此现有探针是在外部反推 Creo 已经具备的构图行为。
+`ScreenTransform` 的 Zoom 只是缩放因子，PAN 是相对窗口宽高的数值；它不会自动知道部件大小。[PTC ScreenTransform 文档](https://support.ptc.com/help/creo_toolkit/otk_java_plus/usascii/creo_toolkit/user_guide/Transforming_Window_Coordinates.html)。因此正式任务禁止使用它覆盖原生构图结果。
 
 ## Zoom to Selected 的可编程路径
 
@@ -49,7 +49,7 @@ PTC 提供配置项 `zoom_to_selected_level` 控制 Zoom to Selected 的留白�
 
 官方说明见 [`zoom_to_selected_level`](https://support.ptc.com/help/creo/creo_pma/r13/usascii/detail/detail_configuration_options.html)。这仍是“相对于所选对象包围范围”的统一策略，不是产品或步骤的绝对坐标。
 
-2026-08-20 的首轮三档真实模型标定证明单次原生命令可以稳定执行，但后续 10 图测试暴露了固定两档留白的边界：命令以爆炸态移动件为中心时，长安装位移可能让完整态安装位置和接受件离开画面。当前正式策略改为产品无关的连续留白：`level = clamp(0.45 × moving_projected_span / installation_projected_span, 0.15, 0.45)`。其中 installation span 是移动件完整态与爆炸态包围范围的联合投影，安装跨度越长，level 越小、周边留白越多；不使用绝对坐标，也不增加探针或重试。
+2026-08-20 的真实模型测试证明单次原生命令可以稳定执行，同时暴露了固定两档留白的边界：命令以爆炸态移动件为中心时，长安装位移可能让完整态安装位置和接受件离开画面。当前正式策略采用产品无关的连续留白：`level = clamp(0.42 × moving_projected_span / installation_projected_span, 0.14, 0.42)`。其中 installation span 是移动件完整态与爆炸态包围范围的联合投影，安装跨度越长，level 越小、周边留白越多；不使用绝对坐标，也不生成修正帧。
 
 ## 对现有实现的判断
 
@@ -59,14 +59,14 @@ PTC 提供配置项 `zoom_to_selected_level` 控制 Zoom to Selected 的留白�
 session.RunMacro("~ Command `ProCmdViewRefit`");
 ```
 
-随后仍应用显式 ScreenTransform Zoom/PAN，并由 Python 端通过多帧探针修正。问题在于：
+随后仍应用显式 ScreenTransform Zoom/PAN。问题在于：
 
 1. 原生 Refit 的自适应结果随后又被外部 Zoom/PAN 覆盖；
 2. 临时 Layer blank 是否与 Refit 的实际包围范围完全一致，没有被单独验证；
 3. 代码没有使用已公开的直接 `WWindow.Refit()` 方法；
 4. 当前代码注释称异步 `RunMacro` 会排队，但 PTC 的 [Execution Rules](https://support.ptc.com/help/creo_toolkit/protoolkit_pma/r11.0/usascii/creo_toolkit/user_guide/Execution_Rules.html)说明异步模式下宏会在载入后立即执行，该注释不应继续作为设计依据。
 
-因此不能简单认为“Refit 已经验证失败”。实际失败的是“Refit + 显式 Zoom/PAN + 探针覆盖”的组合路径。
+因此不能简单认为“Refit 已经验证失败”。实际失败的是“Refit + 显式 Zoom/PAN 覆盖”的组合路径。
 
 ## 推荐的最小实测方案
 
@@ -82,19 +82,7 @@ session.RunMacro("~ Command `ProCmdViewRefit`");
 6. 清空选择缓冲区，恢复正常显示；
 7. 只导出一张正式图并执行现有硬门验证。
 
-冷启动目标为 **每步 1 张正式帧，0 张探针帧**。如果原生命令在当前 datecode 不可用，步骤应明确失败或进入下述直接 Refit 后备，不能恢复为无限探针。
-
-### 后备：直接 Refit 焦点简化表示
-
-若 Zoom to Selected 的命令调用不够稳定：
-
-1. 激活只包含 moving occurrence 的临时焦点简化表示；
-2. 直接调用 `((WWindow) window).Refit()`；
-3. 激活正式阶段简化表示，但不再次 Refit；
-4. 如需箭头留白，只应用一个固定的小于 1 的相对 margin multiplier；
-5. 导出并验证一张正式图。
-
-该路径仍由 Creo 按焦点几何大小自适应，不依赖屏幕坐标、旧产品 Zoom 或双轴响应探针。
+每步只允许 **1 张正式帧**。如果原生命令在当前 datecode 不可用，步骤应明确失败，不能进入额外构图轮次。
 
 ## 验收条件
 
@@ -107,4 +95,4 @@ session.RunMacro("~ Command `ProCmdViewRefit`");
 - Creo 版本/datecode、命令标识和配置值写入审计；
 - 源 CAD 哈希保持不变。
 
-探针可保留为开发诊断工具，但不再进入常规正式生成链路。
+旧的屏幕响应与多帧构图实现已经删除，不再作为开发或正式入口。

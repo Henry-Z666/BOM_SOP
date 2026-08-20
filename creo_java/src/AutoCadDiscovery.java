@@ -125,9 +125,9 @@ public final class AutoCadDiscovery {
     return esc(value.getClass().getSimpleName() + (message == null ? "" : ": " + message));
   }
   private static Point3D surfaceAnchor(Surface surface) throws jxthrowable {
-    Outline3D extent = surface.GetXYZExtents(); Point3D low = extent.get(0), high = extent.get(1); Point3D probe = Point3D.create();
-    for (int i = 0; i < 3; i++) probe.set(i, (low.get(i) + high.get(i)) / 2.0);
-    return surface.EvalClosestPointOnSurface(probe);
+    Outline3D extent = surface.GetXYZExtents(); Point3D low = extent.get(0), high = extent.get(1); Point3D sample = Point3D.create();
+    for (int i = 0; i < 3; i++) sample.set(i, (low.get(i) + high.get(i)) / 2.0);
+    return surface.EvalClosestPointOnSurface(sample);
   }
   private static String constraintType(ComponentConstraintType type) {
     int value = type.getValue();

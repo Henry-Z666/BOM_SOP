@@ -19,8 +19,8 @@ real image may be accepted only through an explicit acknowledged human override 
 original image path and SHA-256, machine failures, time and reason. A placeholder, missing image,
 legacy path or arbitrary file can never be adopted.
 
-The production probe policy is frozen. User PAN/Zoom, explosion-distance, and arrow-layout text
-does not enable `manual_refit` or adaptive probes. A camera revision must name one of the two fixed
+The production framing path is native selected fit only. User PAN/Zoom, explosion-distance, and
+arrow-layout text does not enable `manual_refit` or extra framing renders. A camera revision must name one of the two fixed
 cameras or explicitly request the other fixed view. An installation-direction clarification is
 accepted only when the user states an explicit positive or negative X/Y/Z axis; Qwen must copy
 that vector exactly. Qwen cannot revise dependencies, complete-state facts, or occurrence IDs.

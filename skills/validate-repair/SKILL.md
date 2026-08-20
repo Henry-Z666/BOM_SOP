@@ -9,8 +9,8 @@ Invoke `validate-repair` through `SkillRuntime` after rendering. It emits
 `validation-result/v2` and `candidate-set/v1`.
 
 Run deterministic gates before Qwen review. Never let Qwen waive assembly, occurrence,
-visibility, camera, transform, arrow, or image-size failures. Do not activate frozen
-camera/PAN/Zoom probes. Produce two to four single-factor candidates only when the render
+visibility, camera, transform, arrow, or image-size failures. Do not activate extra
+camera/PAN/Zoom framing renders. Produce two to four single-factor candidates only when the render
 artifact explicitly proves that all structural and geometric gates passed. When a real Creo
 image exists but fails a machine gate, retain the byte-identical image for informed human
 review; produce a placeholder only when no real image exists.

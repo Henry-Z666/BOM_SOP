@@ -180,28 +180,19 @@ class DeterministicNativeRenderValidator:
                 or selected_fit.get("schema_version") != "native-selected-fit/v1"
                 or selected_fit.get("command") != "ProCmdZoomIntoOutline"
                 or selected_fit.get("selection_scope") != "moving_occurrences/v1"
-                or selected_fit.get("level_policy") != "cad_installation_envelope/v2"
+                or selected_fit.get("level_policy") != "cad_installation_envelope/v3"
                 or selected_fit.get("max_commands_per_render") != 1
                 or selected_fit.get("absolute_pan_zoom_forbidden") is not True
                 or not 0.1 <= selected_fit_level <= 2.0
             ):
                 failures.append("PRESENTATION_CONTRACT_INVALID")
                 return None, None
-        centering = presentation.get("centering")
+        centering = presentation.get("center_gate")
         if (
             not isinstance(centering, dict)
-            or centering.get("schema_version") != "adaptive-screen-center/v1"
-            or centering.get("activity_bbox")
-            != "subject_plus_native_arrow/v1"
-            or centering.get("initial_estimate") != "cad_activity_origin/v1"
-            or centering.get("focus_center") != "midpoint_subject_arrow/v1"
-            or centering.get("probe_policy") != "on_gate_failure/v1"
-            or centering.get("response_cache_scope")
-            != "camera_frame_environment/v2"
-            or centering.get("max_probe_rounds") != 2
+            or centering.get("schema_version")
+            != "native-composition-center-gate/v1"
             or centering.get("target_pixel") != [800, 800]
-            or centering.get("probe_delta") != 0.1
-            or centering.get("max_abs_pan") != 1.0
         ):
             failures.append("PRESENTATION_CONTRACT_INVALID")
             return None, None
@@ -220,17 +211,6 @@ class DeterministicNativeRenderValidator:
             len(target_pixel) != 2
             or not 1.0 <= max_activity_center_offset <= 200.0
             or not 1.0 <= max_arrow_center_offset <= 200.0
-        ):
-            failures.append("PRESENTATION_CONTRACT_INVALID")
-            return None, None
-        zoom_recovery = presentation.get("zoom_recovery")
-        if (
-            not isinstance(zoom_recovery, dict)
-            or zoom_recovery.get("schema_version") != "centered-span-zoom/v1"
-            or zoom_recovery.get("target_subject_span") != 0.55
-            or zoom_recovery.get("min_zoom") != 0.4
-            or zoom_recovery.get("max_zoom") != 32.0
-            or zoom_recovery.get("max_rounds") != 3
         ):
             failures.append("PRESENTATION_CONTRACT_INVALID")
             return None, None

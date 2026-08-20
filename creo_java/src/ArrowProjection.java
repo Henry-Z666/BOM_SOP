@@ -59,8 +59,8 @@ public final class ArrowProjection {
     // face and is rejected by some Creo face evaluators.  Seed the closest
     // point query from this surface's own XYZ extent instead.
     Outline3D extent=surface.GetXYZExtents(); double[] low=point(extent.get(0)),high=point(extent.get(1));
-    double[] probe=new double[]{(low[0]+high[0])/2.0,(low[1]+high[1])/2.0,(low[2]+high[2])/2.0};
-    return point(surface.EvalClosestPointOnSurface(point(probe)));
+    double[] sample=new double[]{(low[0]+high[0])/2.0,(low[1]+high[1])/2.0,(low[2]+high[2])/2.0};
+    return point(surface.EvalClosestPointOnSurface(point(sample)));
   }
 
   private static intseq appendPath(intseq prefix, int componentId) throws jxthrowable {
@@ -70,24 +70,24 @@ public final class ArrowProjection {
   }
 
   /** Adds deterministic anchors from one physical solid occurrence. */
-  private static void collectSolidCandidates(Solid leaf,intseq path,String source,List<Candidate> candidates,int[] probeFailures) throws jxthrowable {
+  private static void collectSolidCandidates(Solid leaf,intseq path,String source,List<Candidate> candidates,int[] sampleFailures) throws jxthrowable {
     try {
       ModelItems surfaces=leaf.ListItems(ModelItemType.ITEM_SURFACE);
       for(int i=0;surfaces!=null&&i<surfaces.getarraysize();i++){
         Surface surface=(Surface)surfaces.get(i);
         try { candidates.add(new Candidate(surface.GetId(),source,surfaceAnchor(surface),path)); }
-        catch(Throwable ignored) { probeFailures[0]++; }
+        catch(Throwable ignored) { sampleFailures[0]++; }
       }
-    } catch(Throwable ignored) { probeFailures[0]++; }
+    } catch(Throwable ignored) { sampleFailures[0]++; }
     if(!candidates.isEmpty()) return;
     try {
       SolidBody body=leaf.GetDefaultBody(); Surfaces surfaces=body==null?null:body.ListSurfaces();
       for(int i=0;surfaces!=null&&i<surfaces.getarraysize();i++){
         Surface surface=surfaces.get(i);
         try { candidates.add(new Candidate(surface.GetId(),source.replace("model_","body_"),surfaceAnchor(surface),path)); }
-        catch(Throwable ignored) { probeFailures[0]++; }
+        catch(Throwable ignored) { sampleFailures[0]++; }
       }
-    } catch(Throwable ignored) { probeFailures[0]++; }
+    } catch(Throwable ignored) { sampleFailures[0]++; }
   }
 
   /**
@@ -95,7 +95,7 @@ public final class ArrowProjection {
    * In that case, use the first deterministic descendant solid as its physical
    * same-CAD-point anchor, while the parent occurrence remains the moved group.
    */
-  private static boolean collectDescendantAnchor(Session session,Assembly assembly,intseq prefix,List<Candidate> candidates,int[] probeFailures) throws jxthrowable {
+  private static boolean collectDescendantAnchor(Session session,Assembly assembly,intseq prefix,List<Candidate> candidates,int[] sampleFailures) throws jxthrowable {
     Features components=assembly.ListFeaturesByType(Boolean.FALSE,FeatureType.FEATTYPE_COMPONENT);
     List<ComponentFeat> ordered=new ArrayList<>();
     for(int i=0;components!=null&&i<components.getarraysize();i++) ordered.add((ComponentFeat)components.get(i));
@@ -109,12 +109,12 @@ public final class ArrowProjection {
         Model child=session.RetrieveModel(component.GetModelDescr());
         int before=candidates.size();
         if(child instanceof Assembly) {
-          if(collectDescendantAnchor(session,(Assembly)child,childPath,candidates,probeFailures)) return true;
+          if(collectDescendantAnchor(session,(Assembly)child,childPath,candidates,sampleFailures)) return true;
         } else if(child instanceof Solid) {
-          collectSolidCandidates((Solid)child,childPath,"descendant_model_surface",candidates,probeFailures);
+          collectSolidCandidates((Solid)child,childPath,"descendant_model_surface",candidates,sampleFailures);
           if(candidates.size()>before) return true;
         }
-      } catch(Throwable ignored) { probeFailures[0]++; }
+      } catch(Throwable ignored) { sampleFailures[0]++; }
     }
     return false;
   }
@@ -127,16 +127,16 @@ public final class ArrowProjection {
     ComponentPath componentPath=pfcAssembly.CreateComponentPath(root,ids);
     Solid leaf=componentPath.GetLeaf(); Transform3D complete=componentPath.GetTransform(true);
     List<Candidate> candidates=new ArrayList<>();
-    int[] probeFailures=new int[]{0};
+    int[] sampleFailures=new int[]{0};
     if(preferredCompleteRoot!=null){
       if(preferredCompleteRoot.length!=3) throw new IllegalArgumentException("planned arrow anchor must have three coordinates");
       Transform3D inverse=pfcBase.Transform3D_Create(complete.GetMatrix()); inverse.Invert();
       Candidate planned=new Candidate(-2,"planned_constraint_anchor",transform(inverse,preferredCompleteRoot),ids);
       planned.completeRoot=preferredCompleteRoot.clone(); candidates.add(planned);
     } else {
-      collectSolidCandidates(leaf,ids,"model_surface",candidates,probeFailures);
+      collectSolidCandidates(leaf,ids,"model_surface",candidates,sampleFailures);
       if(candidates.isEmpty() && leaf instanceof Assembly)
-        collectDescendantAnchor(session,(Assembly)leaf,ids,candidates,probeFailures);
+        collectDescendantAnchor(session,(Assembly)leaf,ids,candidates,sampleFailures);
     }
     candidates.sort(Comparator.comparingInt(c->c.surfaceId));
     List<Candidate> unique=new ArrayList<>();
@@ -151,7 +151,7 @@ public final class ArrowProjection {
       unique.add(new Candidate(-1,"occurrence_origin_fallback",new double[]{0.0,0.0,0.0},ids));
       System.err.println("[RENDER] arrow_anchor_fallback occurrence="+pathId(ids)+" source=occurrence_origin");
     }
-    System.err.println("[RENDER] arrow_anchor_candidates occurrence="+pathId(ids)+" count="+unique.size()+" surface_probe_failures="+probeFailures[0]);
+    System.err.println("[RENDER] arrow_anchor_candidates occurrence="+pathId(ids)+" count="+unique.size()+" surface_sample_failures="+sampleFailures[0]);
     for(Candidate candidate:unique) if(candidate.completeRoot==null) candidate.completeRoot=transform(pfcAssembly.CreateComponentPath(root,candidate.anchorPath).GetTransform(true),candidate.local);
     return new MovingOccurrence(pathId(ids),ids,complete,unique);
   }

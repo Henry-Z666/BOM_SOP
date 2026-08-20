@@ -294,7 +294,7 @@ public final class RenderAssemblyImage {
     return null;
   }
 
-  /** Uses Creo's selected-object bounding-box fit; no raster probe or absolute PAN/ZOOM. */
+  /** Uses Creo's selected-object bounding-box fit; no absolute PAN/ZOOM. */
   private static void applyNativeSelectedFit(Session session, Window window, Assembly assembly,
       java.util.List<intseq> occurrencePaths, double level) throws jxthrowable {
     if (session.UIGetCommand("ProCmdZoomIntoOutline") == null)
@@ -600,7 +600,7 @@ public final class RenderAssemblyImage {
       java.util.Set<String> focus = new java.util.HashSet<String>();
       // The receiver can be a cabinet-sized plate while the installation
       // activity is a handful of fasteners.  Including that whole receiver in
-      // Refit recreates the exact scale failure this probe is meant to solve.
+      // Refit recreates the scale failure handled by native selected fitting.
       for (String rawPath : occurrencePaths.split(";")) if (!rawPath.trim().startsWith("!")) focus.add(rawPath.trim());
 
       Assembly assembly = (Assembly)model;
@@ -623,7 +623,7 @@ public final class RenderAssemblyImage {
         // The receiver may be much larger and have a distant component
         // origin. Center the complete-to-exploded activity midpoint, not only
         // the complete occurrence origin, so the same-CAD-point arrow starts
-        // close to the native view centre before any PAN probe is needed.
+        // close to the native view centre.
         double[] stageCenter = stageOccurrenceCenter(session, assembly, requestedOccurrences);
         framingTranslation = new double[] {
           -stageCenter[0] - dx / 2.0,

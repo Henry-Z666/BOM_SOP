@@ -20,15 +20,15 @@ unresolved required field. Never report success while retaining only the old pla
 Classify every deterministic failure through the shared four-class gate policy:
 
 - `hard_block`: assembly, camera compatibility, transform, and arrow truth failures reject the image.
-- `auto_repair`: reserved for a future deterministic planner repair; the frozen production worker
-  does not launch camera, PAN, Zoom, or explosion probes from this category.
+- `auto_repair`: reserved for a future deterministic planner repair; the production worker does
+  not launch extra camera, PAN, Zoom, or explosion renders from this category.
 - `human_review`: keep a real image with presentation-only warnings as `QUESTIONED`.
 - `system_retry`: roll back a failed local attempt and retain the previous valid image as history.
 
-The production framing contract is `default_refit/v1`: one locked fixed camera, `Zoom=1`,
-`PAN=(0,0)`, and one formal raster. Camera compatibility or weak-direction findings return to
-planning/clarification instead of being converted into camera candidates. Adaptive framing code
-remains an inactive interface until cross-scale migration tests explicitly enable it.
+The production framing contract is `native_zoom_to_selected/v1`: one locked fixed camera, one
+Creo selected-object fit command, `Zoom=1`, `PAN=(0,0)`, and one formal raster. Camera
+compatibility or weak-direction findings return to planning/clarification instead of being
+converted into extra render candidates.
 
 Every failed or questioned step carries `primary_code`, the structured `failures` list,
 `category`, `expected`, `actual`, `attempted_actions`, `suggested_actions`, and `retained_image`.

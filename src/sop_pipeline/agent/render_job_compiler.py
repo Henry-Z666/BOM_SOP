@@ -69,11 +69,7 @@ def compile_locked_render_jobs(plan: FormalRenderPlan) -> RenderPlan:
                 "explosion_scales": [0.85, 1.0, 1.15],
                 "pan_offsets": [[0, 0]],
                 "zoom_scales": [1.0],
-                "framing_repairs": (
-                    "bounded_scale_bucket_probe/v1"
-                    if plan.occurrence_bounds_root
-                    else "frozen_pending_scale_derivation/v1"
-                ),
+                "framing_repairs": "native_selected_fit_only/v1",
             },
         }
         tasks.append(
@@ -213,8 +209,7 @@ def _compile_presentation(
             "native_refit": _native_refit_contract(),
             "native_selected_fit": _native_selected_fit_contract(framing_profile),
             "framing_profile": framing_profile,
-            "centering": _centering_contract(),
-            "zoom_recovery": _zoom_recovery_contract(),
+            "center_gate": _center_gate(),
             "variants": [],
             "frame_gate": _frame_gate(),
         }
@@ -226,8 +221,7 @@ def _compile_presentation(
         "native_refit": _native_refit_contract(),
         "native_selected_fit": _native_selected_fit_contract(framing_profile),
         "framing_profile": framing_profile,
-        "centering": _centering_contract(),
-        "zoom_recovery": _zoom_recovery_contract(),
+        "center_gate": _center_gate(),
         "variants": [
             {
                 "variant_id": "base",
@@ -257,18 +251,10 @@ def _frame_gate() -> dict[str, Any]:
     }
 
 
-def _centering_contract() -> dict[str, Any]:
+def _center_gate() -> dict[str, Any]:
     return {
-        "schema_version": "adaptive-screen-center/v1",
-        "activity_bbox": "subject_plus_native_arrow/v1",
-        "initial_estimate": "cad_activity_origin/v1",
-        "focus_center": "midpoint_subject_arrow/v1",
-        "probe_policy": "on_gate_failure/v1",
-        "response_cache_scope": "camera_frame_environment/v2",
-        "max_probe_rounds": 2,
+        "schema_version": "native-composition-center-gate/v1",
         "target_pixel": [800, 800],
-        "probe_delta": 0.1,
-        "max_abs_pan": 1.0,
         "max_activity_center_offset_pixels": 120,
         "max_arrow_center_offset_pixels": 120,
     }
@@ -278,11 +264,10 @@ def _framing_profile_contract(
     plan: FormalRenderPlan, step: FormalRenderStep
 ) -> dict[str, Any]:
     frozen = {
-        "schema_version": "frozen-framing-profile-policy/v3",
+        "schema_version": "native-selected-framing-policy/v1",
         "policy": "native_zoom_to_selected/v1",
         "scale_signature": "creo_selected_object_bbox/v1",
-        "probe_interface_status": "frozen_diagnostic_only/v1",
-        "on_failure": "question_without_probe/v1",
+        "on_failure": "question_single_frame/v1",
     }
     if step.camera_id is None:
         return frozen
@@ -305,7 +290,7 @@ def _framing_profile_contract(
 
 
 def _native_selected_fit_contract(framing_profile: dict[str, Any]) -> dict[str, Any]:
-    level = 0.3
+    level = 0.28
     evidence = framing_profile.get("scale_evidence", {})
     if isinstance(evidence, dict) and evidence.get("status") == "available":
         moving = evidence.get("moving_projected_size_root", [])
@@ -315,7 +300,7 @@ def _native_selected_fit_contract(framing_profile: dict[str, Any]) -> dict[str, 
             installation_size = max(float(value) for value in installation)
             if moving_size > 0.0 and installation_size > 0.0:
                 level = round(
-                    max(0.15, min(0.45, 0.45 * moving_size / installation_size)),
+                    max(0.14, min(0.42, 0.42 * moving_size / installation_size)),
                     2,
                 )
         except (TypeError, ValueError):
@@ -325,7 +310,7 @@ def _native_selected_fit_contract(framing_profile: dict[str, Any]) -> dict[str, 
         "command": "ProCmdZoomIntoOutline",
         "selection_scope": "moving_occurrences/v1",
         "zoom_to_selected_level": level,
-        "level_policy": "cad_installation_envelope/v2",
+        "level_policy": "cad_installation_envelope/v3",
         "max_commands_per_render": 1,
         "absolute_pan_zoom_forbidden": True,
     }
@@ -336,14 +321,4 @@ def _native_refit_contract() -> dict[str, Any]:
         "schema_version": "native-focus-refit/v1",
         "fit_occurrences": "moving_only/v1",
         "restore_stage_context_without_refit": True,
-    }
-
-
-def _zoom_recovery_contract() -> dict[str, Any]:
-    return {
-        "schema_version": "centered-span-zoom/v1",
-        "target_subject_span": 0.55,
-        "min_zoom": 0.4,
-        "max_zoom": 32.0,
-        "max_rounds": 3,
     }

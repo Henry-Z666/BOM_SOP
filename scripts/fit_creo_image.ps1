@@ -35,7 +35,7 @@ try {
     $encoder = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object MimeType -eq 'image/jpeg' | Select-Object -First 1
     $quality = New-Object System.Drawing.Imaging.EncoderParameters(1)
     $quality.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]100)
-    # Keep the temporary name short. Probe output directories are already deep,
+    # Keep the temporary name short because run output directories are deep,
     # and GDI+ may surface a generic Save error when the full temporary path
     # approaches the legacy Windows path limit.
     $temporary = Join-Path (Split-Path -Parent $full) ('.f-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.jpg')

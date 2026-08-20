@@ -36,26 +36,11 @@ def _native_payload(**changes) -> dict:
                 "fit_occurrences": "moving_only/v1",
                 "restore_stage_context_without_refit": True,
             },
-            "centering": {
-                "schema_version": "adaptive-screen-center/v1",
-                "activity_bbox": "subject_plus_native_arrow/v1",
-                "initial_estimate": "cad_activity_origin/v1",
-                "focus_center": "midpoint_subject_arrow/v1",
-                "probe_policy": "on_gate_failure/v1",
-                "response_cache_scope": "camera_frame_environment/v2",
-                "max_probe_rounds": 2,
+            "center_gate": {
+                "schema_version": "native-composition-center-gate/v1",
                 "target_pixel": [800, 800],
-                "probe_delta": 0.1,
-                "max_abs_pan": 1.0,
                 "max_activity_center_offset_pixels": 120,
                 "max_arrow_center_offset_pixels": 120,
-            },
-            "zoom_recovery": {
-                "schema_version": "centered-span-zoom/v1",
-                "target_subject_span": 0.55,
-                "min_zoom": 0.4,
-                "max_zoom": 32.0,
-                "max_rounds": 3,
             },
             "variants": [
                 {"variant_id": "base", "camera_id": "fixed_123", "zoom": 1.0, "pan": [0.0, 0.0]}
@@ -305,7 +290,7 @@ class RenderValidationTests(unittest.TestCase):
                 "command": "ProCmdZoomIntoOutline",
                 "selection_scope": "moving_occurrences/v1",
                 "zoom_to_selected_level": 0.35,
-                "level_policy": "cad_installation_envelope/v2",
+                "level_policy": "cad_installation_envelope/v3",
                 "max_commands_per_render": 1,
                 "absolute_pan_zoom_forbidden": True,
             }

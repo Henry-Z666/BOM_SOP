@@ -91,7 +91,7 @@ class FramingScaleTests(unittest.TestCase):
         self.assertEqual(shallow["scope_depth"], 1)
         self.assertEqual(deep["scope_depth"], 2)
 
-    def test_missing_occurrence_bounds_disables_scale_probe(self) -> None:
+    def test_missing_occurrence_bounds_disables_scale_evidence(self) -> None:
         result = evidence(
             {
                 "moving": bounds([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]),

@@ -46,7 +46,7 @@ class QwenAdvisorTests(unittest.TestCase):
         self.assertEqual(revision.changes, {"camera_id": "fixed_456"})
         self.assertEqual(len(transport.text_calls), 2)
 
-    def test_pan_revision_is_rejected_while_probe_policy_is_frozen(self) -> None:
+    def test_pan_revision_is_rejected_by_native_selected_policy(self) -> None:
         transport = FakeTransport(
             '{"kind":"presentation","changes":{"pan":[0.5,0.0]}}'
         )
@@ -279,7 +279,7 @@ class QwenAdvisorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             QwenAdvisor(transport).interpret_resolution("step-1", "保存到这里", 1)
 
-    def test_clear_zoom_instruction_does_not_reenable_frozen_probes(self) -> None:
+    def test_clear_zoom_instruction_cannot_override_native_selected_fit(self) -> None:
         transport = FakeTransport("这一步应该把安装位置放大显示")
 
         with self.assertRaises(ValueError):

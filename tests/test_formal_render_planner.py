@@ -171,8 +171,8 @@ class FormalRenderPlannerTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(long_installation["zoom_to_selected_level"], 0.15)
-        self.assertEqual(compact_installation["zoom_to_selected_level"], 0.36)
+        self.assertEqual(long_installation["zoom_to_selected_level"], 0.14)
+        self.assertEqual(compact_installation["zoom_to_selected_level"], 0.34)
 
     def test_native_selected_fit_covers_receiver_activity_envelope(self) -> None:
         contract = _native_selected_fit_contract(
@@ -186,7 +186,7 @@ class FormalRenderPlannerTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(contract["zoom_to_selected_level"], 0.15)
+        self.assertEqual(contract["zoom_to_selected_level"], 0.14)
 
     def test_uses_child_reference_from_parent_level_creo_constraint(self) -> None:
         bom, draft, mapping, graph = fixture()
@@ -457,8 +457,8 @@ class FormalRenderPlannerTests(unittest.TestCase):
                 "schema_version": "native-selected-fit/v1",
                 "command": "ProCmdZoomIntoOutline",
                 "selection_scope": "moving_occurrences/v1",
-                "zoom_to_selected_level": 0.3,
-                "level_policy": "cad_installation_envelope/v2",
+                "zoom_to_selected_level": 0.28,
+                "level_policy": "cad_installation_envelope/v3",
                 "max_commands_per_render": 1,
                 "absolute_pan_zoom_forbidden": True,
             },
@@ -493,11 +493,11 @@ class FormalRenderPlannerTests(unittest.TestCase):
             "installation_activity_center/v1",
         )
         self.assertEqual(
-            task.payload["presentation"]["centering"]["schema_version"],
-            "adaptive-screen-center/v1",
+            task.payload["presentation"]["center_gate"]["schema_version"],
+            "native-composition-center-gate/v1",
         )
 
-    def test_real_cad_bounds_do_not_reenable_frozen_probe_contract(self) -> None:
+    def test_real_cad_bounds_feed_native_selected_fit_contract(self) -> None:
         bom, draft, mapping, graph = fixture()
         for node in graph["occurrences"]:
             origin = node["transform"]["origin"]
@@ -523,20 +523,10 @@ class FormalRenderPlannerTests(unittest.TestCase):
         profile = task.payload["presentation"]["framing_profile"]
 
         self.assertEqual(profile["policy"], "native_zoom_to_selected/v1")
-        self.assertEqual(profile["schema_version"], "frozen-framing-profile-policy/v3")
+        self.assertEqual(profile["schema_version"], "native-selected-framing-policy/v1")
         self.assertEqual(profile["scale_signature"], "creo_selected_object_bbox/v1")
-        self.assertEqual(profile["probe_interface_status"], "frozen_diagnostic_only/v1")
-        self.assertEqual(profile["on_failure"], "question_without_probe/v1")
-        self.assertEqual(
-            task.payload["presentation"]["zoom_recovery"],
-            {
-                "schema_version": "centered-span-zoom/v1",
-                "target_subject_span": 0.55,
-                "min_zoom": 0.4,
-                "max_zoom": 32.0,
-                "max_rounds": 3,
-            },
-        )
+        self.assertEqual(profile["on_failure"], "question_single_frame/v1")
+        self.assertNotIn("centering", task.payload["presentation"])
         self.assertNotIn("output_path", str(task.payload))
 
     def test_unconfirmed_plan_cannot_compile_worker_tasks(self) -> None:

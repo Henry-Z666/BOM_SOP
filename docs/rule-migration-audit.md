@@ -12,10 +12,10 @@
 | U 型夹先于其紧固螺钉 | 接收 occurrence 的 producer dependency | 已迁移并执行 |
 | 同 CAD 点箭头、箭头随真实纯平移方向 | `same_cad_point/v1`、Creo `DisplayList3D`、箭头审计 | 已迁移并执行 |
 | 不同步骤不能复用写死的三根向下箭头 | 每个 render job 的 moving occurrence、anchor 和 translation 独立编译；栅格/审计数量核对 | 已迁移并执行 |
-| 固定 123/456 相机，当前不放大 | `default_refit/v1`，`Zoom=1/PAN=0` | 已迁移并执行 |
+| 固定 123/456 相机，按部件自适应构图 | `native_zoom_to_selected/v1`，安装包络连续留白 | 已迁移并执行 |
 | 左下角 Creo 状态文字不参与主体测量 | `raster-composition-gate/v2` 的版本化 ignored region | 已迁移并执行 |
 | 纯构图警告不能冒充结构失败 | 结构硬门与 presentation warning 分离；保留真实图交给 Qwen/人工复核 | 本轮迁移并执行 |
-| 相机尺度签名、PAN/Zoom 探针推导 | `centered-span-zoom/v1`、`adaptive-screen-center/v1` 接口及测试 | 明确冻结；当前正式路径不调用 |
+| 旧屏幕响应与多帧构图实现 | 已从代码、合同、测试和文档入口删除 | 不再保留 |
 | 水箱 42 张的手写顺序、occurrence ID、距离和相机 JSON | 仅作为历史回归证据，不进入正式运行 | 不迁移具体常数 |
 
 ## 本轮暴露的运行时规则缺口

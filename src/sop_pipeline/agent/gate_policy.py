@@ -175,8 +175,7 @@ _POLICIES = {
         "重新选择可审计的箭头布局。",
         retain_real_image=False,
     ),
-    # Camera/installation compatibility is replanned before another render;
-    # the production worker must not turn these failures into blind probes.
+    # Camera/installation compatibility is replanned before another render.
     "CAMERA_RECEIVER_WRONG_HALF_SPACE": _policy(
         "CAMERA_RECEIVER_WRONG_HALF_SPACE",
         GateCategory.HARD_BLOCK,
@@ -276,25 +275,11 @@ _POLICIES = {
         "人工确认，或降低 zoom、调整 pan。",
         retain_real_image=True,
     ),
-    "SCREEN_CENTERING_UNSOLVABLE": _policy(
-        "SCREEN_CENTERING_UNSOLVABLE",
+    "RENDER_FRAME_BUDGET_EXCEEDED": _policy(
+        "RENDER_FRAME_BUDGET_EXCEEDED",
         GateCategory.HUMAN_REVIEW,
-        "自动居中已达到有界修复上限。",
-        "保留当前图片人工复核，必要时明确给出 pan。",
-        retain_real_image=True,
-    ),
-    "ZOOM_RECOVERY_UNSOLVABLE": _policy(
-        "ZOOM_RECOVERY_UNSOLVABLE",
-        GateCategory.HUMAN_REVIEW,
-        "自动缩放已达到有界修复上限。",
-        "保留当前图片人工复核，必要时明确给出 zoom。",
-        retain_real_image=True,
-    ),
-    "FRAMING_FRAME_BUDGET_EXCEEDED": _policy(
-        "FRAMING_FRAME_BUDGET_EXCEEDED",
-        GateCategory.HUMAN_REVIEW,
-        "自动构图已达到允许的探测帧数量。",
-        "保留当前图片人工复核，或明确给出 zoom 与 pan。",
+        "该任务已使用唯一允许的正式渲染帧。",
+        "保留当前图片人工复核。",
         retain_real_image=True,
     ),
     # Process failures trigger rollback/retry instead of judging assembly truth.
@@ -373,27 +358,6 @@ _POLICIES = {
         GateCategory.SYSTEM_RETRY,
         "构图参数不符合锁定渲染合同。",
         "回退相机、zoom、pan 后重新编译。",
-        retain_real_image=True,
-    ),
-    "SCREEN_CENTERING_STATE_UNAVAILABLE": _policy(
-        "SCREEN_CENTERING_STATE_UNAVAILABLE",
-        GateCategory.SYSTEM_RETRY,
-        "自动居中所需的运行状态不可用。",
-        "保留当前图片并重新建立居中状态。",
-        retain_real_image=True,
-    ),
-    "SCREEN_CENTERING_EVIDENCE_MISSING": _policy(
-        "SCREEN_CENTERING_EVIDENCE_MISSING",
-        GateCategory.SYSTEM_RETRY,
-        "自动居中缺少可计算的屏幕证据。",
-        "回退本轮探测并重试。",
-        retain_real_image=True,
-    ),
-    "SCREEN_CENTERING_PROBE_INVALID": _policy(
-        "SCREEN_CENTERING_PROBE_INVALID",
-        GateCategory.SYSTEM_RETRY,
-        "自动居中探测帧无效。",
-        "清理探测帧并重试。",
         retain_real_image=True,
     ),
     "IMAGE_DIMENSIONS_MISMATCH": _policy(
