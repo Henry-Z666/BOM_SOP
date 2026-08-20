@@ -31,6 +31,11 @@ def _native_payload(**changes) -> dict:
             "focus_context": "stage_visible_bbox/v1",
             "framing_priority": "installation_activity/v1",
             "zoom_anchor": "installation_activity_center/v1",
+            "native_refit": {
+                "schema_version": "native-focus-refit/v1",
+                "fit_occurrences": "moving_only/v1",
+                "restore_stage_context_without_refit": True,
+            },
             "centering": {
                 "schema_version": "adaptive-screen-center/v1",
                 "activity_bbox": "subject_plus_native_arrow/v1",
@@ -49,8 +54,8 @@ def _native_payload(**changes) -> dict:
                 "schema_version": "centered-span-zoom/v1",
                 "target_subject_span": 0.55,
                 "min_zoom": 0.4,
-                "max_zoom": 3.2,
-                "max_rounds": 2,
+                "max_zoom": 32.0,
+                "max_rounds": 3,
             },
             "variants": [
                 {"variant_id": "base", "camera_id": "fixed_123", "zoom": 1.0, "pan": [0.0, 0.0]}

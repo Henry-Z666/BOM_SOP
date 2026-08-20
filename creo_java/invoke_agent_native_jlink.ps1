@@ -11,6 +11,7 @@ $here = $PSScriptRoot
 . (Join-Path $here 'RuntimeConfig.ps1')
 $runtime = Get-CreoRuntime -ProjectRoot $ProjectRoot -ConfigPath $RuntimeConfig
 Set-CreoRuntimeEnvironment -Runtime $runtime
+$null = Start-CreoNameService -Runtime $runtime
 $classpath = (Join-Path $here 'build') + ';' + `
   (Join-Path $runtime.CommonFiles 'text\java\pfcasync.jar') + ';' + `
   (Join-Path $runtime.CommonFiles 'text\java\otk.jar')

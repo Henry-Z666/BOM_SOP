@@ -181,6 +181,26 @@ class CreoDiscoveryTests(unittest.TestCase):
         self.assertTrue(result["authoritative_assembly"]["sha256"].startswith("sha256:"))
         self.assertTrue(result["source_tree_fingerprint"].startswith("sha256:"))
 
+    def test_discovery_accepts_finite_root_bounds_and_rejects_inverted_bounds(self) -> None:
+        graph = valid_graph()
+        graph["occurrences"][0]["bounds_root"] = {
+            "status": "available",
+            "source": "solid_geom_outline/v1",
+            "min": [-1.0, -2.0, -3.0],
+            "max": [1.0, 2.0, 3.0],
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            result = self._run(Path(folder), FakeDiscoveryRunner(graph))
+        self.assertEqual(
+            result["occurrences"][0]["bounds_root"]["source"],
+            "solid_geom_outline/v1",
+        )
+
+        graph["occurrences"][0]["bounds_root"]["min"][0] = 2.0
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaisesRegex(ValueError, "包围盒"):
+                self._run(Path(folder), FakeDiscoveryRunner(graph))
+
     def test_discovery_rejects_any_source_cad_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

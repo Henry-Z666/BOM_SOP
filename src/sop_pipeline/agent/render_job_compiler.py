@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .framing_scale import FramingScaleError, build_framing_scale_evidence
 from .formal_render_planner import FormalRenderPlan, FormalRenderStep
 from .render_scheduler import RenderPlan, RenderTask
 
@@ -59,7 +60,7 @@ def compile_locked_render_jobs(plan: FormalRenderPlan) -> RenderPlan:
             "allowed_camera_ids": list(step.allowed_camera_ids),
             "camera": _compile_camera(plan, step),
             "camera_catalog": _compile_camera_catalog(plan),
-            "presentation": _compile_presentation(step),
+            "presentation": _compile_presentation(plan, step),
             "arrow_anchors": _compile_arrow_anchors(step),
             "arrow_renderer": "creo_display_list/v1",
             "diagnostics": list(step.diagnostics),
@@ -68,7 +69,11 @@ def compile_locked_render_jobs(plan: FormalRenderPlan) -> RenderPlan:
                 "explosion_scales": [0.85, 1.0, 1.15],
                 "pan_offsets": [[0, 0]],
                 "zoom_scales": [1.0],
-                "framing_repairs": "frozen_pending_scale_derivation/v1",
+                "framing_repairs": (
+                    "bounded_scale_bucket_probe/v1"
+                    if plan.occurrence_bounds_root
+                    else "frozen_pending_scale_derivation/v1"
+                ),
             },
         }
         tasks.append(
@@ -195,14 +200,18 @@ def _compile_camera_catalog(plan: FormalRenderPlan) -> dict[str, dict[str, Any]]
     return result
 
 
-def _compile_presentation(step: FormalRenderStep) -> dict[str, Any]:
+def _compile_presentation(
+    plan: FormalRenderPlan, step: FormalRenderStep
+) -> dict[str, Any]:
+    framing_profile = _framing_profile_contract(plan, step)
     if step.camera_id is None:
         return {
             "schema_version": "fixed-frame-presentation/v1",
             "focus_context": "stage_visible_bbox/v1",
             "framing_priority": "installation_activity/v1",
             "zoom_anchor": "installation_activity_center/v1",
-            "framing_profile": _framing_profile_contract(),
+            "native_refit": _native_refit_contract(),
+            "framing_profile": framing_profile,
             "centering": _centering_contract(),
             "zoom_recovery": _zoom_recovery_contract(),
             "variants": [],
@@ -213,7 +222,8 @@ def _compile_presentation(step: FormalRenderStep) -> dict[str, Any]:
         "focus_context": "stage_visible_bbox/v1",
         "framing_priority": "installation_activity/v1",
         "zoom_anchor": "installation_activity_center/v1",
-        "framing_profile": _framing_profile_contract(),
+        "native_refit": _native_refit_contract(),
+        "framing_profile": framing_profile,
         "centering": _centering_contract(),
         "zoom_recovery": _zoom_recovery_contract(),
         "variants": [
@@ -262,14 +272,55 @@ def _centering_contract() -> dict[str, Any]:
     }
 
 
-def _framing_profile_contract() -> dict[str, Any]:
-    return {
+def _framing_profile_contract(
+    plan: FormalRenderPlan, step: FormalRenderStep
+) -> dict[str, Any]:
+    frozen = {
         "schema_version": "frozen-framing-profile-policy/v1",
         "policy": "default_refit/v1",
         "scale_signature": "default/v1",
         "probe_interface_status": "frozen_pending_scale_derivation/v1",
         "on_mismatch": "question_step/v1",
         "future_scale_buckets_supported": True,
+    }
+    if step.camera_id is None:
+        return frozen
+    camera = _compile_camera_catalog(plan).get(step.camera_id)
+    if camera is None:
+        return frozen
+    try:
+        evidence = build_framing_scale_evidence(
+            occurrence_bounds_root=plan.occurrence_bounds_root,
+            moving_occurrences=step.moving_occurrences,
+            receiver_occurrences=step.receiver_occurrences,
+            visible_occurrences=step.visible_occurrences,
+            translation_vector_root=step.translation_vector_root,
+            stage_scope_occurrence=step.stage_scope_occurrence,
+            camera=camera,
+        )
+    except FramingScaleError:
+        return frozen
+    if evidence.get("status") != "available":
+        return {**frozen, "scale_evidence": evidence}
+    return {
+        "schema_version": "frozen-framing-profile-policy/v2",
+        "policy": "freeze_per_scale_bucket/v1",
+        "scale_signature": str(evidence["scale_signature"]),
+        "scale_evidence": evidence,
+        "probe_interface_status": "enabled_real_cad_bounds/v1",
+        "on_mismatch": "invalidate_and_recalibrate_once/v1",
+        "max_bucket_recalibrations": 1,
+        "safe_context_activity_ratio_bucket_max": 3,
+        "outside_safe_boundary": "question_without_zoom/v1",
+        "future_scale_buckets_supported": True,
+    }
+
+
+def _native_refit_contract() -> dict[str, Any]:
+    return {
+        "schema_version": "native-focus-refit/v1",
+        "fit_occurrences": "moving_only/v1",
+        "restore_stage_context_without_refit": True,
     }
 
 
@@ -278,6 +329,6 @@ def _zoom_recovery_contract() -> dict[str, Any]:
         "schema_version": "centered-span-zoom/v1",
         "target_subject_span": 0.55,
         "min_zoom": 0.4,
-        "max_zoom": 3.2,
-        "max_rounds": 2,
+        "max_zoom": 32.0,
+        "max_rounds": 3,
     }

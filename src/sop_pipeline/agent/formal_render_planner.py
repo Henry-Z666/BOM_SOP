@@ -68,6 +68,7 @@ class FormalRenderPlan:
     schema_version: str
     assembly_file: str
     camera_basis: dict[str, Any]
+    occurrence_bounds_root: dict[str, dict[str, list[float]]]
     initial_completed_occurrences: tuple[str, ...]
     scope_base_occurrences: dict[str, tuple[str, ...]]
     steps: tuple[FormalRenderStep, ...]
@@ -281,6 +282,7 @@ def compile_formal_render_plan(
         "schema_version": "formal-render-plan/v2",
         "assembly_file": mapping.assembly_file,
         "camera_basis": camera_basis,
+        "occurrence_bounds_root": _occurrence_bounds_root(nodes),
         "initial_completed_occurrences": sorted(initial_completed, key=_path_key),
         "scope_base_occurrences": {
             scope: sorted(values, key=_path_key)
@@ -297,6 +299,7 @@ def compile_formal_render_plan(
         schema_version="formal-render-plan/v2",
         assembly_file=mapping.assembly_file,
         camera_basis=camera_basis,
+        occurrence_bounds_root=_occurrence_bounds_root(nodes),
         initial_completed_occurrences=tuple(sorted(initial_completed, key=_path_key)),
         scope_base_occurrences={
             scope: tuple(sorted(values, key=_path_key))
@@ -369,6 +372,7 @@ def lock_formal_render_plan(
         "schema_version": plan.schema_version,
         "assembly_file": plan.assembly_file,
         "camera_basis": plan.camera_basis,
+        "occurrence_bounds_root": plan.occurrence_bounds_root,
         "initial_completed_occurrences": plan.initial_completed_occurrences,
         "scope_base_occurrences": plan.scope_base_occurrences,
         "steps": [asdict(step) for step in retained],
@@ -382,6 +386,7 @@ def lock_formal_render_plan(
         schema_version=plan.schema_version,
         assembly_file=plan.assembly_file,
         camera_basis=plan.camera_basis,
+        occurrence_bounds_root=plan.occurrence_bounds_root,
         initial_completed_occurrences=plan.initial_completed_occurrences,
         scope_base_occurrences=plan.scope_base_occurrences,
         steps=tuple(retained),
@@ -401,6 +406,13 @@ def formal_render_plan_from_dict(payload: dict[str, Any]) -> FormalRenderPlan:
         schema_version=str(payload["schema_version"]),
         assembly_file=str(payload["assembly_file"]),
         camera_basis=dict(payload["camera_basis"]),
+        occurrence_bounds_root={
+            str(occurrence): {
+                "min": [float(value) for value in bounds["min"]],
+                "max": [float(value) for value in bounds["max"]],
+            }
+            for occurrence, bounds in payload.get("occurrence_bounds_root", {}).items()
+        },
         initial_completed_occurrences=tuple(payload["initial_completed_occurrences"]),
         scope_base_occurrences={
             str(scope): tuple(values)
@@ -1015,6 +1027,29 @@ def _path_key(value: str) -> tuple[int, ...]:
         return tuple(int(part) for part in value.split("/"))
     except ValueError:
         return tuple(ord(character) for character in value)
+
+
+def _occurrence_bounds_root(
+    nodes: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, list[float]]]:
+    """Retain only finite Creo-derived root bounds in the locked plan."""
+
+    result: dict[str, dict[str, list[float]]] = {}
+    for occurrence_id, node in nodes.items():
+        bounds = node.get("bounds_root")
+        if not isinstance(bounds, dict) or bounds.get("status") != "available":
+            continue
+        low = _vector(bounds.get("min"))
+        high = _vector(bounds.get("max"))
+        if low is None or high is None or any(
+            low[index] > high[index] for index in range(3)
+        ):
+            continue
+        result[occurrence_id] = {
+            "min": [float(value) for value in low],
+            "max": [float(value) for value in high],
+        }
+    return result
 
 
 def _vector(value: Any) -> tuple[float, float, float] | None:

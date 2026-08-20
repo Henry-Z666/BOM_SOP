@@ -34,7 +34,8 @@ function Get-CreoRuntime {
   $parametric = Join-Path $loadpoint 'Parametric'
   $start = Join-Path $parametric 'bin\parametric.bat'
   $comm = Join-Path $common 'x86e_win64\obj\pro_comm_msg.exe'
-  foreach ($path in @($common, $native, $parametric, $start, $comm)) {
+  $nameService = Join-Path $common 'x86e_win64\nms\nmsd.exe'
+  foreach ($path in @($common, $native, $parametric, $start, $comm, $nameService)) {
     if (-not (Test-Path -LiteralPath $path)) { throw "Creo 运行时缺少必要文件：$path" }
   }
 
@@ -47,12 +48,33 @@ function Get-CreoRuntime {
     ParametricDirectory = $parametric
     CreoCommand = ('"' + $start + '"')
     ProCommMessage = $comm
+    NameService = $nameService
     CreoApp = if ($config.creo_app) { [string]$config.creo_app } else { 'PMA' }
     CreoFeatureName = [string]$config.creo_feature_name
     JavaCommand = Resolve-RuntimeCommand ([string]$config.java_command) 'java'
     JavacCommand = Resolve-RuntimeCommand ([string]$config.javac_command) 'javac'
     PythonCommand = Resolve-RuntimeCommand ([string]$config.python_command) 'python'
   }
+}
+
+function Start-CreoNameService {
+  param(
+    [Parameter(Mandatory = $true)]$Runtime,
+    [int]$IdleTimeoutSeconds = 300
+  )
+  $target = [System.IO.Path]::GetFullPath([string]$Runtime.NameService)
+  $running = Get-Process -Name 'nmsd' -ErrorAction SilentlyContinue | Where-Object {
+    try { [System.IO.Path]::GetFullPath($_.Path) -eq $target } catch { $false }
+  } | Select-Object -First 1
+  if ($null -ne $running) { return $running }
+  $process = Start-Process -FilePath $target `
+    -ArgumentList @('-noservice', '-timeout', [string]$IdleTimeoutSeconds) `
+    -WindowStyle Hidden -PassThru
+  Start-Sleep -Milliseconds 500
+  if ($process.HasExited) {
+    throw "Creo name service exited during startup: $target"
+  }
+  return $process
 }
 
 function Set-CreoRuntimeEnvironment {

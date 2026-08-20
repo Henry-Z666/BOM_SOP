@@ -81,6 +81,73 @@ def _select_targets(tasks: list[dict], step_count: int) -> list[dict]:
     return selected
 
 
+def _scale_evidence(task: dict) -> dict:
+    profile = (
+        task.get("payload", {})
+        .get("presentation", {})
+        .get("framing_profile", {})
+    )
+    evidence = profile.get("scale_evidence", {}) if isinstance(profile, dict) else {}
+    return evidence if isinstance(evidence, dict) else {}
+
+
+def _activity_scale(task: dict) -> float:
+    evidence = _scale_evidence(task)
+    values = evidence.get("activity_projected_size_root", [])
+    if evidence.get("status") != "available" or not isinstance(values, list):
+        raise ValueError(f"task has no real CAD scale evidence: {task.get('step_id')}")
+    return max(float(value) for value in values)
+
+
+def _spread(values: list[dict], count: int) -> list[dict]:
+    if count == 1:
+        return values[:1]
+    indexes = [round(index * (len(values) - 1) / (count - 1)) for index in range(count)]
+    return [values[index] for index in indexes]
+
+
+def _select_scale_spread(tasks: list[dict], step_count: int) -> list[dict]:
+    formal = [
+        task
+        for task in tasks
+        if task.get("payload", {}).get("execution_mode") == "formal"
+        and _scale_evidence(task).get("status") == "available"
+    ]
+    by_camera: dict[str, list[dict]] = {}
+    for task in formal:
+        by_camera.setdefault(_camera_id(task), []).append(task)
+    eligible = {
+        camera_id: camera_tasks
+        for camera_id, camera_tasks in by_camera.items()
+        if len(camera_tasks) >= step_count
+    }
+    if not eligible:
+        raise ValueError(
+            f"no fixed camera has {step_count} formal steps with real CAD bounds"
+        )
+    _, candidates = max(
+        eligible.items(),
+        key=lambda item: (
+            len(
+                {
+                    _scale_evidence(task).get("activity_bucket")
+                    for task in item[1]
+                }
+            ),
+            len(item[1]),
+            item[0],
+        ),
+    )
+    representatives: dict[int, dict] = {}
+    for task in sorted(candidates, key=_activity_scale):
+        bucket = int(_scale_evidence(task)["activity_bucket"])
+        representatives.setdefault(bucket, task)
+    pool = [representatives[key] for key in sorted(representatives)]
+    if len(pool) < step_count:
+        pool = sorted(candidates, key=_activity_scale)
+    return _spread(pool, step_count)
+
+
 def _manifest_frame_counts(run_workspace: Path, step_ids: list[str]) -> dict[str, int]:
     counts = {step_id: 0 for step_id in step_ids}
     worker_root = run_workspace / "internal" / "native-worker"
@@ -105,6 +172,11 @@ def main() -> int:
     parser.add_argument("--workspace", type=Path)
     parser.add_argument("--runtime-config", type=Path)
     parser.add_argument("--step-count", type=int, default=1)
+    parser.add_argument(
+        "--selection",
+        choices=("default", "scale-spread"),
+        default="default",
+    )
     args = parser.parse_args()
 
     if args.runtime_config is not None:
@@ -139,7 +211,11 @@ def main() -> int:
         raise RuntimeError(f"render compilation failed: {compiled.diagnostics}")
     jobs_path = compiled.artifacts[0].relative_path
     jobs = runtime.artifacts.read_json(core.get_run(run_id).workspace, jobs_path)
-    targets = _select_targets(jobs["tasks"], args.step_count)
+    targets = (
+        _select_scale_spread(jobs["tasks"], args.step_count)
+        if args.selection == "scale-spread"
+        else _select_targets(jobs["tasks"], args.step_count)
+    )
     target_ids = [str(task["step_id"]) for task in targets]
     render_parameters = {
         "step_ids": target_ids,
@@ -236,6 +312,22 @@ def main() -> int:
                     {
                         "step_id": task["step_id"],
                         "camera_id": _camera_id(task),
+                        "scale_signature": (
+                            task["payload"]["presentation"]["framing_profile"].get(
+                                "scale_signature"
+                            )
+                        ),
+                        "activity_scale_root": _activity_scale(task)
+                        if _scale_evidence(task).get("status") == "available"
+                        else None,
+                        "context_scale_root": max(
+                            float(value)
+                            for value in _scale_evidence(task)[
+                                "context_projected_size_root"
+                            ]
+                        )
+                        if _scale_evidence(task).get("status") == "available"
+                        else None,
                         "status": target_result["status"],
                         "image": str(image) if image.is_file() else None,
                         "output_hash": target_result["output_hash"],

@@ -284,6 +284,11 @@ def _native_task() -> RenderTask:
                 "focus_context": "stage_visible_bbox/v1",
                 "framing_priority": "installation_activity/v1",
                 "zoom_anchor": "installation_activity_center/v1",
+                "native_refit": {
+                    "schema_version": "native-focus-refit/v1",
+                    "fit_occurrences": "moving_only/v1",
+                    "restore_stage_context_without_refit": True,
+                },
                 "centering": {
                     "schema_version": "adaptive-screen-center/v1",
                     "activity_bbox": "subject_plus_native_arrow/v1",
@@ -302,8 +307,8 @@ def _native_task() -> RenderTask:
                     "schema_version": "centered-span-zoom/v1",
                     "target_subject_span": 0.55,
                     "min_zoom": 0.4,
-                    "max_zoom": 3.2,
-                    "max_rounds": 2,
+                    "max_zoom": 32.0,
+                    "max_rounds": 3,
                 },
                 "variants": [
                     {"variant_id": "base", "camera_id": "fixed_123", "zoom": 1.0, "pan": [0.0, 0.0]},
@@ -327,6 +332,48 @@ def _native_task() -> RenderTask:
                 },
             },
         },
+    )
+
+
+def _scale_bucket_task(
+    *,
+    task_id: str,
+    plan_index: int,
+    signature: str,
+    activity_size: float,
+    context_size: float,
+) -> RenderTask:
+    base = _native_task()
+    payload = deepcopy(base.payload)
+    payload["plan_index"] = plan_index
+    payload["presentation"]["variants"] = [
+        {
+            "variant_id": "base",
+            "camera_id": "fixed_123",
+            "zoom": 1.0,
+            "pan": [0.0, 0.0],
+        }
+    ]
+    payload["presentation"]["framing_profile"] = {
+        "schema_version": "frozen-framing-profile-policy/v2",
+        "policy": "freeze_per_scale_bucket/v1",
+        "scale_signature": signature,
+        "scale_evidence": {
+            "schema_version": "cad-framing-scale/v1",
+            "status": "available",
+            "scale_signature": signature,
+            "activity_projected_size_root": [activity_size, activity_size],
+            "context_projected_size_root": [context_size, context_size],
+        },
+        "probe_interface_status": "enabled_test_cad_bounds/v1",
+        "on_mismatch": "invalidate_and_recalibrate_once/v1",
+        "max_bucket_recalibrations": 1,
+    }
+    return replace(
+        base,
+        task_id=task_id,
+        step_id=task_id,
+        payload=payload,
     )
 
 
@@ -357,6 +404,9 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         self.assertIn("Get-CreoRuntime -ProjectRoot $ProjectRoot -ConfigPath $RuntimeConfig", legacy)
         self.assertIn("@('formal','diagnostic_preview')", batch)
         self.assertNotIn("candidate_search", batch)
+        self.assertIn("max_zoom -ne 32.0", batch)
+        self.assertIn("$zoom -gt 32.0", batch)
+        self.assertIn("max_rounds -ne 3", batch)
 
     def test_native_framing_has_a_six_raster_hard_budget(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -414,6 +464,27 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         self.assertEqual(
             _screen_pan_response_key(payload, camera_id="fixed_123", zoom=1.0),
             _screen_pan_response_key(payload, camera_id="fixed_123", zoom=2.75),
+        )
+
+    def test_pan_response_cache_is_not_reused_across_scale_buckets(self) -> None:
+        first = _scale_bucket_task(
+            task_id="first",
+            plan_index=0,
+            signature="cad-framing-scale/v1:depth=1:activity=10:context=11:ratio=0",
+            activity_size=80.0,
+            context_size=100.0,
+        )
+        second = _scale_bucket_task(
+            task_id="second",
+            plan_index=1,
+            signature="cad-framing-scale/v1:depth=2:activity=9:context=11:ratio=1",
+            activity_size=70.0,
+            context_size=100.0,
+        )
+
+        self.assertNotEqual(
+            _screen_pan_response_key(first.payload, camera_id="fixed_123", zoom=1.0),
+            _screen_pan_response_key(second.payload, camera_id="fixed_123", zoom=1.0),
         )
 
     def test_pan_bound_scales_from_contract_at_native_zoom(self) -> None:
@@ -1004,6 +1075,86 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         distinct_zooms = sorted({round(float(value), 6) for value in zooms})
         self.assertEqual(len(distinct_zooms), 2)
         self.assertGreater(distinct_zooms[-1], 1.0)
+
+    def test_scale_bucket_probe_is_bounded_reused_and_invalidated_by_signature(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            first = _scale_bucket_task(
+                task_id="scale-first",
+                plan_index=0,
+                signature="cad-framing-scale/v1:depth=1:activity=10:context=11:ratio=0",
+                activity_size=80.0,
+                context_size=100.0,
+            )
+            reused = _scale_bucket_task(
+                task_id="scale-reused",
+                plan_index=1,
+                signature="cad-framing-scale/v1:depth=1:activity=10:context=11:ratio=0",
+                activity_size=82.0,
+                context_size=100.0,
+            )
+            changed = _scale_bucket_task(
+                task_id="scale-changed",
+                plan_index=2,
+                signature="cad-framing-scale/v1:depth=2:activity=9:context=11:ratio=1",
+                activity_size=70.0,
+                context_size=100.0,
+            )
+            plan = RenderPlan("render-plan/v2", (first, reused, changed))
+            plan_path = workspace / "locked-render-jobs.json"
+            plan_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": plan.schema_version,
+                        "tasks": [asdict(task) for task in plan.tasks],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runner = AdaptiveCenteringRunner(
+                workspace / "internal" / "prepared-models",
+                zoom_sensitive=True,
+                lower_left_zoom_anchor=True,
+                subject_half_size=400.0,
+            )
+            worker = AgentNativeCreoWorker(
+                powershell="pwsh",
+                batch_script=Path("native.ps1"),
+                models_root=Path("cad"),
+                render_plan_json=plan_path,
+                runner=runner,
+            )
+            session = worker.open_session(workspace, plan)
+
+            first_result = worker.render(session, first, 1)
+            first_frames = sum(
+                int(command[command.index("-Count") + 1])
+                for command in runner.commands
+            )
+            reused_result = worker.render(session, reused, 1)
+            reused_frames = sum(
+                int(command[command.index("-Count") + 1])
+                for command in runner.commands
+            ) - first_frames
+            changed_result = worker.render(session, changed, 1)
+            total_frames = sum(
+                int(command[command.index("-Count") + 1])
+                for command in runner.commands
+            )
+
+        self.assertEqual(first_result.disposition, "passed")
+        self.assertEqual(reused_result.disposition, "passed")
+        self.assertEqual(changed_result.disposition, "passed")
+        self.assertEqual(first_frames, 4, "cold bucket must be base + 2 probes + solved")
+        self.assertEqual(reused_frames, 1, "same bucket must use one formal raster")
+        self.assertEqual(
+            total_frames - first_frames - reused_frames,
+            4,
+            "new bucket must calibrate its own PAN response and scale",
+        )
+        self.assertEqual(len(session.framing_profiles), 2)
+        self.assertEqual(len(session.screen_pan_responses), 2)
+        self.assertTrue(all(profile.zoom > 1.0 for profile in session.framing_profiles.values()))
 
 
 if __name__ == "__main__":

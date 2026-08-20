@@ -57,6 +57,7 @@ if (-not (Test-Path -LiteralPath $discoveryClass)) {
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 Set-CreoRuntimeEnvironment -Runtime $runtime
+$null = Start-CreoNameService -Runtime $runtime
 $classpath = $javaBuild + ';' +
   (Join-Path $runtime.CommonFiles 'text\java\pfcasync.jar') + ';' +
   (Join-Path $runtime.CommonFiles 'text\java\otk.jar')

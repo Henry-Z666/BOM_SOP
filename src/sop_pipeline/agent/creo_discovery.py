@@ -305,6 +305,9 @@ def _validate_graph(payload: dict[str, Any], expected_filename: str) -> None:
             raise ValueError("Creo occurrence 父路径与 component_path 不一致")
         if not _valid_pose(node.get("transform")):
             raise ValueError("Creo occurrence 缺少有效的根坐标刚体变换")
+        bounds = node.get("bounds_root")
+        if bounds is not None and not _valid_bounds(bounds):
+            raise ValueError("Creo occurrence 包含无效的根坐标包围盒")
         known.add(occurrence_id)
         paths.add(path)
     for node in occurrences:
@@ -358,6 +361,22 @@ def _finite_matrix(value: Any) -> bool:
             )
             for row in value
         )
+    )
+
+
+def _valid_bounds(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if value.get("status") == "unavailable":
+        return True
+    if value.get("status") != "available":
+        return False
+    low = value.get("min")
+    high = value.get("max")
+    return (
+        _finite_vector(low)
+        and _finite_vector(high)
+        and all(float(low[index]) <= float(high[index]) for index in range(3))
     )
 
 

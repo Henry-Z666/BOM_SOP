@@ -444,14 +444,47 @@ class FormalRenderPlannerTests(unittest.TestCase):
             task.payload["presentation"]["centering"]["schema_version"],
             "adaptive-screen-center/v1",
         )
+
+    def test_real_cad_bounds_compile_scale_bucket_probe_contract(self) -> None:
+        bom, draft, mapping, graph = fixture()
+        for node in graph["occurrences"]:
+            origin = node["transform"]["origin"]
+            node["bounds_root"] = {
+                "status": "available",
+                "source": "solid_geom_outline/v1",
+                "min": [origin[index] - 5.0 for index in range(3)],
+                "max": [origin[index] + 5.0 for index in range(3)],
+            }
+        plan = compile_formal_render_plan(bom, draft, mapping, graph)
+        locked = lock_formal_render_plan(
+            plan,
+            {"subassembly-scope-0006": "作为已完成整体安装"},
+        )
+
+        restored = formal_render_plan_from_dict(asdict(locked))
+        render_plan = compile_locked_render_jobs(restored)
+        task = next(
+            item
+            for item in render_plan.tasks
+            if item.payload["execution_mode"] == "formal"
+        )
+        profile = task.payload["presentation"]["framing_profile"]
+
+        self.assertEqual(profile["policy"], "freeze_per_scale_bucket/v1")
+        self.assertEqual(profile["schema_version"], "frozen-framing-profile-policy/v2")
+        self.assertEqual(profile["scale_evidence"]["status"], "available")
+        self.assertTrue(
+            profile["scale_signature"].startswith("cad-framing-scale/v1:")
+        )
+        self.assertEqual(profile["on_mismatch"], "invalidate_and_recalibrate_once/v1")
         self.assertEqual(
             task.payload["presentation"]["zoom_recovery"],
             {
                 "schema_version": "centered-span-zoom/v1",
                 "target_subject_span": 0.55,
                 "min_zoom": 0.4,
-                "max_zoom": 3.2,
-                "max_rounds": 2,
+                "max_zoom": 32.0,
+                "max_rounds": 3,
             },
         )
         self.assertNotIn("output_path", str(task.payload))

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import sys
+import time
 from uuid import uuid4
 
 
@@ -95,17 +96,43 @@ def materialize_creo_runtime(run_workspace: Path) -> Path:
             json.dumps(marker_payload, ensure_ascii=False, sort_keys=True, indent=2),
             encoding="utf-8",
         )
-        try:
-            os.replace(temporary, destination)
-        except FileExistsError:
-            if not _runtime_is_complete(destination, marker, fingerprint):
-                raise
+        _replace_runtime_directory(
+            temporary,
+            destination,
+            marker=marker,
+            fingerprint=fingerprint,
+        )
     finally:
         if temporary.exists():
             shutil.rmtree(temporary)
     if not _runtime_is_complete(destination, marker, fingerprint):
         raise RuntimeError("Durable Creo runtime materialization is incomplete")
     return destination
+
+
+def _replace_runtime_directory(
+    temporary: Path,
+    destination: Path,
+    *,
+    marker: Path,
+    fingerprint: str,
+) -> None:
+    """Finish an atomic runtime install despite brief Windows scanner locks."""
+
+    for attempt in range(6):
+        try:
+            os.replace(temporary, destination)
+            return
+        except FileExistsError:
+            if _runtime_is_complete(destination, marker, fingerprint):
+                return
+            raise
+        except PermissionError:
+            if _runtime_is_complete(destination, marker, fingerprint):
+                return
+            if attempt == 5:
+                raise
+            time.sleep(0.1 * (attempt + 1))
 
 
 def _runtime_files(source_root: Path) -> tuple[Path, ...]:

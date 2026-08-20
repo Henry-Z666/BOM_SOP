@@ -44,6 +44,8 @@ CENTERING_FAILURES = frozenset(
         "ARROW_CLIPPED",
     }
 )
+ZOOM_FAILURES = frozenset({"SUBJECT_TOO_SMALL", "SUBJECT_TOO_LARGE"})
+FRAMING_FAILURES = CENTERING_FAILURES | ZOOM_FAILURES
 CAMERA_FLIP_FAILURES = frozenset(
     {
         "CAMERA_RECEIVER_WRONG_HALF_SPACE",
@@ -116,6 +118,7 @@ class CreoSession:
     attempted_presentation_variants: dict[str, set[int]] = field(default_factory=dict)
     screen_pan_responses: dict[str, ScreenPanResponse] = field(default_factory=dict)
     framing_profiles: dict[str, FrozenFramingProfile] = field(default_factory=dict)
+    recalibrated_profile_keys: set[str] = field(default_factory=set)
     render_frames_by_task: dict[str, int] = field(default_factory=dict)
 
 
@@ -173,6 +176,9 @@ class AgentNativeCreoWorker:
         )
         session.screen_pan_responses.update(_load_screen_pan_responses(internal_directory))
         session.framing_profiles.update(_load_framing_profiles(internal_directory))
+        session.recalibrated_profile_keys.update(
+            _load_recalibrated_profile_keys(internal_directory)
+        )
         return session
 
     def render(
@@ -237,6 +243,33 @@ class AgentNativeCreoWorker:
             frozen_report, _ = rendered
             if frozen_report.passed:
                 return _passed_image(session.output_directory / f"{task.task_id}.jpg")
+            if FRAMING_FAILURES.intersection(frozen_report.failures):
+                assert profile_key is not None
+                if profile_key in session.recalibrated_profile_keys:
+                    return _gate_attempt(
+                        session.output_directory / f"{task.task_id}.jpg",
+                        frozen_report.failures,
+                    )
+                session.recalibrated_profile_keys.add(profile_key)
+                _save_recalibrated_profile_keys(
+                    session.internal_directory,
+                    session.recalibrated_profile_keys,
+                )
+                session.framing_profiles.pop(profile_key, None)
+                _save_framing_profiles(
+                    session.internal_directory, session.framing_profiles
+                )
+                return self._recover_screen_centering(
+                    session,
+                    task,
+                    variant_index=variant_index,
+                    base_report=frozen_report,
+                    variant_override={
+                        "camera_id": frozen.camera_id,
+                        "zoom": frozen.zoom,
+                        "pan": [frozen.pan[0], frozen.pan[1]],
+                    },
+                )
             return _gate_attempt(
                 session.output_directory / f"{task.task_id}.jpg",
                 frozen_report.failures,
@@ -267,6 +300,26 @@ class AgentNativeCreoWorker:
             variant_index=variant_index,
             report=report,
         )
+        if (
+            profile_policy == "freeze_per_scale_bucket/v1"
+            and _outside_scale_probe_safe_boundary(task.payload)
+        ):
+            # Never replace a real, visible base raster with a known-unsafe
+            # high-Zoom blank.  Extreme scale buckets are explicitly reviewed
+            # after one frame until a new boundary is proven in real Creo.
+            return _gate_attempt(image_path, report.failures)
+        if (
+            not default_refit
+            and profile_policy == "freeze_per_scale_bucket/v1"
+            and _scale_bucket_zoom(task.payload, report, float(variant["zoom"]))
+            is not None
+        ):
+            return self._recover_screen_centering(
+                session,
+                task,
+                variant_index=variant_index,
+                base_report=report,
+            )
         if not report.passed:
             decision = classify_failures(report.failures)
             error = decision.primary_code
@@ -296,8 +349,13 @@ class AgentNativeCreoWorker:
                     )
                     session.presentation_variant_by_task[task.task_id] = next_variant
                     return RenderAttempt.retryable(error)
+            recovery_failures = (
+                FRAMING_FAILURES
+                if profile_policy == "freeze_per_scale_bucket/v1"
+                else CENTERING_FAILURES
+            )
             if (
-                CENTERING_FAILURES.intersection(report.failures)
+                recovery_failures.intersection(report.failures)
                 and report.composition is not None
                 and report.composition.center_pixel is not None
             ):
@@ -354,9 +412,14 @@ class AgentNativeCreoWorker:
             camera_id = str(variant["camera_id"])
             base_pan = tuple(float(value) for value in variant["pan"])
             subject_only = not _has_arrow_center(base_report)
-            base_center = _report_focus_center(
-                base_report, subject_only=subject_only
-            )
+            if _native_focus_refit_enabled(task.payload) and _has_arrow_center(
+                base_report
+            ):
+                base_center = base_report.arrow_raster.center_pixel
+            else:
+                base_center = _report_focus_center(
+                    base_report, subject_only=subject_only
+                )
             cache_key = _screen_pan_response_key(
                 task.payload,
                 camera_id=camera_id,
@@ -382,8 +445,21 @@ class AgentNativeCreoWorker:
             if isinstance(combined, RenderAttempt):
                 return combined
             if combined is not None:
-                combined_report, combined_pan, combined_zoom = combined
+                combined_report, combined_pan, combined_zoom, target_pending = combined
                 if combined_report.passed:
+                    if target_pending:
+                        return self._recover_screen_centering(
+                            session,
+                            task,
+                            variant_index=variant_index,
+                            base_report=combined_report,
+                            variant_override={
+                                "camera_id": camera_id,
+                                "zoom": combined_zoom,
+                                "pan": [combined_pan[0], combined_pan[1]],
+                            },
+                            zoom_round=zoom_round + 1,
+                        )
                     return _passed_image(
                         session.output_directory / f"{task.task_id}.jpg"
                     )
@@ -514,8 +590,21 @@ class AgentNativeCreoWorker:
             if isinstance(combined, RenderAttempt):
                 return combined
             if combined is not None:
-                combined_report, combined_pan, combined_zoom = combined
+                combined_report, combined_pan, combined_zoom, target_pending = combined
                 if combined_report.passed:
+                    if target_pending:
+                        return self._recover_screen_centering(
+                            session,
+                            task,
+                            variant_index=variant_index,
+                            base_report=combined_report,
+                            variant_override={
+                                "camera_id": camera_id,
+                                "zoom": combined_zoom,
+                                "pan": [combined_pan[0], combined_pan[1]],
+                            },
+                            zoom_round=zoom_round + 1,
+                        )
                     return _passed_image(
                         session.output_directory / f"{task.task_id}.jpg"
                     )
@@ -639,29 +728,42 @@ class AgentNativeCreoWorker:
         target: tuple[float, float],
         zoom_round: int,
     ):
-        if "SUBJECT_TOO_SMALL" not in report.failures:
-            return None
         try:
             contract = task.payload["presentation"]["zoom_recovery"]
             if zoom_round >= int(contract["max_rounds"]):
                 return None
             if report.composition is None:
                 raise FramingRecoveryError("subject metrics are unavailable")
-            derived_zoom = derive_zoom_for_subject_span(
-                current_zoom=zoom,
-                observed_span=report.composition.max_span_fraction,
-                target_span=float(contract["target_subject_span"]),
-                min_zoom=float(contract["min_zoom"]),
-                max_zoom=float(contract["max_zoom"]),
+            requested_zoom = _scale_bucket_zoom(task.payload, report, zoom)
+            if requested_zoom is None:
+                if not ZOOM_FAILURES.intersection(report.failures):
+                    return None
+                requested_zoom = derive_zoom_for_subject_span(
+                    current_zoom=zoom,
+                    observed_span=report.composition.max_span_fraction,
+                    target_span=float(contract["target_subject_span"]),
+                    min_zoom=float(contract["min_zoom"]),
+                    max_zoom=float(contract["max_zoom"]),
+                )
+            derived_zoom = _bounded_zoom_step(zoom, requested_zoom)
+            target_pending = not math.isclose(
+                derived_zoom, requested_zoom, rel_tol=0.01, abs_tol=1.0e-6
             )
-            if derived_zoom <= zoom + 1.0e-6:
-                raise FramingRecoveryError("derived Zoom does not increase")
-            projected_center = project_lower_left_anchored_zoom_center(
-                current_center=focus_center,
-                current_zoom=zoom,
-                target_zoom=derived_zoom,
-                frame_pixels=(1600, 1600),
-            )
+            if math.isclose(derived_zoom, zoom, abs_tol=1.0e-6):
+                raise FramingRecoveryError("derived Zoom does not change")
+            if _native_focus_refit_enabled(task.payload):
+                ratio = derived_zoom / zoom
+                projected_center = (
+                    target[0] + ratio * (focus_center[0] - target[0]),
+                    target[1] + ratio * (focus_center[1] - target[1]),
+                )
+            else:
+                projected_center = project_lower_left_anchored_zoom_center(
+                    current_center=focus_center,
+                    current_zoom=zoom,
+                    target_zoom=derived_zoom,
+                    frame_pixels=(1600, 1600),
+                )
             derived_pan = _solve_pan(
                 target,
                 pan,
@@ -691,7 +793,7 @@ class AgentNativeCreoWorker:
         if isinstance(rendered, RenderAttempt):
             return rendered
         rendered_report, rendered_pan = rendered
-        return rendered_report, rendered_pan, derived_zoom
+        return rendered_report, rendered_pan, derived_zoom, target_pending
 
     def _recover_centered_zoom(
         self,
@@ -704,7 +806,8 @@ class AgentNativeCreoWorker:
         pan: tuple[float, float],
         zoom_round: int,
     ) -> RenderAttempt:
-        if set(report.failures) != {"SUBJECT_TOO_SMALL"}:
+        failure_set = set(report.failures)
+        if not (failure_set & ZOOM_FAILURES) or (failure_set - ZOOM_FAILURES):
             return RenderAttempt.failed(report.failures[0])
         try:
             contract = task.payload["presentation"]["zoom_recovery"]
@@ -736,8 +839,8 @@ class AgentNativeCreoWorker:
                 min_zoom=float(contract["min_zoom"]),
                 max_zoom=float(contract["max_zoom"]),
             )
-            if derived_zoom <= zoom + 1.0e-6:
-                raise FramingRecoveryError("derived Zoom does not increase")
+            if math.isclose(derived_zoom, zoom, abs_tol=1.0e-6):
+                raise FramingRecoveryError("derived Zoom does not change")
         except (KeyError, TypeError, ValueError, FramingRecoveryError):
             return RenderAttempt.failed("ZOOM_RECOVERY_UNSOLVABLE")
 
@@ -1129,6 +1232,95 @@ def _report_focus_center(
     )
 
 
+def _scale_bucket_zoom(
+    payload: dict,
+    report: NativeRenderGateReport,
+    current_zoom: float,
+) -> float | None:
+    """Use the free base raster to calibrate CAD activity against stage context."""
+
+    if report.composition is None:
+        return None
+    presentation = payload.get("presentation", {})
+    profile = presentation.get("framing_profile", {})
+    evidence = profile.get("scale_evidence", {}) if isinstance(profile, dict) else {}
+    if (
+        not isinstance(evidence, dict)
+        or evidence.get("status") != "available"
+        or profile.get("policy") != "freeze_per_scale_bucket/v1"
+    ):
+        return None
+    try:
+        activity_size = tuple(
+            float(value) for value in evidence["activity_projected_size_root"]
+        )
+        context_size = tuple(
+            float(value) for value in evidence["context_projected_size_root"]
+        )
+        contract = presentation["zoom_recovery"]
+        activity_span = max(activity_size)
+        context_span = max(context_size)
+        observed_activity_span = (
+            float(report.composition.max_span_fraction)
+            * activity_span
+            / context_span
+        )
+        derived = derive_zoom_for_subject_span(
+            current_zoom=current_zoom,
+            observed_span=observed_activity_span,
+            target_span=float(contract["target_subject_span"]),
+            min_zoom=float(contract["min_zoom"]),
+            max_zoom=float(contract["max_zoom"]),
+        )
+    except (KeyError, TypeError, ValueError, FramingRecoveryError):
+        return None
+    if math.isclose(derived, current_zoom, rel_tol=0.05, abs_tol=1.0e-6):
+        return None
+    return derived
+
+
+def _native_focus_refit_enabled(payload: dict) -> bool:
+    presentation = payload.get("presentation", {})
+    contract = presentation.get("native_refit", {})
+    profile = presentation.get("framing_profile", {})
+    return (
+        isinstance(contract, dict)
+        and isinstance(profile, dict)
+        and profile.get("probe_interface_status")
+        == "enabled_real_cad_bounds/v1"
+        and contract.get("schema_version") == "native-focus-refit/v1"
+        and contract.get("fit_occurrences") == "moving_only/v1"
+        and contract.get("restore_stage_context_without_refit") is True
+    )
+
+
+def _outside_scale_probe_safe_boundary(payload: dict) -> bool:
+    profile = payload.get("presentation", {}).get("framing_profile", {})
+    evidence = profile.get("scale_evidence", {}) if isinstance(profile, dict) else {}
+    try:
+        boundary = int(profile["safe_context_activity_ratio_bucket_max"])
+        ratio_bucket = int(evidence["context_activity_ratio_bucket"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (
+        profile.get("outside_safe_boundary") == "question_without_zoom/v1"
+        and ratio_bucket > boundary
+    )
+
+
+def _bounded_zoom_step(
+    current_zoom: float,
+    requested_zoom: float,
+    *,
+    max_ratio: float = 3.0,
+) -> float:
+    """Keep the activity observable while traversing a large scale change."""
+
+    if current_zoom <= 0.0 or requested_zoom <= 0.0 or max_ratio <= 1.0:
+        raise FramingRecoveryError("bounded Zoom step inputs are invalid")
+    return min(max(requested_zoom, current_zoom / max_ratio), current_zoom * max_ratio)
+
+
 def _has_arrow_center(report: NativeRenderGateReport) -> bool:
     return (
         report.arrow_raster is not None
@@ -1165,17 +1357,30 @@ def _screen_pan_response_key(
         raise ScreenCenteringError("camera basis is unavailable")
     del zoom
     value = {
-        "schema_version": "screen-pan-response-key/v2",
+        "schema_version": "screen-pan-response-key/v3",
         "camera_id": camera_id,
         "position_direction_root": camera.get("position_direction_root"),
         "up_reference_root": camera.get("up_reference_root"),
         "frame_pixels": [1600, 1600],
         "export_contract": "creo-native-jpeg/v1",
+        "scale_signature": _pan_response_scale_signature(payload),
     }
     encoded = json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return f"sha256:{sha256(encoded).hexdigest()}"
+
+
+def _pan_response_scale_signature(payload: dict) -> str:
+    profile = payload.get("presentation", {}).get("framing_profile", {})
+    if not isinstance(profile, dict):
+        return "default/v1"
+    if profile.get("policy") != "freeze_per_scale_bucket/v1":
+        return "default/v1"
+    signature = str(profile.get("scale_signature", "")).strip()
+    if not signature:
+        raise ScreenCenteringError("framing scale signature is missing")
+    return signature
 
 
 def _framing_profile_key(payload: dict, *, camera_id: str) -> str:
@@ -1186,7 +1391,7 @@ def _framing_profile_key(payload: dict, *, camera_id: str) -> str:
     if not isinstance(contract, dict):
         raise ScreenCenteringError("framing profile contract is invalid")
     policy = str(contract.get("policy", "freeze_per_camera/v1"))
-    if policy != "freeze_per_camera/v1":
+    if policy not in {"freeze_per_camera/v1", "freeze_per_scale_bucket/v1"}:
         raise ScreenCenteringError("framing profile policy is unsupported")
     scale_signature = str(contract.get("scale_signature", "default/v1"))
     if not scale_signature:
@@ -1305,6 +1510,10 @@ def _framing_profile_file(internal_directory: Path) -> Path:
     return internal_directory / "frozen-framing-profiles.json"
 
 
+def _recalibrated_profile_keys_file(internal_directory: Path) -> Path:
+    return internal_directory / "recalibrated-framing-profile-keys.json"
+
+
 def _load_framing_profiles(
     internal_directory: Path,
 ) -> dict[str, FrozenFramingProfile]:
@@ -1361,6 +1570,44 @@ def _save_framing_profiles(
                 },
             },
             ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def _load_recalibrated_profile_keys(internal_directory: Path) -> set[str]:
+    path = _recalibrated_profile_keys_file(internal_directory)
+    if not path.is_file():
+        return set()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("schema_version") != "framing-profile-recalibration/v1":
+            return set()
+        return {
+            str(value)
+            for value in payload.get("profile_keys", [])
+            if str(value).startswith("sha256:")
+        }
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return set()
+
+
+def _save_recalibrated_profile_keys(
+    internal_directory: Path,
+    profile_keys: set[str],
+) -> None:
+    path = _recalibrated_profile_keys_file(internal_directory)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(
+            {
+                "schema_version": "framing-profile-recalibration/v1",
+                "profile_keys": sorted(profile_keys),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
             indent=2,
         ),
         encoding="utf-8",

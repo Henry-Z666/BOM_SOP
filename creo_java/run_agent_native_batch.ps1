@@ -123,6 +123,11 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   if ($translation.Count -ne 3) { throw "Task $taskId has no pure translation vector." }
   $presentation = $payload.presentation
   if ([string]$presentation.schema_version -ne 'fixed-frame-presentation/v1') { throw "Task $taskId has no supported presentation contract." }
+  if ([string]$presentation.native_refit.schema_version -ne 'native-focus-refit/v1' -or
+      [string]$presentation.native_refit.fit_occurrences -ne 'moving_only/v1' -or
+      [bool]$presentation.native_refit.restore_stage_context_without_refit -ne $true) {
+    throw "Task $taskId has no supported native focus-refit contract."
+  }
   if ([string]$presentation.focus_context -ne 'stage_visible_bbox/v1') { throw "Task $taskId has an invalid presentation focus context." }
   if ([string]$presentation.framing_priority -ne 'installation_activity/v1') { throw "Task $taskId does not prioritize the installation activity." }
   if ([string]$presentation.zoom_anchor -ne 'installation_activity_center/v1') { throw "Task $taskId has an invalid zoom anchor." }
@@ -134,8 +139,8 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   if ([int]$presentation.centering.max_probe_rounds -ne 2) { throw "Task $taskId has an invalid PAN probe round limit." }
   if ([string]$presentation.zoom_recovery.schema_version -ne 'centered-span-zoom/v1') { throw "Task $taskId has no supported Zoom recovery contract." }
   if ([double]$presentation.zoom_recovery.target_subject_span -ne 0.55) { throw "Task $taskId has an invalid Zoom target span." }
-  if ([double]$presentation.zoom_recovery.min_zoom -ne 0.4 -or [double]$presentation.zoom_recovery.max_zoom -ne 3.2) { throw "Task $taskId has invalid Zoom recovery bounds." }
-  if ([int]$presentation.zoom_recovery.max_rounds -ne 2) { throw "Task $taskId has an invalid Zoom recovery round limit." }
+  if ([double]$presentation.zoom_recovery.min_zoom -ne 0.4 -or [double]$presentation.zoom_recovery.max_zoom -ne 32.0) { throw "Task $taskId has invalid Zoom recovery bounds." }
+  if ([int]$presentation.zoom_recovery.max_rounds -ne 3) { throw "Task $taskId has an invalid Zoom recovery round limit." }
   $variants = @($presentation.variants)
   if ($VariantIndex -ge $variants.Count) { throw "Task $taskId has no presentation variant $VariantIndex." }
   $variant = $variants[$VariantIndex]
@@ -149,7 +154,7 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
     throw "Task $taskId has an invalid camera basis."
   }
   $zoom = [double]$variant.zoom
-  if ([double]::IsNaN($zoom) -or [double]::IsInfinity($zoom) -or $zoom -lt 0.8 -or $zoom -gt 3.2) {
+  if ([double]::IsNaN($zoom) -or [double]::IsInfinity($zoom) -or $zoom -lt 0.4 -or $zoom -gt 32.0) {
     throw "Task $taskId has a zoom outside the compiled repair bounds."
   }
   $cameraSpec = 'ABS:' + (& $formatVector $camera.position_direction_root)

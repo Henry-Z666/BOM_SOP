@@ -87,6 +87,38 @@ public final class AutoCadDiscovery {
     }
     return result;
   }
+  private static double[][] localOutline(Solid solid) throws jxthrowable {
+    Outline3D outline = solid.GetGeomOutline();
+    if (outline == null) return null;
+    Point3D low = outline.get(0), high = outline.get(1);
+    if (low == null || high == null) return null;
+    return new double[][]{
+      {low.get(0), low.get(1), low.get(2)},
+      {high.get(0), high.get(1), high.get(2)}
+    };
+  }
+  private static String rootBounds(double[][] local, double[][] toRoot) {
+    if (local == null) return "{\"status\":\"unavailable\"}";
+    double[] low = new double[]{Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY};
+    double[] high = new double[]{Double.NEGATIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.NEGATIVE_INFINITY};
+    for (int mask = 0; mask < 8; mask++) {
+      double[] source = new double[]{
+        local[(mask & 1) == 0 ? 0 : 1][0],
+        local[(mask & 2) == 0 ? 0 : 1][1],
+        local[(mask & 4) == 0 ? 0 : 1][2]
+      };
+      double[] root = new double[3];
+      for (int col = 0; col < 3; col++) {
+        root[col] = toRoot[3][col];
+        for (int row = 0; row < 3; row++) root[col] += source[row] * toRoot[row][col];
+        low[col] = Math.min(low[col], root[col]); high[col] = Math.max(high[col], root[col]);
+      }
+    }
+    double dx = high[0] - low[0], dy = high[1] - low[1], dz = high[2] - low[2];
+    return "{\"status\":\"available\",\"source\":\"solid_geom_outline/v1\",\"min\":"
+      + array(low) + ",\"max\":" + array(high) + ",\"diagonal\":"
+      + Math.sqrt(dx*dx + dy*dy + dz*dz) + "}";
+  }
   private static String array(double[] value) { return "[" + value[0] + "," + value[1] + "," + value[2] + "]"; }
   private static String error(Throwable value) {
     String message = value.getMessage();
@@ -176,17 +208,30 @@ public final class AutoCadDiscovery {
   }
   private static void append(StringBuilder target, String value) { if (target.length() > 0) target.append(','); target.append(value); }
   private static void discoverAssembly(Session session, Assembly root, Assembly current, intseq parentPath,
-                                       double[][] parentToRoot, StringBuilder nodes, StringBuilder edges) throws jxthrowable {
+                                       double[][] parentToRoot, StringBuilder nodes, StringBuilder edges,
+                                       java.util.Map<String, double[][]> outlineCache) throws jxthrowable {
     Features features = current.ListFeaturesByType(Boolean.FALSE, FeatureType.FEATTYPE_COMPONENT);
     for (int i = 0; i < features.getarraysize(); i++) {
       ComponentFeat component = (ComponentFeat)features.get(i); ModelDescriptor model = component.GetModelDescr();
       intseq componentPath = appendPath(parentPath, component.GetId());
       String path = pathId(componentPath);
       double[][] componentToRoot = multiply(matrix(component.GetPosition()), parentToRoot);
+      Model child = null; double[][] outline = null;
+      try {
+        child = session.RetrieveModel(model);
+        if (child instanceof Solid) {
+          String outlineKey = model.GetFullName().toLowerCase(java.util.Locale.ROOT);
+          if (outlineCache.containsKey(outlineKey)) outline = outlineCache.get(outlineKey);
+          else { outline = localOutline((Solid)child); outlineCache.put(outlineKey, outline); }
+        }
+      } catch (Throwable unavailableChild) {
+        System.err.println("[DISCOVERY-TRACE] child_scan_skipped=" + path);
+      }
       append(nodes, "{\"id\":\"" + esc(path) + "\",\"occurrence_id\":\"" + esc(path)
         + "\",\"component_path\":" + intArray(componentPath) + ",\"parent_occurrence\":\"" + esc(pathId(parentPath))
         + "\",\"feature_id\":" + component.GetId() + ",\"part_no\":\"" + esc(model.GetFileName())
-        + "\",\"model_name\":\"" + esc(model.GetFullName()) + "\",\"transform\":" + transform(componentToRoot) + "}");
+        + "\",\"model_name\":\"" + esc(model.GetFullName()) + "\",\"transform\":" + transform(componentToRoot)
+        + ",\"bounds_root\":" + rootBounds(outline, componentToRoot) + "}");
       ComponentConstraints constraints = component.GetConstraints();
       for (int j = 0; constraints != null && j < constraints.getarraysize(); j++) {
         ComponentConstraint c = constraints.get(j);
@@ -197,12 +242,7 @@ public final class AutoCadDiscovery {
           + ",\"assembly_reference\":" + referenceJson(root, parentPath, parentToRoot, c.GetAssemblyReference(), c.GetAssemblyDatumSide())
           + ",\"component_reference\":" + referenceJson(root, componentPath, componentToRoot, c.GetComponentReference(), c.GetComponentDatumSide()) + "}");
       }
-      try {
-        Model child = session.RetrieveModel(model);
-        if (child instanceof Assembly) discoverAssembly(session, root, (Assembly)child, componentPath, componentToRoot, nodes, edges);
-      } catch (Throwable unavailableChild) {
-        System.err.println("[DISCOVERY-TRACE] child_scan_skipped=" + path);
-      }
+      if (child instanceof Assembly) discoverAssembly(session, root, (Assembly)child, componentPath, componentToRoot, nodes, edges, outlineCache);
     }
   }
   private static String intArray(intseq path) throws jxthrowable {
@@ -236,7 +276,8 @@ public final class AutoCadDiscovery {
       Features features = assembly.ListFeaturesByType(Boolean.FALSE, FeatureType.FEATTYPE_COMPONENT);
       System.err.println("[DISCOVERY-TRACE] top_level_components=" + features.getarraysize());
       StringBuilder nodes = new StringBuilder(); StringBuilder edges = new StringBuilder();
-      discoverAssembly(session, assembly, assembly, intseq.create(), identity(), nodes, edges);
+      discoverAssembly(session, assembly, assembly, intseq.create(), identity(), nodes, edges,
+        new java.util.HashMap<String, double[][]>());
       String json = "{\"schema_version\":\"creo-cad-graph/v3\",\"assembly_file\":\"" + esc(requestedFile)
         + "\",\"assembly_name\":\"" + esc(assembly.GetFileName()) + "\",\"assembly_version\":" + assembly.GetDescr().GetFileVersion()
         + ",\"root_coordinate_system\":\"root_asm\",\"root_occurrence\":\"ROOT\",\"default_view_matrix\":"

@@ -158,6 +158,16 @@ class DeterministicNativeRenderValidator:
         ):
             failures.append("PRESENTATION_CONTRACT_INVALID")
             return None, None
+        native_refit = presentation.get("native_refit")
+        if (
+            not isinstance(native_refit, dict)
+            or native_refit.get("schema_version") != "native-focus-refit/v1"
+            or native_refit.get("fit_occurrences")
+            != "moving_only/v1"
+            or native_refit.get("restore_stage_context_without_refit") is not True
+        ):
+            failures.append("PRESENTATION_CONTRACT_INVALID")
+            return None, None
         centering = presentation.get("centering")
         if (
             not isinstance(centering, dict)
@@ -200,8 +210,8 @@ class DeterministicNativeRenderValidator:
             or zoom_recovery.get("schema_version") != "centered-span-zoom/v1"
             or zoom_recovery.get("target_subject_span") != 0.55
             or zoom_recovery.get("min_zoom") != 0.4
-            or zoom_recovery.get("max_zoom") != 3.2
-            or zoom_recovery.get("max_rounds") != 2
+            or zoom_recovery.get("max_zoom") != 32.0
+            or zoom_recovery.get("max_rounds") != 3
         ):
             failures.append("PRESENTATION_CONTRACT_INVALID")
             return None, None

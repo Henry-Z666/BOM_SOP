@@ -15,9 +15,11 @@ import com.ptc.pfc.pfcView.*;
 import com.ptc.pfc.pfcWindow.*;
 
 import java.io.File;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** Creates a native Creo JPEG from an isolated model copy through J-Link async. */
 public final class RenderAssemblyImage {
+  private static final AtomicInteger FOCUS_REFIT_IDS = new AtomicInteger();
   private static final FeatureType[] AUXILIARY_FEATURE_TYPES = new FeatureType[] {
     FeatureType.FEATTYPE_WELDING_ROD, FeatureType.FEATTYPE_WELD_FILLET,
     FeatureType.FEATTYPE_WELD_GROOVE, FeatureType.FEATTYPE_WELD_PLUG_SLOT,
@@ -162,19 +164,6 @@ public final class RenderAssemblyImage {
    * an image crop or a simulated mouse/keyboard action.
    */
   private static void applyZoom(Window window, String cameraSpec) throws jxthrowable {
-    boolean panBeforeZoom = cameraSpec.toUpperCase(java.util.Locale.ROOT).contains("LOOKAT_ACTIVITY");
-    if (panBeforeZoom) {
-      for (String term : cameraSpec.split(",")) {
-        if (!term.trim().regionMatches(true, 0, "PAN:", 0, 4)) continue;
-        String[] values = term.trim().substring(4).split(":");
-        if (values.length != 2) throw new IllegalArgumentException("PAN requires x:y");
-        ScreenTransform screen = window.GetScreenTransform();
-        screen.SetPanX(Double.parseDouble(values[0]));
-        screen.SetPanY(Double.parseDouble(values[1]));
-        window.SetScreenTransform(screen);
-        System.err.println("[RENDER] camera_pan_before_zoom=[" + screen.GetPanX() + "," + screen.GetPanY() + "]");
-      }
-    }
     double appliedMultiplier = 1.0;
     for (String term : cameraSpec.split(",")) {
       if (!term.regionMatches(true, 0, "ZOOM:", 0, 5)) continue;
@@ -201,7 +190,6 @@ public final class RenderAssemblyImage {
     }
     for (String term : cameraSpec.split(",")) {
       if (!term.regionMatches(true, 0, "PAN:", 0, 4)) continue;
-      if (panBeforeZoom) continue;
       String[] values = term.substring(4).split(":");
       if (values.length != 2) throw new IllegalArgumentException("PAN requires x:y");
       ScreenTransform screen = window.GetScreenTransform();
@@ -451,6 +439,41 @@ public final class RenderAssemblyImage {
     }
     if (hidden != null) hidden.SetStatus(DisplayStatus.LAYER_BLANK); return count;
   }
+  /**
+   * Temporarily blanks visible context that is unrelated to the installation
+   * focus.  Refit can then measure the actual moving/receiver geometry rather
+   * than the total stage.  Restoring these layers without a second refit keeps
+   * the activity-sized view while putting the surrounding assembly back into
+   * the formal raster.
+   */
+  private static int blankNonFocusComponents(Session session, Assembly assembly, String prefix,
+      java.util.Set<String> focus, String layerName, java.util.List<Layer> changedLayers) throws jxthrowable {
+    Layer hidden = null; int count = 0;
+    Features features = assembly.ListFeaturesByType(Boolean.FALSE, FeatureType.FEATTYPE_COMPONENT);
+    for (int i = 0; i < features.getarraysize(); i++) {
+      ComponentFeat component = (ComponentFeat)features.get(i);
+      String path = prefix.isEmpty() ? "" + component.GetId() : prefix + "/" + component.GetId();
+      if (!stageRelated(path, focus)) {
+        if (hidden == null) hidden = assembly.CreateLayer(layerName);
+        hidden.AddItem(component); count++; continue;
+      }
+      try {
+        Model child = session.RetrieveModel(component.GetModelDescr());
+        if (child instanceof Assembly)
+          count += blankNonFocusComponents(session, (Assembly)child, path, focus, layerName, changedLayers);
+      } catch (Throwable ignored) {}
+    }
+    if (hidden != null) {
+      hidden.SetStatus(DisplayStatus.LAYER_BLANK);
+      changedLayers.add(hidden);
+    }
+    return count;
+  }
+
+  private static void restoreFocusContext(java.util.List<Layer> changedLayers) throws jxthrowable {
+    for (int i = changedLayers.size() - 1; i >= 0; i--)
+      changedLayers.get(i).SetStatus(DisplayStatus.LAYER_DISPLAY);
+  }
   private static void addStageExclusions(Session session, Assembly assembly, String prefix, java.util.Set<String> desired, SimpRepItems items) throws jxthrowable {
     Features features = assembly.ListFeaturesByType(Boolean.FALSE, FeatureType.FEATTYPE_COMPONENT);
     for (int i = 0; i < features.getarraysize(); i++) {
@@ -523,6 +546,11 @@ public final class RenderAssemblyImage {
       if (visibleOccurrencePaths.isEmpty()) throw new IllegalArgumentException("No visible occurrence paths supplied");
       java.util.List<intseq> focusOccurrencePaths = parseOccurrencePaths(focusPaths);
       if (focusOccurrencePaths.isEmpty()) throw new IllegalArgumentException("No installation focus occurrence paths supplied");
+      java.util.Set<String> focus = new java.util.HashSet<String>();
+      // The receiver can be a cabinet-sized plate while the installation
+      // activity is a handful of fasteners.  Including that whole receiver in
+      // Refit recreates the exact scale failure this probe is meant to solve.
+      for (String rawPath : occurrencePaths.split(";")) if (!rawPath.trim().startsWith("!")) focus.add(rawPath.trim());
 
       Assembly assembly = (Assembly)model;
       CreateNewSimpRepInstructions stage = pfcSimpRep.CreateNewSimpRepInstructions_Create("AI_SOP_STAGE");
@@ -541,7 +569,9 @@ public final class RenderAssemblyImage {
       boolean useActivityLookAt = cameraSpec.toUpperCase(java.util.Locale.ROOT).contains("LOOKAT_ACTIVITY");
       double[] framingTranslation = new double[] {0.0, 0.0, 0.0};
       if (useActivityLookAt) {
-        double[] stageCenter = stageOccurrenceCenter(session, assembly, focusOccurrencePaths);
+        // The receiver may be much larger and have a distant component
+        // origin.  The camera target must match the moving-only scale probe.
+        double[] stageCenter = stageOccurrenceCenter(session, assembly, requestedOccurrences);
         framingTranslation = new double[] {-stageCenter[0], -stageCenter[1], -stageCenter[2]};
         for (intseq ids : minimalOccurrenceRoots(visibleOccurrencePaths))
           translateResolved(session, assembly, ids, framingTranslation[0], framingTranslation[1], framingTranslation[2]);
@@ -566,7 +596,17 @@ public final class RenderAssemblyImage {
       System.err.println("[PERSISTENT] translated occurrences=" + occurrencePaths + " vector=" + java.util.Arrays.toString(arrowTranslation));
 
       applyCamera(assembly, session, cameraSpec);
-      session.RunMacro("~ Command `ProCmdViewRefit`");
+      java.util.List<Layer> focusContextLayers = new java.util.ArrayList<Layer>();
+      String focusLayerName = "AI_SOP_FOCUS_" + FOCUS_REFIT_IDS.incrementAndGet();
+      int focusContextHidden = blankNonFocusComponents(session, assembly, "", focus, focusLayerName, focusContextLayers);
+      try {
+        window.Repaint(); session.FlushCurrentWindow();
+        session.RunMacro("~ Command `ProCmdViewRefit`");
+        window.Repaint(); session.FlushCurrentWindow();
+      } finally {
+        restoreFocusContext(focusContextLayers);
+      }
+      System.err.println("[PERSISTENT] native_focus_refit=moving_only hidden_context_components=" + focusContextHidden);
       window.Repaint(); session.FlushCurrentWindow(); applyZoom(window, cameraSpec);
       ArrowProjection.Result arrowResult = ArrowProjection.layout(assembly, arrowMoving, arrowTranslation);
       ArrowProjection.writeAudit(arrowResult, arrowAuditJson);
