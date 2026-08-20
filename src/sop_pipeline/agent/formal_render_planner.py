@@ -280,11 +280,10 @@ def compile_formal_render_plan(
     diagnostics.extend(physical_diagnostics)
     ordered = _topologically_order(ordered)
     ordered = _complete_plan_state(ordered, scope_bases, initial_completed)
-    ordered = _lock_stage_explosion_modes(
-        ordered, _occurrence_bounds_root(nodes)
-    )
-    ordered = _lock_stage_cameras(
-        ordered, _occurrence_bounds_root(nodes), camera_basis
+    ordered = _lock_final_stage_geometry(
+        ordered,
+        _occurrence_bounds_root(nodes),
+        camera_basis,
     )
     ordered = _attach_affected_descendants(ordered)
     diagnostics.extend(_subassembly_scope_diagnostics(ordered, nodes, bom_rows))
@@ -373,11 +372,10 @@ def lock_formal_render_plan(
         {scope: set(values) for scope, values in plan.scope_base_occurrences.items()},
         set(plan.initial_completed_occurrences),
     )
-    retained = _lock_stage_explosion_modes(
-        retained, plan.occurrence_bounds_root
-    )
-    retained = _lock_stage_cameras(
-        retained, plan.occurrence_bounds_root, plan.camera_basis
+    retained = _lock_final_stage_geometry(
+        retained,
+        plan.occurrence_bounds_root,
+        plan.camera_basis,
     )
     retained = _attach_affected_descendants(retained)
     ready_steps = sum(step.status == "ready" for step in retained)
@@ -1177,6 +1175,17 @@ def _lock_stage_cameras(
         )
         result.append(replace(step, camera_id=str(camera["id"])))
     return result
+
+
+def _lock_final_stage_geometry(
+    steps: list[FormalRenderStep],
+    bounds_by_occurrence: dict[str, dict[str, list[float]]],
+    camera_basis: dict[str, Any],
+) -> list[FormalRenderStep]:
+    """Lock display translation first, then the single fixed camera."""
+
+    exploded = _lock_stage_explosion_modes(steps, bounds_by_occurrence)
+    return _lock_stage_cameras(exploded, bounds_by_occurrence, camera_basis)
 
 
 def _lock_stage_explosion_modes(

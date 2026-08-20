@@ -123,7 +123,7 @@ def _guided_form(code: str, plan_step: Mapping[str, Any]) -> dict[str, Any] | No
         return {
             "schema_version": "guided-review-form/v1",
             "title": "确认安装方向",
-            "instruction": "只需确认安装轴和正负方向，系统会生成完整修正句。",
+            "instruction": "Creo 已锁定安装轴；只需确认该轴的正负方向。",
             "sentence_template": "该零件沿设备总装{axis}轴{sign}方向装入",
             "submit_label": "按所选方向重新生成",
             "fields": [
@@ -131,7 +131,7 @@ def _guided_form(code: str, plan_step: Mapping[str, Any]) -> dict[str, Any] | No
                     "name": "axis",
                     "label": "安装轴",
                     "type": "choice",
-                    "options": ["X", "Y", "Z"],
+                    "options": [axis],
                     "default": axis,
                     "required": True,
                 },

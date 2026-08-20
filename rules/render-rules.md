@@ -23,7 +23,8 @@ Use full root occurrence paths. Completed subassemblies remain rigid. Geometry m
 - Treat Creo `SURFACE`/`INSERT` directions as unsigned axes. When native solid bounds exist, test both signed translations and choose the sign that maximizes the worst post-translation clearance across every same-axis constrained receiver. Use the receiver-point half-space only as a deterministic fallback when bounds are missing or the clearance scores tie.
 - Group repeated occurrences only after the signed direction is resolved. Occurrences on the same unsigned axis but with opposite clearance-maximizing signs must become separate steps.
 - Use the deterministic display distance compiled from the locked assembly occurrence-origin extent (`8%` of its diagonal, or `80` when no usable extent exists).
-- Explosion is translation only and preserves every 3×3 rotation matrix. The interface normal remains the installation-axis truth. If a normal explosion still has material AABB overlap with staged context and is ambiguous because it telescopes along a long bridge or has strong contact-backed lateral evidence, the presentation vector may switch to one root axis within the receiver plane. The lateral candidate must reduce overlap to a bounded minimum and is selected before rendering; it is not a pixel review or retry.
+- Explosion is translation only and preserves every 3×3 rotation matrix. The interface normal remains the installation-axis truth. If a normal explosion still has material AABB overlap with staged context and is ambiguous because it telescopes along a long bridge, or because a part with aspect ratio at least `3` has strong contact-backed lateral evidence, the presentation vector may switch to one root axis within the receiver plane. The lateral candidate must reduce overlap to a bounded minimum and is selected before rendering; it is not a pixel review or retry.
+- A structured operator direction may confirm only the sign of an existing measured Creo receiver axis. Free text cannot generate coordinates, and the confirmation cannot replace the measured axis.
 - Formal cameras are exactly `fixed_123` and its center-opposite `fixed_456`; never create a third per-step view.
 - Evaluate only `fixed_123` and `fixed_456`. Because Creo surface direction signs do not prove a physical front side, use absolute receiver-axis alignment to reject silhouettes. After staged visibility is known, project the exploded activity and visible-context AABBs into both fixed cameras and lock the camera with the smaller front-overlap score; ties deterministically prefer `fixed_123`. No render-time camera switch is allowed.
 
@@ -35,6 +36,7 @@ Use full root occurrence paths. Completed subassemblies remain rigid. Geometry m
 - External absolute PAN/ZOOM, screen-coordinate automation, probe renders, response caches, dynamic geometry crops, and post-crop upscaling are forbidden.
 - One render attempt may export one formal raster. Scheduler-level retries remain bounded and receive one new raster budget per attempt.
 - Persist `native-framing-audit/v1` with Creo version/datecode, command verification, selection scope, and level.
+- Recompute the intake BOM and full ASM/PRT tree hashes before and after formal rendering and again before publication. Any file-set or digest change blocks the run.
 
 ## Arrows
 

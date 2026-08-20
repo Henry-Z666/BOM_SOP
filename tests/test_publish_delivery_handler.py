@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from hashlib import sha256
 import tempfile
 import unittest
 
@@ -76,10 +77,16 @@ class PublishDeliveryHandlerTests(unittest.TestCase):
                 )
 
             store = RunStore(root / "agent.sqlite3")
+            bom_file = root / "BOM.xlsx"
+            bom_file.write_bytes(b"bom")
+            cad_directory = root / "cad"
+            cad_directory.mkdir()
+            assembly = cad_directory / "root.asm.1"
+            assembly.write_bytes(b"assembly")
             run = RunRecord(
                 run_id="run-1",
-                bom_file=root / "BOM.xlsx",
-                cad_directory=root / "cad",
+                bom_file=bom_file,
+                cad_directory=cad_directory,
                 workspace=workspace,
                 status=RunStatus.NEEDS_REVIEW,
                 input_fingerprint="sha256:input",
@@ -122,6 +129,25 @@ class PublishDeliveryHandlerTests(unittest.TestCase):
                 return relative
 
             refs = (
+                write(
+                    "input-manifest",
+                    "analysis/input-manifest.json",
+                    {
+                        "schema_version": "input-manifest/v1",
+                        "bom": {
+                            "name": bom_file.name,
+                            "sha256": "sha256:"
+                            + sha256(bom_file.read_bytes()).hexdigest(),
+                        },
+                        "cad": [
+                            {
+                                "relative_path": assembly.name,
+                                "sha256": "sha256:"
+                                + sha256(assembly.read_bytes()).hexdigest(),
+                            }
+                        ],
+                    },
+                ),
                 write(
                     "normalized-bom",
                     "analysis/normalized-bom.json",

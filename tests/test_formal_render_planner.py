@@ -690,6 +690,8 @@ class FormalRenderPlannerTests(unittest.TestCase):
         self.assertEqual(task.payload["arrow_renderer"], "creo_display_list/v1")
         self.assertIn(task.payload["camera"]["id"], {"fixed_123", "fixed_456"})
         self.assertEqual(set(task.payload["camera_catalog"]), {"fixed_123", "fixed_456"})
+        self.assertIn("moving_bounds", task.payload["stage_geometry_root"])
+        self.assertIn("context_bounds", task.payload["stage_geometry_root"])
         self.assertEqual(
             task.payload["presentation"]["framing_profile"]["policy"],
             "native_zoom_to_selected/v1",

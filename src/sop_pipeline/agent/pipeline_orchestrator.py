@@ -131,7 +131,10 @@ class PipelineOrchestrator:
         self._run(
             run.run_id,
             "render-batch",
-            (f"plans/locked-render-jobs-{plan.revision:04d}.json",),
+            (
+                f"plans/locked-render-jobs-{plan.revision:04d}.json",
+                "analysis/input-manifest.json",
+            ),
             render_parameters,
         )
         self._run(
@@ -147,6 +150,7 @@ class PipelineOrchestrator:
             "publish-delivery",
             (
                 "analysis/normalized-bom.json",
+                "analysis/input-manifest.json",
                 f"plans/locked-render-plan-{plan.revision:04d}.json",
                 f"results/validation-{plan.revision:04d}.json",
                 f"results/candidate-set-{plan.revision:04d}.json",
@@ -190,6 +194,7 @@ class PipelineOrchestrator:
         if revision.get("changes", {}).get("candidate_id"):
             publication_refs = [
                 "analysis/normalized-bom.json",
+                "analysis/input-manifest.json",
                 f"plans/locked-render-plan-{run.plan_revision:04d}.json",
                 f"results/validation-{run.plan_revision:04d}.json",
                 f"results/candidate-set-{run.plan_revision:04d}.json",
@@ -218,6 +223,7 @@ class PipelineOrchestrator:
                 "render-batch",
                 (
                     f"plans/locked-render-jobs-{run.plan_revision:04d}.json",
+                    "analysis/input-manifest.json",
                     invalidation_ref,
                     f"results/validation-{run.plan_revision:04d}.json",
                 ),
@@ -235,6 +241,7 @@ class PipelineOrchestrator:
                 "publish-delivery",
                 (
                     "analysis/normalized-bom.json",
+                    "analysis/input-manifest.json",
                     f"plans/locked-render-plan-{run.plan_revision:04d}.json",
                     f"results/validation-{run.plan_revision:04d}.json",
                     f"results/candidate-set-{run.plan_revision:04d}.json",

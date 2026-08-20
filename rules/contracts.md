@@ -13,6 +13,7 @@ Use `render-plan/v2` with `creo-render-task/v1`. Every formal task contains:
 - stable task/step ID and BOM scope;
 - full root paths for moving, receiver, and visible occurrence sets;
 - authoritative assembly record and source-backed quantity evidence;
+- intake BOM and full ASM/PRT tree hashes, revalidated before/after rendering and before publication;
 - receiver-backed root translation and unchanged rotations;
 - camera ID restricted to `fixed_123` or `fixed_456`;
 - `fixed-frame-presentation/v1` with `native-selected-fit/v1`;

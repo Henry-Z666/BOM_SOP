@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from PIL import Image, ImageDraw, ImageFont
+from sop_pipeline.camera_planner import select_fixed_camera_for_stage
 
 from .bom_cad_mapper import BomCadMap, BomOccurrenceMapping, map_bom_to_occurrences
 from .bom_normalizer import NormalizedBom, NormalizedBomRow, normalize_bom
@@ -390,6 +391,10 @@ def render_batch(
     context: SkillContext, invocation: SkillInvocation
 ) -> SkillHandlerOutput:
     try:
+        input_manifest = context.read_json(
+            _require_ref(invocation, "input-manifest")
+        )
+        _assert_input_manifest_unchanged(context.run, input_manifest)
         jobs_ref = context.artifact(_require_ref(invocation, "locked-render-jobs"))
         plan = _render_plan(context.read_json(jobs_ref.relative_path))
         invalidation_ref = _optional_ref(invocation, "invalidation-set")
@@ -522,6 +527,7 @@ def render_batch(
                 "worker_sessions": 0,
                 "restored_steps": 0,
             }
+        _assert_input_manifest_unchanged(context.run, input_manifest)
         result_tasks = (
             tuple(task for task in plan.tasks if task.step_id in invalidated)
             if requested_steps
@@ -1034,6 +1040,10 @@ def publish_delivery(
     context: SkillContext, invocation: SkillInvocation
 ) -> SkillHandlerOutput:
     try:
+        _assert_input_manifest_unchanged(
+            context.run,
+            context.read_json(_require_ref(invocation, "input-manifest")),
+        )
         validation = context.read_json(_require_ref(invocation, "results/validation-"))
         formal = formal_render_plan_from_dict(
             context.read_json(_require_ref(invocation, "locked-render-plan"))
@@ -1489,7 +1499,7 @@ def resolve_step(
                 raise ValueError(
                     f"当前步骤仍有安装方向待确认项 {unresolved_code}；"
                     "仅调整视角、Zoom或箭头不会确认该方向。"
-                    "请说明安装方向，例如“沿设备 Z 轴正方向装入”。"
+                    "请使用当前步骤提供的结构化轴符号表单。"
                 )
             if (
                 revision.kind is RevisionKind.PRESENTATION
@@ -1499,7 +1509,7 @@ def resolve_step(
                 raise ValueError(
                     "当前步骤未通过几何硬门 "
                     f"{code}；仅调整相机、Zoom或箭头没有生成新的真实图片。"
-                    "请说明安装方向、安装对象或接收部件。"
+                    "请修复 BOM/Creo 映射或补齐结构化几何证据。"
                 )
         validate_revision(revision)
         graph = StepDependencyGraph(
@@ -1680,8 +1690,17 @@ def _apply_step_revision(plan: RenderPlan, payload: dict[str, Any]) -> RenderPla
         presentation["variants"] = [variant]
         contract["presentation"] = presentation
         if "direction" in changes:
-            direction = _unit_vector(changes["direction"], "安装方向")
+            requested_direction = _unit_vector(changes["direction"], "安装方向")
+            measured_value = contract.get("receiver_normal_root")
+            direction = _confirmed_receiver_direction(
+                measured_value, requested_direction
+            )
             contract["receiver_normal_root"] = direction
+            contract["direction_confirmation"] = {
+                "schema_version": "structured-axis-confirmation/v1",
+                "requested_direction_root": requested_direction,
+                "preserved_creo_axis": measured_value is not None,
+            }
             current_translation = contract.get("translation_vector_root")
             distance = _vector_length(current_translation)
             if distance <= 1.0e-9:
@@ -1762,42 +1781,41 @@ def _link_revision_cameras(
     translation = [float(value) for value in contract.get("translation_vector_root", ())]
     if len(translation) != 3:
         raise ValueError("锁定渲染任务缺少三维爆炸向量")
-    ranked: list[tuple[tuple[int, float, float, int], str]] = []
-    for camera_id in ("fixed_123", "fixed_456"):
-        camera = catalog.get(camera_id)
-        if not isinstance(camera, dict):
-            continue
-        try:
-            view = _unit_vector(
-                camera.get("position_direction_root"),
-                f"{camera_id} 视线方向",
-            )
-        except ValueError:
-            continue
-        facing = sum(normal[index] * view[index] for index in range(3))
-        along_view = sum(translation[index] * view[index] for index in range(3))
-        projected = [
-            translation[index] - along_view * view[index] for index in range(3)
-        ]
-        projected_length = _vector_length(projected)
-        compatible = facing >= 0.35 and projected_length > 1.0e-6
-        ranked.append(
-            (
-                (
-                    1 if compatible else 0,
-                    facing,
-                    projected_length,
-                    1 if camera_id == "fixed_123" else 0,
-                ),
-                camera_id,
-            )
-        )
-    if not ranked:
-        raise ValueError("两台固定相机都缺少可计算的视线方向")
-    ranked.sort(key=lambda item: item[0], reverse=True)
-    if not ranked[0][0][0]:
-        raise ValueError("两台固定相机都不满足承接面与爆炸投影硬门")
-    selected_id = ranked[0][1]
+    fixed_123 = catalog.get("fixed_123")
+    fixed_456 = catalog.get("fixed_456")
+    if not isinstance(fixed_123, dict) or not isinstance(fixed_456, dict):
+        raise ValueError("锁定渲染任务缺少完整的固定双视角目录")
+    basis = {
+        "fixed_123_position_direction_root": _unit_vector(
+            fixed_123.get("position_direction_root"), "fixed_123 视线方向"
+        ),
+        "fixed_456_position_direction_root": _unit_vector(
+            fixed_456.get("position_direction_root"), "fixed_456 视线方向"
+        ),
+        "up_reference_root": _unit_vector(
+            fixed_123.get("up_reference_root", [0.0, 0.0, 1.0]),
+            "固定视角 UP",
+        ),
+    }
+    stage_geometry = contract.get("stage_geometry_root", {})
+    if not isinstance(stage_geometry, Mapping):
+        stage_geometry = {}
+    selected = select_fixed_camera_for_stage(
+        basis,
+        normal,
+        translation,
+        [
+            dict(value)
+            for value in stage_geometry.get("moving_bounds", [])
+            if isinstance(value, Mapping)
+        ],
+        [
+            dict(value)
+            for value in stage_geometry.get("context_bounds", [])
+            if isinstance(value, Mapping)
+        ],
+    )
+    selected_id = str(selected["id"])
     linked = dict(base_variant)
     linked["camera_id"] = selected_id
     linked["variant_id"] = f"step-revision-{revision_number}-locked-camera"
@@ -1821,6 +1839,24 @@ def _unit_vector(value: Any, label: str) -> list[float]:
     if length <= 1.0e-9:
         raise ValueError(f"{label}不能是零向量")
     return [round(item / length, 9) for item in vector]
+
+
+def _confirmed_receiver_direction(
+    measured_value: Any, requested_direction: list[float]
+) -> list[float]:
+    """Use structured input only to choose the sign of a measured Creo axis."""
+
+    if measured_value is None:
+        return requested_direction
+    measured = _unit_vector(measured_value, "Creo承接面法向")
+    alignment = sum(
+        measured[index] * requested_direction[index] for index in range(3)
+    )
+    if abs(alignment) < 0.95:
+        raise ValueError(
+            "结构化方向只能确认已测 Creo 承接轴的正负号，不能改变承接轴"
+        )
+    return [value if alignment >= 0.0 else -value for value in measured]
 
 
 def _vector_length(value: Any) -> float:
@@ -1869,6 +1905,48 @@ def _file_hash(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return "sha256:" + digest.hexdigest()
+
+
+def _assert_input_manifest_unchanged(run: Any, manifest: Mapping[str, Any]) -> None:
+    """Fail closed if BOM or any Creo model changed after intake."""
+
+    if manifest.get("schema_version") != "input-manifest/v1":
+        raise ValueError("输入清单版本无效，禁止继续渲染或出版")
+    bom = manifest.get("bom")
+    if not isinstance(bom, Mapping) or _file_hash(run.bom_file) != str(
+        bom.get("sha256") or ""
+    ):
+        raise ValueError("BOM_SHA256_CHANGED：分析后 BOM 已变化")
+    expected_items = manifest.get("cad")
+    if not isinstance(expected_items, list):
+        raise ValueError("输入清单缺少 CAD 全树哈希")
+    expected = {
+        str(item.get("relative_path")): str(item.get("sha256"))
+        for item in expected_items
+        if isinstance(item, Mapping)
+    }
+    current_paths = tuple(
+        sorted(
+            path
+            for path in run.cad_directory.rglob("*")
+            if path.is_file() and MODEL_PATTERN.match(path.name)
+        )
+    )
+    current_names = {
+        path.relative_to(run.cad_directory).as_posix() for path in current_paths
+    }
+    if current_names != set(expected):
+        raise ValueError("SOURCE_CAD_TREE_CHANGED：Creo 模型文件集合已变化")
+    changed = [
+        relative
+        for relative in sorted(expected)
+        if _file_hash(run.cad_directory / Path(relative)) != expected[relative]
+    ]
+    if changed:
+        raise ValueError(
+            "SOURCE_CAD_HASH_CHANGED：分析后 Creo 模型已变化："
+            + "、".join(changed[:10])
+        )
 
 
 def _creo_version(filename: str) -> int:

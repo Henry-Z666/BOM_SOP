@@ -12,6 +12,6 @@ max_commands_per_render = 1
 absolute_pan_zoom_forbidden = true
 ```
 
-Require `arrow-projection/v1` and `native-framing-audit/v1`. Visibility, receiver inclusion, pure translation, fixed camera, final-raster centering, clipping, arrow coverage, clean appearance, image dimensions, and authoritative assembly identity are hard gates. One attempt emits one formal raster; only bounded scheduler-level system retries receive another attempt.
+Require `arrow-projection/v1` and `native-framing-audit/v1`. Visibility, receiver inclusion, pure translation, fixed camera, final-raster centering, clipping, arrow coverage, clean appearance, image dimensions, authoritative assembly identity, and unchanged intake BOM/full ASM-PRT tree hashes are hard gates. Recheck the input hashes before and after rendering and before publication. One attempt emits one formal raster; only bounded scheduler-level system retries receive another attempt.
 
 Read the full canonical file before changing contracts or validation.

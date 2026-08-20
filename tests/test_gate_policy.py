@@ -8,6 +8,7 @@ from sop_pipeline.agent.gate_policy import (
     gate_policy,
 )
 from sop_pipeline.agent.skill_handlers import _link_revision_cameras
+from sop_pipeline.agent.skill_handlers import _confirmed_receiver_direction
 
 
 class GatePolicyTests(unittest.TestCase):
@@ -100,7 +101,7 @@ class GatePolicyTests(unittest.TestCase):
         self.assertIn("未分类", policy.user_message)
         self.assertTrue(policy.suggested_action)
 
-    def test_direction_revision_locks_one_ranked_fixed_camera(self) -> None:
+    def test_direction_revision_uses_absolute_alignment_and_stable_tie(self) -> None:
         contract = {
             "receiver_normal_root": [-1.0, 0.0, 0.0],
             "translation_vector_root": [-80.0, 0.0, 0.0],
@@ -108,10 +109,12 @@ class GatePolicyTests(unittest.TestCase):
                 "fixed_123": {
                     "id": "fixed_123",
                     "position_direction_root": [0.8, 0.0, 0.6],
+                    "up_reference_root": [0.0, 1.0, 0.0],
                 },
                 "fixed_456": {
                     "id": "fixed_456",
-                    "position_direction_root": [-0.8, 0.0, 0.6],
+                    "position_direction_root": [-0.8, 0.0, -0.6],
+                    "up_reference_root": [0.0, 1.0, 0.0],
                 },
             },
         }
@@ -132,13 +135,23 @@ class GatePolicyTests(unittest.TestCase):
             revision_number=2,
         )
 
-        self.assertEqual(contract["camera_id"], "fixed_456")
+        self.assertEqual(contract["camera_id"], "fixed_123")
         self.assertEqual(
             [item["camera_id"] for item in presentation["variants"]],
-            ["fixed_456"],
+            ["fixed_123"],
         )
         self.assertEqual(presentation["variants"][0]["zoom"], 1.2)
         self.assertEqual(presentation["variants"][0]["pan"], [0.1, -0.1])
+
+    def test_structured_direction_only_changes_measured_axis_sign(self) -> None:
+        measured = [0.0, 0.1, 0.994987437]
+
+        confirmed = _confirmed_receiver_direction(measured, [0.0, 0.0, -1.0])
+
+        self.assertAlmostEqual(confirmed[1], -0.1)
+        self.assertAlmostEqual(confirmed[2], -0.994987437)
+        with self.assertRaisesRegex(ValueError, "不能改变承接轴"):
+            _confirmed_receiver_direction(measured, [1.0, 0.0, 0.0])
 
 
 if __name__ == "__main__":

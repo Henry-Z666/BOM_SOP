@@ -2,10 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from sop_pipeline.agent.deterministic_resolution import (
-    explicit_axis_direction,
-    structured_step_revision,
-)
+from sop_pipeline.agent.deterministic_resolution import structured_step_revision
 from sop_pipeline.agent.step_revision import RevisionKind
 
 
@@ -21,11 +18,13 @@ class DeterministicResolutionTests(unittest.TestCase):
         self.assertEqual(revision.kind, RevisionKind.INSTALLATION_GEOMETRY)
         self.assertEqual(revision.changes, {"direction": [0.0, -1.0, 0.0]})
 
-    def test_explicit_axis_sentence_has_bounded_parser(self) -> None:
-        self.assertEqual(
-            explicit_axis_direction("该零件沿设备总装 Z 轴正方向装入"),
-            [0.0, 0.0, 1.0],
-        )
+    def test_free_text_axis_sentence_cannot_generate_coordinates(self) -> None:
+        with self.assertRaisesRegex(ValueError, "不从自由文本生成坐标"):
+            structured_step_revision(
+                "step-1",
+                "该零件沿设备总装 Z 轴正方向装入",
+                1,
+            )
 
     def test_camera_override_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "固定视角已由根坐标系"):

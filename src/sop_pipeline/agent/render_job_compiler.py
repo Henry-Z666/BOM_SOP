@@ -59,6 +59,7 @@ def compile_locked_render_jobs(plan: FormalRenderPlan) -> RenderPlan:
             "allowed_camera_ids": list(step.allowed_camera_ids),
             "camera": _compile_camera(plan, step),
             "camera_catalog": _compile_camera_catalog(plan),
+            "stage_geometry_root": _compile_stage_geometry(plan, step),
             "presentation": _compile_presentation(plan, step),
             "arrow_anchors": _compile_arrow_anchors(step),
             "arrow_renderer": "creo_display_list/v1",
@@ -193,6 +194,25 @@ def _compile_camera_catalog(plan: FormalRenderPlan) -> dict[str, dict[str, Any]]
             "up_reference_root": up,
         }
     return result
+
+
+def _compile_stage_geometry(
+    plan: FormalRenderPlan, step: FormalRenderStep
+) -> dict[str, list[dict[str, list[float]]]]:
+    moving = set(step.moving_occurrences)
+    return {
+        "moving_bounds": [
+            plan.occurrence_bounds_root[occurrence]
+            for occurrence in step.moving_occurrences
+            if occurrence in plan.occurrence_bounds_root
+        ],
+        "context_bounds": [
+            plan.occurrence_bounds_root[occurrence]
+            for occurrence in step.visible_occurrences
+            if occurrence not in moving
+            and occurrence in plan.occurrence_bounds_root
+        ],
+    }
 
 
 def _compile_presentation(

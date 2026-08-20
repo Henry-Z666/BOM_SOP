@@ -1,10 +1,7 @@
 from .core import AgentCore
 from .creo_worker import AgentNativeCreoWorker
 from .desktop_workflow import DesktopWorkflow
-from .deterministic_resolution import (
-    explicit_axis_direction,
-    structured_step_revision,
-)
+from .deterministic_resolution import structured_step_revision
 from .excel_verifier import ExcelComVerifier
 from .formal_render_planner import (
     ArrowAnchorEvidence,
@@ -147,6 +144,5 @@ __all__ = [
     "StepResult",
     "WorkflowPort",
     "validate_revision",
-    "explicit_axis_direction",
     "structured_step_revision",
 ]

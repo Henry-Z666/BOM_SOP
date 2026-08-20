@@ -21,8 +21,9 @@ legacy path or arbitrary file can never be adopted.
 
 The production framing path is native selected fit only. User PAN/Zoom, explosion-distance,
 arrow-layout, or camera text cannot enable `manual_refit`, switch the locked camera, or create
-extra framing renders. An installation-direction clarification is accepted only when a
-structured field or explicit sentence names one positive or negative X/Y/Z axis. Resolution
+extra framing renders. An installation-direction clarification is accepted only when the current
+step provides structured fields naming one positive or negative X/Y/Z axis. It may confirm only
+the sign of the measured Creo receiver axis; free text cannot generate coordinates. Resolution
 cannot revise dependencies, complete-state facts, occurrence IDs, moving parts, or receiver parts.
 
 For unresolved moving or receiver occurrences, keep the step blocked and return to deterministic
@@ -36,5 +37,5 @@ must preserve that exact image unless the new invalidation set names the step. T
 immediately leaves the review queue; the desktop Agent stays on the review page and advances to
 the next unresolved step.
 
-If an instruction is not one unambiguous axis direction, preserve the pending step and show a
-concrete Chinese example such as “沿设备 Z 轴正方向装入”。
+If the structured axis form is missing or conflicts with the measured Creo axis, preserve the
+pending step and explain that the operator may confirm only the existing axis sign.

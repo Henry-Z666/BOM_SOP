@@ -307,7 +307,7 @@ def select_fixed_camera_for_stage(
     it does not inspect pixels or retry a render.
     """
 
-    face = classify_receiver_face(receiver_normal_root, basis)
+    face = {"normal_root": normalize(receiver_normal_root)}
     candidates = generate_camera_candidates(
         basis, face, explosion_vector_root
     )

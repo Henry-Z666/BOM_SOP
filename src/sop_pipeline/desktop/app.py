@@ -325,12 +325,11 @@ class MainWindow(QMainWindow):
         layout.addLayout(body, 1)
         self.review_instruction = QTextEdit()
         self.review_instruction.setPlaceholderText(
-            "例如：翻转视角；箭头数量改为两个；沿设备 Z 轴正方向装入。"
-            "涉及其他部件时请写“部件名称（图号）”。"
+            "自由文本仅作审核说明；坐标方向必须使用当前步骤提供的结构化表单。"
         )
         self.review_instruction.setMaximumHeight(100)
         self.review_instruction_label = QLabel(
-            "对当前步骤的修正说明（普通语言即可）"
+            "对当前步骤的审核说明"
         )
         layout.addWidget(self.review_instruction_label)
         self.review_instruction_help = QLabel(

@@ -93,6 +93,17 @@ class AlwaysFailingWorker(ImageWorker):
         return RenderAttempt.retryable("CREO_RUNTIME_CONFIG_MISSING")
 
 
+class CadMutatingWorker(ImageWorker):
+    def __init__(self, model: Path) -> None:
+        super().__init__()
+        self.model = model
+
+    def render(self, session, task, attempt):
+        result = super().render(session, task, attempt)
+        self.model.write_bytes(b"changed-during-render")
+        return result
+
+
 def _fixture(root: Path):
     bom = root / "BOM.xlsx"
     _xlsx(
@@ -287,6 +298,9 @@ class PipelineOrchestratorTests(unittest.TestCase):
                 StepResolution(
                     step_id=target_id,
                     instruction="该零件沿设备Z轴正方向装入",
+                    metadata={
+                        "structured_inputs": {"axis": "Z", "sign": "正"}
+                    },
                 ),
             )
 
@@ -394,7 +408,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
             )
             calls_before = list(worker.calls)
 
-            with self.assertRaisesRegex(SkillPipelineError, "脚本版本只接受"):
+            with self.assertRaisesRegex(SkillPipelineError, "不从自由文本生成坐标"):
                 core.resolve(
                     run_id,
                     StepResolution(
@@ -405,7 +419,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
 
             self.assertEqual(worker.calls, calls_before)
 
-    def test_explicit_direction_resolution_unlocks_and_renders_blocked_step(self) -> None:
+    def test_structured_direction_resolution_unlocks_and_renders_blocked_step(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             bom, cad, graph = _weak_direction_fixture(root)
@@ -455,7 +469,10 @@ class PipelineOrchestratorTests(unittest.TestCase):
                 run_id,
                 StepResolution(
                     step_id=target.step_id,
-                    instruction="该零件沿设备Z轴正方向装入",
+                    instruction="确认该零件沿已测X轴正方向装入",
+                    metadata={
+                        "structured_inputs": {"axis": "X", "sign": "正"}
+                    },
                 ),
             )
 
@@ -785,7 +802,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
 
             self.assertEqual(worker.calls, calls_before)
 
-    def test_explicit_axis_direction_reruns_only_invalidated_step(self) -> None:
+    def test_structured_axis_direction_reruns_only_invalidated_step(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             bom, cad, graph = _fixture(root)
@@ -818,12 +835,71 @@ class PipelineOrchestratorTests(unittest.TestCase):
                 StepResolution(
                     step_id=target.step_id,
                     instruction="该零件沿设备Z轴正方向装入",
+                    metadata={
+                        "structured_inputs": {"axis": "Z", "sign": "正"}
+                    },
                 ),
             )
 
             self.assertEqual(pending.status, RunStatus.NEEDS_REVIEW)
             self.assertEqual(completed.status, RunStatus.COMPLETED)
             self.assertEqual(worker.calls.count(target.step_id), 3)
+
+    def test_generation_rejects_cad_changed_after_analysis(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            bom, cad, graph = _fixture(root)
+            core = AgentCore(
+                root / "workspace",
+                PipelineOrchestrator(
+                    adapters={
+                        "creo_discovery": StaticCreoDiscovery(graph),
+                        "render_worker": ImageWorker(),
+                    }
+                ),
+            )
+            run_id = core.create_run(bom, cad)
+            packet = core.analyze(run_id)
+            core.confirm(
+                run_id,
+                {
+                    item.item_id: item.recommended_option
+                    for item in packet.items
+                    if item.category == "CONFIRMATION"
+                },
+            )
+            (cad / "part-b.prt.1").write_bytes(b"changed-after-analysis")
+
+            with self.assertRaisesRegex(SkillPipelineError, "SOURCE_CAD_HASH_CHANGED"):
+                core.generate(run_id)
+
+    def test_generation_rejects_cad_changed_during_render(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            bom, cad, graph = _fixture(root)
+            worker = CadMutatingWorker(cad / "part-b.prt.1")
+            core = AgentCore(
+                root / "workspace",
+                PipelineOrchestrator(
+                    adapters={
+                        "creo_discovery": StaticCreoDiscovery(graph),
+                        "render_worker": worker,
+                    }
+                ),
+            )
+            run_id = core.create_run(bom, cad)
+            packet = core.analyze(run_id)
+            core.confirm(
+                run_id,
+                {
+                    item.item_id: item.recommended_option
+                    for item in packet.items
+                    if item.category == "CONFIRMATION"
+                },
+            )
+
+            with self.assertRaisesRegex(SkillPipelineError, "SOURCE_CAD_HASH_CHANGED"):
+                core.generate(run_id)
 
 if __name__ == "__main__":
     unittest.main()
