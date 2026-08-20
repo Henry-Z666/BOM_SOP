@@ -570,9 +570,15 @@ public final class RenderAssemblyImage {
       double[] framingTranslation = new double[] {0.0, 0.0, 0.0};
       if (useActivityLookAt) {
         // The receiver may be much larger and have a distant component
-        // origin.  The camera target must match the moving-only scale probe.
+        // origin. Center the complete-to-exploded activity midpoint, not only
+        // the complete occurrence origin, so the same-CAD-point arrow starts
+        // close to the native view centre before any PAN probe is needed.
         double[] stageCenter = stageOccurrenceCenter(session, assembly, requestedOccurrences);
-        framingTranslation = new double[] {-stageCenter[0], -stageCenter[1], -stageCenter[2]};
+        framingTranslation = new double[] {
+          -stageCenter[0] - dx / 2.0,
+          -stageCenter[1] - dy / 2.0,
+          -stageCenter[2] - dz / 2.0
+        };
         for (intseq ids : minimalOccurrenceRoots(visibleOccurrencePaths))
           translateResolved(session, assembly, ids, framingTranslation[0], framingTranslation[1], framingTranslation[2]);
         System.err.println("[PERSISTENT] framing_activity_center=" + java.util.Arrays.toString(stageCenter)

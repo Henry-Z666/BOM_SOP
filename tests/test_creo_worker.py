@@ -16,12 +16,18 @@ from PIL import Image, ImageDraw
 
 from sop_pipeline.agent.creo_worker import (
     AgentNativeCreoWorker,
+    _bounded_pan_step,
     _effective_pan_bound,
+    _scale_bucket_zoom,
     _scale_screen_pan_response,
     _screen_pan_response_key,
 )
 from sop_pipeline.agent.creo_worker import SubprocessCommandRunner
 from sop_pipeline.agent.render_scheduler import RenderPlan, RenderTask
+from sop_pipeline.agent.render_validation import (
+    NativeRenderGateReport,
+    RasterCompositionMetrics,
+)
 from sop_pipeline.agent.screen_centering import ScreenPanResponse
 
 
@@ -163,12 +169,16 @@ class AdaptiveCenteringRunner:
         zoom_sensitive: bool = False,
         hide_arrow_when_off_center: bool = False,
         lower_left_zoom_anchor: bool = False,
+        native_focus_zoom_anchor: bool = False,
+        degrade_after_zoom: bool = False,
         subject_half_size: float = 400.0,
     ) -> None:
         self.prepared_models = prepared_models
         self.zoom_sensitive = zoom_sensitive
         self.hide_arrow_when_off_center = hide_arrow_when_off_center
         self.lower_left_zoom_anchor = lower_left_zoom_anchor
+        self.native_focus_zoom_anchor = native_focus_zoom_anchor
+        self.degrade_after_zoom = degrade_after_zoom
         self.subject_half_size = subject_half_size
         self.commands: list[list[str]] = []
 
@@ -185,7 +195,12 @@ class AdaptiveCenteringRunner:
             variant = task["payload"]["presentation"]["variants"][variant_index]
             pan_x, pan_y = (float(value) for value in variant["pan"])
             zoom = float(variant["zoom"])
-            if self.lower_left_zoom_anchor:
+            if self.native_focus_zoom_anchor:
+                center_x = 800.0 + zoom * (
+                    300.0 + 1000.0 * pan_x + 100.0 * pan_y
+                )
+                center_y = 800.0 + zoom * (50.0 * pan_x - 900.0 * pan_y)
+            elif self.lower_left_zoom_anchor:
                 # Creo applies PAN in exported screen coordinates after Zoom;
                 # its response is therefore reusable across Zoom values.
                 center_x = zoom * 1100.0 + 1000.0 * pan_x + 100.0 * pan_y
@@ -203,6 +218,11 @@ class AdaptiveCenteringRunner:
             draw = ImageDraw.Draw(image)
             half_width = self.subject_half_size * zoom if self.zoom_sensitive else 440.0
             half_height = self.subject_half_size * 0.95 * zoom if self.zoom_sensitive else 425.0
+            if self.degrade_after_zoom and zoom > 1.0:
+                center_x = 1590.0
+                center_y = 800.0
+                half_width = 1600.0
+                half_height = 1600.0
             draw.rectangle(
                 (
                     round(center_x - half_width),
@@ -367,7 +387,7 @@ def _scale_bucket_task(
             "activity_projected_size_root": [activity_size, activity_size],
             "context_projected_size_root": [context_size, context_size],
         },
-        "probe_interface_status": "enabled_test_cad_bounds/v1",
+        "probe_interface_status": "enabled_real_cad_bounds/v1",
         "on_mismatch": "invalidate_and_recalibrate_once/v1",
         "max_bucket_recalibrations": 1,
     }
@@ -505,6 +525,45 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
     def test_pan_bound_scales_from_contract_at_native_zoom(self) -> None:
         self.assertEqual(_effective_pan_bound(1.0, 0.8), 1.0)
         self.assertAlmostEqual(_effective_pan_bound(1.0, 2.65), 2.65)
+
+    def test_unverified_pan_moves_by_at_most_one_probe_increment(self) -> None:
+        self.assertEqual(
+            _bounded_pan_step((0.0, 0.0), (-0.8, 0.35), max_delta=0.1),
+            (-0.1, 0.1),
+        )
+
+    def test_scale_zoom_never_pushes_visible_context_past_safe_span(self) -> None:
+        task = _scale_bucket_task(
+            task_id="context-limit",
+            plan_index=0,
+            signature="cad-framing-scale/v1:depth=1:activity=8:context=11:ratio=3",
+            activity_size=20.0,
+            context_size=100.0,
+        )
+        composition = RasterCompositionMetrics(
+            background_rgb=(255, 255, 255),
+            subject_bbox=(400, 400, 1200, 1200),
+            significant_components=1,
+            foreground_pixels=640000,
+            width_fraction=0.5,
+            height_fraction=0.5,
+            max_span_fraction=0.5,
+            border_margin_pixels=400,
+            clipped_edges=(),
+            center_pixel=(800.0, 800.0),
+            center_offset_pixels=0.0,
+        )
+        report = NativeRenderGateReport(
+            schema_version="native-render-gate-report/v1",
+            passed=False,
+            failures=("SUBJECT_TOO_SMALL",),
+            composition=composition,
+            arrow_raster=None,
+        )
+
+        zoom = _scale_bucket_zoom(task.payload, report, 1.0)
+
+        self.assertAlmostEqual(zoom, 1.1)
 
     def test_native_worker_uses_bounded_session_protocol_and_stops_on_close(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -1043,6 +1102,9 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             workspace = Path(folder)
             task = _native_task()
+            task.payload["presentation"]["framing_profile"] = {
+                "probe_interface_status": "enabled_real_cad_bounds/v1"
+            }
             plan = RenderPlan("render-plan/v2", (task,))
             plan_path = workspace / "locked-render-jobs.json"
             plan_path.write_text(
@@ -1057,7 +1119,7 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
             runner = AdaptiveCenteringRunner(
                 workspace / "internal" / "prepared-models",
                 zoom_sensitive=True,
-                lower_left_zoom_anchor=True,
+                native_focus_zoom_anchor=True,
                 subject_half_size=160.0,
             )
             worker = AgentNativeCreoWorker(
@@ -1084,12 +1146,62 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         self.assertEqual(result.disposition, "passed")
         self.assertEqual(
             rendered_frames,
-            4,
-            "a cold framing recovery is base + two probes + one solved raster",
+            6,
+            "a large cold recovery is base + two probes + three bounded Zooms",
         )
         distinct_zooms = sorted({round(float(value), 6) for value in zooms})
-        self.assertEqual(len(distinct_zooms), 2)
+        self.assertEqual(len(distinct_zooms), 4)
+        self.assertAlmostEqual(distinct_zooms[1], 1.5)
+        self.assertAlmostEqual(distinct_zooms[2], 2.25)
         self.assertGreater(distinct_zooms[-1], 1.0)
+
+    def test_recovery_restores_best_visible_frame_after_late_zoom_regression(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            task = _native_task()
+            task.payload["presentation"]["framing_profile"] = {
+                "probe_interface_status": "enabled_real_cad_bounds/v1"
+            }
+            plan = RenderPlan("render-plan/v2", (task,))
+            plan_path = workspace / "locked-render-jobs.json"
+            plan_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": plan.schema_version,
+                        "tasks": [asdict(task)],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runner = AdaptiveCenteringRunner(
+                workspace / "internal" / "prepared-models",
+                zoom_sensitive=True,
+                native_focus_zoom_anchor=True,
+                degrade_after_zoom=True,
+                subject_half_size=180.0,
+            )
+            worker = AgentNativeCreoWorker(
+                powershell="pwsh",
+                batch_script=Path("native.ps1"),
+                models_root=Path("cad"),
+                render_plan_json=plan_path,
+                runner=runner,
+            )
+
+            result = worker.render(worker.open_session(workspace, plan), task, 1)
+            report = worker.validator.validate(
+                workspace / "rendered" / "formal-step.jpg",
+                workspace / "rendered" / "formal-step.arrow.json",
+                task.payload,
+            )
+
+        self.assertEqual(result.disposition, "questioned")
+        self.assertIsNotNone(result.output_hash)
+        self.assertIsNotNone(report.composition)
+        self.assertLess(report.composition.max_span_fraction, 0.4)
+        self.assertEqual(report.composition.clipped_edges, ())
 
     def test_scale_bucket_probe_is_bounded_reused_and_invalidated_by_signature(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -1129,7 +1241,7 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
             runner = AdaptiveCenteringRunner(
                 workspace / "internal" / "prepared-models",
                 zoom_sensitive=True,
-                lower_left_zoom_anchor=True,
+                native_focus_zoom_anchor=True,
                 subject_half_size=400.0,
             )
             worker = AgentNativeCreoWorker(
@@ -1160,12 +1272,16 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         self.assertEqual(first_result.disposition, "passed")
         self.assertEqual(reused_result.disposition, "passed")
         self.assertEqual(changed_result.disposition, "passed")
-        self.assertEqual(first_frames, 4, "cold bucket must be base + 2 probes + solved")
+        self.assertEqual(
+            first_frames,
+            5,
+            "cold bucket is base + 2 probes + bounded Zoom/PAN verification",
+        )
         self.assertEqual(reused_frames, 1, "same bucket must use one formal raster")
         self.assertEqual(
             total_frames - first_frames - reused_frames,
-            4,
-            "new bucket must calibrate its own PAN response and scale",
+            5,
+            "new bucket must stay inside its six-raster calibration budget",
         )
         self.assertEqual(len(session.framing_profiles), 2)
         self.assertEqual(len(session.screen_pan_responses), 2)

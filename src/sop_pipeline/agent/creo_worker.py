@@ -108,6 +108,14 @@ class FrozenFramingProfile:
 
 
 @dataclass
+class RetainedFramingCandidate:
+    report: NativeRenderGateReport
+    image_bytes: bytes
+    audit_bytes: bytes
+    score: tuple[float, ...]
+
+
+@dataclass
 class CreoSession:
     output_directory: Path
     internal_directory: Path | None = None
@@ -120,6 +128,10 @@ class CreoSession:
     framing_profiles: dict[str, FrozenFramingProfile] = field(default_factory=dict)
     recalibrated_profile_keys: set[str] = field(default_factory=set)
     render_frames_by_task: dict[str, int] = field(default_factory=dict)
+    recovery_depth_by_task: dict[str, int] = field(default_factory=dict)
+    retained_framing_by_task: dict[str, RetainedFramingCandidate] = field(
+        default_factory=dict
+    )
 
 
 class AgentNativeCreoWorker:
@@ -387,6 +399,57 @@ class AgentNativeCreoWorker:
         return RenderAttempt.passed(f"sha256:{sha256(image_path.read_bytes()).hexdigest()}")
 
     def _recover_screen_centering(
+        self,
+        session: CreoSession,
+        task: RenderTask,
+        *,
+        variant_index: int,
+        base_report: NativeRenderGateReport,
+        variant_override: dict | None = None,
+        zoom_round: int = 0,
+    ) -> RenderAttempt:
+        """Run bounded recovery while preserving the best visible raster.
+
+        Recursive Zoom/PAN attempts intentionally overwrite the formal output
+        path.  Only the outer recovery call may publish its result, so a late
+        clipped or off-screen probe can never replace an earlier usable frame.
+        """
+
+        depth = session.recovery_depth_by_task.get(task.task_id, 0)
+        outermost = depth == 0
+        if outermost:
+            session.retained_framing_by_task.pop(task.task_id, None)
+            _retain_framing_candidate(session, task, base_report)
+        session.recovery_depth_by_task[task.task_id] = depth + 1
+        try:
+            result = self._recover_screen_centering_inner(
+                session,
+                task,
+                variant_index=variant_index,
+                base_report=base_report,
+                variant_override=variant_override,
+                zoom_round=zoom_round,
+            )
+        finally:
+            remaining = session.recovery_depth_by_task[task.task_id] - 1
+            if remaining:
+                session.recovery_depth_by_task[task.task_id] = remaining
+            else:
+                session.recovery_depth_by_task.pop(task.task_id, None)
+        if not outermost or result.disposition == "passed":
+            if outermost:
+                session.retained_framing_by_task.pop(task.task_id, None)
+            return result
+        retained = session.retained_framing_by_task.pop(task.task_id, None)
+        if retained is None:
+            return result
+        image_path = session.output_directory / f"{task.task_id}.jpg"
+        audit_path = session.output_directory / f"{task.task_id}.arrow.json"
+        image_path.write_bytes(retained.image_bytes)
+        audit_path.write_bytes(retained.audit_bytes)
+        return _gate_attempt(image_path, retained.report.failures)
+
+    def _recover_screen_centering_inner(
         self,
         session: CreoSession,
         task: RenderTask,
@@ -766,14 +829,24 @@ class AgentNativeCreoWorker:
                     frame_pixels=(1600, 1600),
                 )
                 response_at_zoom = response
-            derived_pan = _solve_pan(
-                target,
+            derived_pan = _bounded_pan_step(
                 pan,
-                projected_center,
-                response_at_zoom,
-                _effective_pan_bound(
-                    float(task.payload["presentation"]["centering"]["max_abs_pan"]),
-                    derived_zoom,
+                _solve_pan(
+                    target,
+                    pan,
+                    projected_center,
+                    response_at_zoom,
+                    _effective_pan_bound(
+                        float(
+                            task.payload["presentation"]["centering"][
+                                "max_abs_pan"
+                            ]
+                        ),
+                        derived_zoom,
+                    ),
+                ),
+                max_delta=float(
+                    task.payload["presentation"]["centering"]["probe_delta"]
                 ),
             )
         except (
@@ -981,6 +1054,7 @@ class AgentNativeCreoWorker:
             payload,
             variant_index=0,
         )
+        _retain_framing_candidate(session, task, report)
         if (
             retained_image is not None
             and (
@@ -1240,6 +1314,92 @@ class AgentNativeCreoWorker:
             session.native_worker_active = False
 
 
+def _retain_framing_candidate(
+    session: CreoSession,
+    task: RenderTask,
+    report: NativeRenderGateReport,
+) -> None:
+    """Keep the best structurally usable formal raster for this recovery."""
+
+    score = _framing_candidate_score(task.payload, report)
+    if score is None:
+        return
+    image_path = session.output_directory / f"{task.task_id}.jpg"
+    audit_path = session.output_directory / f"{task.task_id}.arrow.json"
+    if not image_path.is_file() or not audit_path.is_file():
+        return
+    current = session.retained_framing_by_task.get(task.task_id)
+    if current is not None and score <= current.score:
+        return
+    session.retained_framing_by_task[task.task_id] = RetainedFramingCandidate(
+        report=report,
+        image_bytes=image_path.read_bytes(),
+        audit_bytes=audit_path.read_bytes(),
+        score=score,
+    )
+
+
+def _framing_candidate_score(
+    payload: dict,
+    report: NativeRenderGateReport,
+) -> tuple[float, ...] | None:
+    """Rank visible frames by safety, target span, then activity centering."""
+
+    composition = report.composition
+    if (
+        composition is None
+        or composition.subject_bbox is None
+        or composition.center_pixel is None
+    ):
+        return None
+    failures = set(report.failures)
+    unsafe = bool(
+        failures
+        & {
+            "SUBJECT_NOT_DETECTED",
+            "SUBJECT_TOO_LARGE",
+            "SUBJECT_CLIPPED",
+            "EXCESSIVE_CONTEXT_CLIPPING",
+            "ARROW_CLIPPED",
+            "RENDER_OUTPUT_MISSING",
+            "RENDER_FRAME_INVALID",
+        }
+    )
+    arrow = report.arrow_raster
+    arrow_usable = (
+        arrow is not None
+        and arrow.bbox is not None
+        and arrow.center_pixel is not None
+        and not failures.intersection(
+            {"ARROW_NOT_VISIBLE", "ARROW_TOO_SMALL", "ARROW_CLIPPED"}
+        )
+    )
+    try:
+        presentation = payload["presentation"]
+        target_span = float(presentation["zoom_recovery"]["target_subject_span"])
+        target_x, target_y = (
+            float(value) for value in presentation["centering"]["target_pixel"]
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    focus_x, focus_y = composition.center_pixel
+    if arrow_usable:
+        focus_x = (focus_x + arrow.center_pixel[0]) / 2.0
+        focus_y = (focus_y + arrow.center_pixel[1]) / 2.0
+    objective_pixels = (
+        abs(composition.max_span_fraction - target_span) * 1600.0
+        + math.hypot(focus_x - target_x, focus_y - target_y)
+    )
+    return (
+        float(report.passed),
+        float(not unsafe),
+        float(arrow_usable),
+        -objective_pixels,
+        -float(len(report.failures)),
+        float(composition.foreground_pixels),
+    )
+
+
 def _report_focus_center(
     report: NativeRenderGateReport,
     *,
@@ -1295,6 +1455,17 @@ def _scale_bucket_zoom(
             min_zoom=float(contract["min_zoom"]),
             max_zoom=float(contract["max_zoom"]),
         )
+        frame_gate = presentation["frame_gate"]
+        safe_context_span = min(
+            float(presentation["zoom_recovery"]["target_subject_span"]),
+            0.9 * float(frame_gate["max_subject_span"]),
+        )
+        context_limited_zoom = (
+            current_zoom
+            * safe_context_span
+            / float(report.composition.max_span_fraction)
+        )
+        derived = min(derived, context_limited_zoom)
     except (KeyError, TypeError, ValueError, FramingRecoveryError):
         return None
     if math.isclose(derived, current_zoom, rel_tol=0.05, abs_tol=1.0e-6):
@@ -1335,13 +1506,39 @@ def _bounded_zoom_step(
     current_zoom: float,
     requested_zoom: float,
     *,
-    max_ratio: float = 3.0,
+    max_ratio: float = 1.5,
 ) -> float:
-    """Keep the activity observable while traversing a large scale change."""
+    """Keep the activity observable while traversing a large scale change.
+
+    Three 1.5x steps can reach 3.375x while staying inside the six-raster
+    contract: one base, two PAN probes, and at most three verified Zooms.
+    """
 
     if current_zoom <= 0.0 or requested_zoom <= 0.0 or max_ratio <= 1.0:
         raise FramingRecoveryError("bounded Zoom step inputs are invalid")
     return min(max(requested_zoom, current_zoom / max_ratio), current_zoom * max_ratio)
+
+
+def _bounded_pan_step(
+    current_pan: tuple[float, float],
+    requested_pan: tuple[float, float],
+    *,
+    max_delta: float,
+) -> tuple[float, float]:
+    """Limit an unverified native PAN to one measured probe increment."""
+
+    if max_delta <= 0.0 or not all(
+        math.isfinite(value) for value in (*current_pan, *requested_pan, max_delta)
+    ):
+        raise ScreenCenteringError("bounded PAN inputs are invalid")
+
+    def bounded(current: float, requested: float) -> float:
+        return min(max(requested, current - max_delta), current + max_delta)
+
+    return (
+        bounded(current_pan[0], requested_pan[0]),
+        bounded(current_pan[1], requested_pan[1]),
+    )
 
 
 def _has_arrow_center(report: NativeRenderGateReport) -> bool:
