@@ -119,7 +119,10 @@ def create_human_override_decision(
 
 def _guided_form(code: str, plan_step: Mapping[str, Any]) -> dict[str, Any] | None:
     if code in _DIRECTION_CODES:
-        axis, sign = _axis_and_sign(plan_step.get("receiver_normal_root"))
+        axis_and_sign = _axis_and_sign(plan_step.get("receiver_normal_root"))
+        if axis_and_sign is None:
+            return None
+        axis, sign = axis_and_sign
         return {
             "schema_version": "guided-review-form/v1",
             "title": "确认安装方向",
@@ -146,40 +149,17 @@ def _guided_form(code: str, plan_step: Mapping[str, Any]) -> dict[str, Any] | No
             ],
         }
     if code in _OCCURRENCE_CODES:
-        title = str(plan_step.get("title") or "当前零件")
-        return {
-            "schema_version": "guided-review-form/v1",
-            "title": "确认安装对象",
-            "instruction": "填写人能识别的部件名称、图号或物料编码，无需填写 occurrence 编号。",
-            "sentence_template": "将{moving_name}安装到{receiver_name}",
-            "submit_label": "按所填对象重新分析并生成",
-            "fields": [
-                {
-                    "name": "moving_name",
-                    "label": "安装零件",
-                    "type": "text",
-                    "default": title,
-                    "required": True,
-                },
-                {
-                    "name": "receiver_name",
-                    "label": "承接部件/接口",
-                    "type": "text",
-                    "default": "",
-                    "required": True,
-                },
-            ],
-        }
+        return None
     return None
 
 
-def _axis_and_sign(value: object) -> tuple[str, str]:
+def _axis_and_sign(value: object) -> tuple[str, str] | None:
     try:
         vector = [float(item) for item in value]  # type: ignore[arg-type]
     except (TypeError, ValueError):
-        return "Z", "正"
+        return None
     if len(vector) != 3 or not any(abs(item) > 1.0e-12 for item in vector):
-        return "Z", "正"
+        return None
     index = max(range(3), key=lambda item: abs(vector[item]))
     return "XYZ"[index], "正" if vector[index] >= 0.0 else "负"
 

@@ -9,6 +9,7 @@ from sop_pipeline.agent.gate_policy import (
 )
 from sop_pipeline.agent.skill_handlers import _link_revision_cameras
 from sop_pipeline.agent.skill_handlers import _confirmed_receiver_direction
+from sop_pipeline.agent.skill_handlers import _revised_display_translation
 
 
 class GatePolicyTests(unittest.TestCase):
@@ -152,6 +153,28 @@ class GatePolicyTests(unittest.TestCase):
         self.assertAlmostEqual(confirmed[2], -0.994987437)
         with self.assertRaisesRegex(ValueError, "不能改变承接轴"):
             _confirmed_receiver_direction(measured, [1.0, 0.0, 0.0])
+        with self.assertRaisesRegex(ValueError, "缺少已测 Creo 承接轴"):
+            _confirmed_receiver_direction(None, [0.0, 0.0, 1.0])
+
+    def test_direction_confirmation_recomputes_lateral_display_translation(self) -> None:
+        contract = {
+            "stage_geometry_root": {
+                "moving_bounds": [
+                    {"min": [-1.0, -165.0, -1.0], "max": [1.0, 165.0, 1.0]}
+                ],
+                "context_bounds": [
+                    {"min": [-8.0, -220.0, -20.0], "max": [8.0, 220.0, 0.0]}
+                ],
+            },
+            "arrow_anchors": [{"complete_point_root": [0.0, 160.0, 0.0]}],
+        }
+
+        selected = _revised_display_translation(
+            contract, [0.0, 1.0, 0.0], 100.0
+        )
+
+        self.assertEqual(selected["mode"], "lateral_clearance")
+        self.assertEqual(selected["translation_vector_root"], [0.0, 0.0, 100.0])
 
 
 if __name__ == "__main__":

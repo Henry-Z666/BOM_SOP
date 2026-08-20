@@ -61,6 +61,21 @@ class ReviewModuleTests(unittest.TestCase):
         self.assertFalse(package["override_allowed"])
         self.assertNotIn(ACCEPT_WITH_OVERRIDE, package["available_actions"])
 
+    def test_missing_receiver_axis_does_not_offer_a_default_direction_form(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            package = prepare_review_step(
+                Path(folder),
+                {
+                    "step_id": "step-1",
+                    "status": "FAILED",
+                    "category": "hard_block",
+                    "error_code": "DIRECTION_SIGN_WEAK",
+                },
+                {"receiver_normal_root": None},
+            )
+
+        self.assertIsNone(package["guided_form"])
+
     def test_override_audits_original_hash_and_forbids_watermark(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

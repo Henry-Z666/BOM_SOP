@@ -267,10 +267,7 @@ class ProgressViewTests(unittest.TestCase):
         self.assertEqual(packet["items"][0]["kind"], "failed_image")
         self.assertEqual(packet["items"][0]["category"], "hard_block")
         self.assertTrue(packet["items"][0]["override_allowed"])
-        self.assertEqual(
-            packet["items"][0]["guided_form"]["title"],
-            "确认安装方向",
-        )
+        self.assertIsNone(packet["items"][0]["guided_form"])
 
     def test_review_packet_explains_when_no_candidates_passed(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

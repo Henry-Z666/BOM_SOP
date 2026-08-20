@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 from PIL import Image, ImageDraw, ImageFont
 from sop_pipeline.camera_planner import select_fixed_camera_for_stage
+from sop_pipeline.explosion_planner import select_display_translation
 
 from .bom_cad_mapper import BomCadMap, BomOccurrenceMapping, map_bom_to_occurrences
 from .bom_normalizer import NormalizedBom, NormalizedBomRow, normalize_bom
@@ -1705,9 +1706,13 @@ def _apply_step_revision(plan: RenderPlan, payload: dict[str, Any]) -> RenderPla
             distance = _vector_length(current_translation)
             if distance <= 1.0e-9:
                 distance = 80.0
-            contract["translation_vector_root"] = [
-                round(value * distance, 6) for value in direction
-            ]
+            display_selection = _revised_display_translation(
+                contract, direction, distance
+            )
+            contract["translation_vector_root"] = list(
+                display_selection["translation_vector_root"]
+            )
+            contract["display_translation_audit"] = display_selection
             contract["diagnostics"] = [
                 code
                 for code in contract.get("diagnostics", [])
@@ -1847,7 +1852,7 @@ def _confirmed_receiver_direction(
     """Use structured input only to choose the sign of a measured Creo axis."""
 
     if measured_value is None:
-        return requested_direction
+        raise ValueError("缺少已测 Creo 承接轴，不能由结构化输入创建新的几何轴")
     measured = _unit_vector(measured_value, "Creo承接面法向")
     alignment = sum(
         measured[index] * requested_direction[index] for index in range(3)
@@ -1857,6 +1862,38 @@ def _confirmed_receiver_direction(
             "结构化方向只能确认已测 Creo 承接轴的正负号，不能改变承接轴"
         )
     return [value if alignment >= 0.0 else -value for value in measured]
+
+
+def _revised_display_translation(
+    contract: Mapping[str, Any], direction: list[float], distance: float
+) -> dict[str, Any]:
+    """Re-run the same normal/lateral rule after a receiver-axis sign confirmation."""
+
+    stage_geometry = contract.get("stage_geometry_root", {})
+    if not isinstance(stage_geometry, Mapping):
+        stage_geometry = {}
+    moving_bounds = [
+        dict(value)
+        for value in stage_geometry.get("moving_bounds", [])
+        if isinstance(value, Mapping)
+    ]
+    context_bounds = [
+        dict(value)
+        for value in stage_geometry.get("context_bounds", [])
+        if isinstance(value, Mapping)
+    ]
+    contact_points = [
+        item.get("complete_point_root")
+        for item in contract.get("arrow_anchors", [])
+        if isinstance(item, Mapping) and item.get("complete_point_root") is not None
+    ]
+    return select_display_translation(
+        direction,
+        distance,
+        moving_bounds,
+        context_bounds,
+        contact_points,
+    )
 
 
 def _vector_length(value: Any) -> float:
