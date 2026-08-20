@@ -168,6 +168,25 @@ class DeterministicNativeRenderValidator:
         ):
             failures.append("PRESENTATION_CONTRACT_INVALID")
             return None, None
+        framing_profile = presentation.get("framing_profile", {})
+        if isinstance(framing_profile, dict) and framing_profile.get("policy") == "native_zoom_to_selected/v1":
+            selected_fit = presentation.get("native_selected_fit")
+            try:
+                selected_fit_level = float(selected_fit.get("zoom_to_selected_level", 0.0))
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                selected_fit_level = 0.0
+            if (
+                not isinstance(selected_fit, dict)
+                or selected_fit.get("schema_version") != "native-selected-fit/v1"
+                or selected_fit.get("command") != "ProCmdZoomIntoOutline"
+                or selected_fit.get("selection_scope") != "moving_occurrences/v1"
+                or selected_fit.get("level_policy") != "cad_context_ratio_two_band/v1"
+                or selected_fit.get("max_commands_per_render") != 1
+                or selected_fit.get("absolute_pan_zoom_forbidden") is not True
+                or not 0.1 <= selected_fit_level <= 2.0
+            ):
+                failures.append("PRESENTATION_CONTRACT_INVALID")
+                return None, None
         centering = presentation.get("centering")
         if (
             not isinstance(centering, dict)
@@ -304,7 +323,11 @@ class DeterministicNativeRenderValidator:
                 (focus_center[0] + arrow_metrics.center_pixel[0]) / 2.0,
                 (focus_center[1] + arrow_metrics.center_pixel[1]) / 2.0,
             )
-        if focus_center is not None:
+        native_selected_policy = (
+            isinstance(framing_profile, dict)
+            and framing_profile.get("policy") == "native_zoom_to_selected/v1"
+        )
+        if focus_center is not None and not native_selected_policy:
             focus_offset = math.hypot(
                 focus_center[0] - target_pixel[0],
                 focus_center[1] - target_pixel[1],

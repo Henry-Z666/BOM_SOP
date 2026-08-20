@@ -128,6 +128,20 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
       [bool]$presentation.native_refit.restore_stage_context_without_refit -ne $true) {
     throw "Task $taskId has no supported native focus-refit contract."
   }
+  $nativeSelectedFit = $presentation.native_selected_fit
+  if ([string]$nativeSelectedFit.schema_version -ne 'native-selected-fit/v1' -or
+      [string]$nativeSelectedFit.command -ne 'ProCmdZoomIntoOutline' -or
+      [string]$nativeSelectedFit.selection_scope -ne 'moving_occurrences/v1' -or
+      [string]$nativeSelectedFit.level_policy -ne 'cad_context_ratio_two_band/v1' -or
+      [int]$nativeSelectedFit.max_commands_per_render -ne 1 -or
+      [bool]$nativeSelectedFit.absolute_pan_zoom_forbidden -ne $true) {
+    throw "Task $taskId has no supported native selected-fit contract."
+  }
+  $selectedFitLevel = [double]$nativeSelectedFit.zoom_to_selected_level
+  if ([double]::IsNaN($selectedFitLevel) -or [double]::IsInfinity($selectedFitLevel) -or
+      $selectedFitLevel -lt 0.1 -or $selectedFitLevel -gt 2.0) {
+    throw "Task $taskId has an invalid native selected-fit level."
+  }
   if ([string]$presentation.focus_context -ne 'stage_visible_bbox/v1') { throw "Task $taskId has an invalid presentation focus context." }
   if ([string]$presentation.framing_priority -ne 'installation_activity/v1') { throw "Task $taskId does not prioritize the installation activity." }
   if ([string]$presentation.zoom_anchor -ne 'installation_activity_center/v1') { throw "Task $taskId has an invalid zoom anchor." }
@@ -159,7 +173,7 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   }
   $cameraSpec = 'ABS:' + (& $formatVector $camera.position_direction_root)
   $cameraSpec += ',UP:' + (& $formatVector $camera.up_reference_root)
-  $cameraSpec += ',ZOOM:' + $zoom.ToString('G17', $culture) + ',CENTER,LOOKAT_ACTIVITY'
+  $cameraSpec += ',FIT_SELECTED:' + $selectedFitLevel.ToString('G17', $culture)
   $pan = @($variant.pan)
   if ($pan.Count -ne 2) { throw "Task $taskId has an invalid pan offset." }
   $panX = [double]$pan[0]
@@ -174,7 +188,6 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
       [double]::IsNaN($panY) -or [double]::IsInfinity($panY) -or [Math]::Abs($panY) -gt $effectiveMaxPan) {
     throw "Task $taskId has a pan offset outside the compiled repair bounds."
   }
-  $cameraSpec += ',PAN:' + $panX.ToString('G17', $culture) + ':' + $panY.ToString('G17', $culture)
   $focusOccurrences = @($moving + $receivers | Sort-Object -Unique)
   $anchorRows = New-Object Collections.Generic.List[string]
   foreach ($anchor in @($payload.arrow_anchors)) {

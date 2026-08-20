@@ -9,6 +9,7 @@ import com.ptc.pfc.pfcModel.*;
 import com.ptc.pfc.pfcModelItem.*;
 import com.ptc.pfc.pfcLayer.*;
 import com.ptc.pfc.pfcSession.*;
+import com.ptc.pfc.pfcSelect.*;
 import com.ptc.pfc.pfcSolid.*;
 import com.ptc.pfc.pfcSimpRep.*;
 import com.ptc.pfc.pfcView.*;
@@ -279,6 +280,56 @@ public final class RenderAssemblyImage {
       if (i > 0) value.append('/'); value.append(path.get(i));
     }
     return value.toString();
+  }
+
+  private static Double nativeSelectedFitLevel(String cameraSpec) {
+    for (String rawTerm : cameraSpec.split(",")) {
+      String term = rawTerm.trim();
+      if (!term.regionMatches(true, 0, "FIT_SELECTED:", 0, 13)) continue;
+      double level = Double.parseDouble(term.substring(13));
+      if (!Double.isFinite(level) || level < 0.1 || level > 2.0)
+        throw new IllegalArgumentException("FIT_SELECTED level must be between 0.1 and 2.0");
+      return level;
+    }
+    return null;
+  }
+
+  /** Uses Creo's selected-object bounding-box fit; no raster probe or absolute PAN/ZOOM. */
+  private static void applyNativeSelectedFit(Session session, Window window, Assembly assembly,
+      java.util.List<intseq> occurrencePaths, double level) throws jxthrowable {
+    if (session.UIGetCommand("ProCmdZoomIntoOutline") == null)
+      throw new IllegalStateException("Creo command is unavailable: ProCmdZoomIntoOutline");
+    SelectionBuffer buffer = session.GetCurrentSelectionBuffer();
+    String previousLevel = session.GetConfigOption("zoom_to_selected_level");
+    try {
+      session.SetConfigOption("zoom_to_selected_level", String.format(java.util.Locale.ROOT, "%.6f", level));
+      buffer.Clear();
+      for (intseq ids : occurrencePaths) {
+        ComponentPath path = pfcAssembly.CreateComponentPath(assembly, ids);
+        buffer.AddSelection(pfcSelect.CreateComponentSelection(path));
+      }
+      Selections selected = buffer.GetContents();
+      int count = selected == null ? 0 : selected.getarraysize();
+      if (count != occurrencePaths.size())
+        throw new IllegalStateException("Selection buffer mismatch: expected=" + occurrencePaths.size() + " actual=" + count);
+      window.Repaint();
+      session.FlushCurrentWindow();
+      session.RunMacro("~ Command `ProCmdZoomIntoOutline`");
+      window.Repaint();
+      session.FlushCurrentWindow();
+      ScreenTransform screen = window.GetScreenTransform();
+      System.err.println("[PERSISTENT] native_selected_fit=ProCmdZoomIntoOutline selected=" + count
+          + " level=" + level + " zoom=" + screen.GetZoom()
+          + " pan=[" + screen.GetPanX() + "," + screen.GetPanY() + "]");
+    } finally {
+      try { buffer.Clear(); } catch (Throwable ignored) {}
+      try {
+        session.SetConfigOption("zoom_to_selected_level",
+            previousLevel == null || previousLevel.trim().isEmpty() ? "1" : previousLevel);
+      } catch (Throwable ignored) {}
+      window.Repaint();
+      session.FlushCurrentWindow();
+    }
   }
 
   /** Encodes only locked occurrence IDs and root-coordinate points; no paths leave the run. */
@@ -602,18 +653,23 @@ public final class RenderAssemblyImage {
       System.err.println("[PERSISTENT] translated occurrences=" + occurrencePaths + " vector=" + java.util.Arrays.toString(arrowTranslation));
 
       applyCamera(assembly, session, cameraSpec);
-      java.util.List<Layer> focusContextLayers = new java.util.ArrayList<Layer>();
-      String focusLayerName = "AI_SOP_FOCUS_" + FOCUS_REFIT_IDS.incrementAndGet();
-      int focusContextHidden = blankNonFocusComponents(session, assembly, "", focus, focusLayerName, focusContextLayers);
-      try {
-        window.Repaint(); session.FlushCurrentWindow();
-        session.RunMacro("~ Command `ProCmdViewRefit`");
-        window.Repaint(); session.FlushCurrentWindow();
-      } finally {
-        restoreFocusContext(focusContextLayers);
+      Double selectedFitLevel = nativeSelectedFitLevel(cameraSpec);
+      if (selectedFitLevel != null) {
+        applyNativeSelectedFit(session, window, assembly, requestedOccurrences, selectedFitLevel);
+      } else {
+        java.util.List<Layer> focusContextLayers = new java.util.ArrayList<Layer>();
+        String focusLayerName = "AI_SOP_FOCUS_" + FOCUS_REFIT_IDS.incrementAndGet();
+        int focusContextHidden = blankNonFocusComponents(session, assembly, "", focus, focusLayerName, focusContextLayers);
+        try {
+          window.Repaint(); session.FlushCurrentWindow();
+          session.RunMacro("~ Command `ProCmdViewRefit`");
+          window.Repaint(); session.FlushCurrentWindow();
+        } finally {
+          restoreFocusContext(focusContextLayers);
+        }
+        System.err.println("[PERSISTENT] native_focus_refit=moving_only hidden_context_components=" + focusContextHidden);
+        window.Repaint(); session.FlushCurrentWindow(); applyZoom(window, cameraSpec);
       }
-      System.err.println("[PERSISTENT] native_focus_refit=moving_only hidden_context_components=" + focusContextHidden);
-      window.Repaint(); session.FlushCurrentWindow(); applyZoom(window, cameraSpec);
       ArrowProjection.Result arrowResult = ArrowProjection.layout(assembly, arrowMoving, arrowTranslation);
       ArrowProjection.writeAudit(arrowResult, arrowAuditJson);
       if (drawNativeArrow) arrowDisplay = ArrowProjection.display(session, arrowResult);

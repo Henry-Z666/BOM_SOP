@@ -287,6 +287,34 @@ class RenderValidationTests(unittest.TestCase):
         self.assertIn("ACTIVITY_NOT_CENTERED", report.failures)
         self.assertIn("ARROW_NOT_CENTERED", report.failures)
 
+    def test_native_selected_fit_uses_creo_selection_center_not_context_midpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            image, audit = _write_native_files(root, None)
+            frame = Image.new("RGB", (1600, 1600), "white")
+            draw = ImageDraw.Draw(frame)
+            draw.rectangle((850, 350, 1599, 1250), fill=(80, 100, 120))
+            draw.line((1200, 800, 1500, 800), fill=(0, 150, 0), width=8)
+            frame.save(image)
+            payload = _native_payload()
+            payload["presentation"]["framing_profile"] = {
+                "policy": "native_zoom_to_selected/v1"
+            }
+            payload["presentation"]["native_selected_fit"] = {
+                "schema_version": "native-selected-fit/v1",
+                "command": "ProCmdZoomIntoOutline",
+                "selection_scope": "moving_occurrences/v1",
+                "zoom_to_selected_level": 0.35,
+                "level_policy": "cad_context_ratio_two_band/v1",
+                "max_commands_per_render": 1,
+                "absolute_pan_zoom_forbidden": True,
+            }
+            report = DeterministicNativeRenderValidator().validate(
+                image, audit, payload
+            )
+
+        self.assertTrue(report.passed, report.failures)
+
     def test_balanced_subject_arrow_midpoint_is_the_centering_hard_gate(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

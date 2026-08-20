@@ -211,6 +211,7 @@ def _compile_presentation(
             "framing_priority": "installation_activity/v1",
             "zoom_anchor": "installation_activity_center/v1",
             "native_refit": _native_refit_contract(),
+            "native_selected_fit": _native_selected_fit_contract(framing_profile),
             "framing_profile": framing_profile,
             "centering": _centering_contract(),
             "zoom_recovery": _zoom_recovery_contract(),
@@ -223,6 +224,7 @@ def _compile_presentation(
         "framing_priority": "installation_activity/v1",
         "zoom_anchor": "installation_activity_center/v1",
         "native_refit": _native_refit_contract(),
+        "native_selected_fit": _native_selected_fit_contract(framing_profile),
         "framing_profile": framing_profile,
         "centering": _centering_contract(),
         "zoom_recovery": _zoom_recovery_contract(),
@@ -276,12 +278,11 @@ def _framing_profile_contract(
     plan: FormalRenderPlan, step: FormalRenderStep
 ) -> dict[str, Any]:
     frozen = {
-        "schema_version": "frozen-framing-profile-policy/v1",
-        "policy": "default_refit/v1",
-        "scale_signature": "default/v1",
-        "probe_interface_status": "frozen_pending_scale_derivation/v1",
-        "on_mismatch": "question_step/v1",
-        "future_scale_buckets_supported": True,
+        "schema_version": "frozen-framing-profile-policy/v3",
+        "policy": "native_zoom_to_selected/v1",
+        "scale_signature": "creo_selected_object_bbox/v1",
+        "probe_interface_status": "frozen_diagnostic_only/v1",
+        "on_failure": "question_without_probe/v1",
     }
     if step.camera_id is None:
         return frozen
@@ -300,19 +301,30 @@ def _framing_profile_contract(
         )
     except FramingScaleError:
         return frozen
-    if evidence.get("status") != "available":
-        return {**frozen, "scale_evidence": evidence}
+    return {**frozen, "scale_evidence": evidence}
+
+
+def _native_selected_fit_contract(framing_profile: dict[str, Any]) -> dict[str, Any]:
+    level = 0.35
+    evidence = framing_profile.get("scale_evidence", {})
+    if isinstance(evidence, dict) and evidence.get("status") == "available":
+        activity = evidence.get("activity_projected_size_root", [])
+        context = evidence.get("context_projected_size_root", [])
+        try:
+            activity_size = max(float(value) for value in activity)
+            context_size = max(float(value) for value in context)
+            if context_size > 0.0 and activity_size / context_size < 0.2:
+                level = 0.25
+        except (TypeError, ValueError):
+            pass
     return {
-        "schema_version": "frozen-framing-profile-policy/v2",
-        "policy": "freeze_per_scale_bucket/v1",
-        "scale_signature": str(evidence["scale_signature"]),
-        "scale_evidence": evidence,
-        "probe_interface_status": "enabled_real_cad_bounds/v1",
-        "on_mismatch": "invalidate_and_recalibrate_once/v1",
-        "max_bucket_recalibrations": 1,
-        "safe_context_activity_ratio_bucket_max": 3,
-        "outside_safe_boundary": "question_without_zoom/v1",
-        "future_scale_buckets_supported": True,
+        "schema_version": "native-selected-fit/v1",
+        "command": "ProCmdZoomIntoOutline",
+        "selection_scope": "moving_occurrences/v1",
+        "zoom_to_selected_level": level,
+        "level_policy": "cad_context_ratio_two_band/v1",
+        "max_commands_per_render": 1,
+        "absolute_pan_zoom_forbidden": True,
     }
 
 

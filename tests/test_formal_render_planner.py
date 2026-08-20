@@ -11,7 +11,10 @@ from sop_pipeline.agent.formal_render_planner import (
     formal_render_plan_from_dict,
     lock_formal_render_plan,
 )
-from sop_pipeline.agent.render_job_compiler import compile_locked_render_jobs
+from sop_pipeline.agent.render_job_compiler import (
+    _native_selected_fit_contract,
+    compile_locked_render_jobs,
+)
 
 
 def bom_row(number: int, level: str, drawing: str, name: str) -> NormalizedBomRow:
@@ -148,6 +151,29 @@ def fixture() -> tuple[NormalizedBom, DraftPlan, BomCadMap, dict]:
 
 
 class FormalRenderPlannerTests(unittest.TestCase):
+    def test_native_selected_fit_adds_margin_only_for_extreme_context_ratio(self) -> None:
+        small = _native_selected_fit_contract(
+            {
+                "scale_evidence": {
+                    "status": "available",
+                    "activity_projected_size_root": [100.0, 120.0],
+                    "context_projected_size_root": [700.0, 800.0],
+                }
+            }
+        )
+        ordinary = _native_selected_fit_contract(
+            {
+                "scale_evidence": {
+                    "status": "available",
+                    "activity_projected_size_root": [200.0, 240.0],
+                    "context_projected_size_root": [700.0, 800.0],
+                }
+            }
+        )
+
+        self.assertEqual(small["zoom_to_selected_level"], 0.25)
+        self.assertEqual(ordinary["zoom_to_selected_level"], 0.35)
+
     def test_uses_child_reference_from_parent_level_creo_constraint(self) -> None:
         bom, draft, mapping, graph = fixture()
         parent_constraint = constraint(
@@ -409,7 +435,19 @@ class FormalRenderPlannerTests(unittest.TestCase):
         self.assertEqual(set(task.payload["camera_catalog"]), {"fixed_123", "fixed_456"})
         self.assertEqual(
             task.payload["presentation"]["framing_profile"]["policy"],
-            "default_refit/v1",
+            "native_zoom_to_selected/v1",
+        )
+        self.assertEqual(
+            task.payload["presentation"]["native_selected_fit"],
+            {
+                "schema_version": "native-selected-fit/v1",
+                "command": "ProCmdZoomIntoOutline",
+                "selection_scope": "moving_occurrences/v1",
+                "zoom_to_selected_level": 0.35,
+                "level_policy": "cad_context_ratio_two_band/v1",
+                "max_commands_per_render": 1,
+                "absolute_pan_zoom_forbidden": True,
+            },
         )
         self.assertEqual(
             task.payload["presentation"]["variants"],
@@ -445,7 +483,7 @@ class FormalRenderPlannerTests(unittest.TestCase):
             "adaptive-screen-center/v1",
         )
 
-    def test_real_cad_bounds_compile_scale_bucket_probe_contract(self) -> None:
+    def test_real_cad_bounds_do_not_reenable_frozen_probe_contract(self) -> None:
         bom, draft, mapping, graph = fixture()
         for node in graph["occurrences"]:
             origin = node["transform"]["origin"]
@@ -470,13 +508,11 @@ class FormalRenderPlannerTests(unittest.TestCase):
         )
         profile = task.payload["presentation"]["framing_profile"]
 
-        self.assertEqual(profile["policy"], "freeze_per_scale_bucket/v1")
-        self.assertEqual(profile["schema_version"], "frozen-framing-profile-policy/v2")
-        self.assertEqual(profile["scale_evidence"]["status"], "available")
-        self.assertTrue(
-            profile["scale_signature"].startswith("cad-framing-scale/v1:")
-        )
-        self.assertEqual(profile["on_mismatch"], "invalidate_and_recalibrate_once/v1")
+        self.assertEqual(profile["policy"], "native_zoom_to_selected/v1")
+        self.assertEqual(profile["schema_version"], "frozen-framing-profile-policy/v3")
+        self.assertEqual(profile["scale_signature"], "creo_selected_object_bbox/v1")
+        self.assertEqual(profile["probe_interface_status"], "frozen_diagnostic_only/v1")
+        self.assertEqual(profile["on_failure"], "question_without_probe/v1")
         self.assertEqual(
             task.payload["presentation"]["zoom_recovery"],
             {

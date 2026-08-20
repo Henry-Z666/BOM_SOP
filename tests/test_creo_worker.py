@@ -412,6 +412,10 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
             renderer,
         )
         self.assertIn("ARROW_DISPLAY_CLEANUP_FAILED", renderer)
+        self.assertIn('UIGetCommand("ProCmdZoomIntoOutline")', renderer)
+        self.assertIn("CreateComponentSelection", renderer)
+        self.assertIn("GetCurrentSelectionBuffer", renderer)
+        self.assertIn("FIT_SELECTED:", renderer)
 
     def test_native_powershell_chain_propagates_runtime_config(self) -> None:
         root = Path(__file__).resolve().parents[1] / "creo_java"
@@ -870,6 +874,66 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
                 "policy": "default_refit/v1",
                 "scale_signature": "default/v1",
                 "probe_interface_status": "frozen_pending_scale_derivation/v1",
+            }
+            payload["presentation"]["variants"] = [
+                {
+                    "variant_id": "base",
+                    "camera_id": "fixed_123",
+                    "zoom": 1.0,
+                    "pan": [0.0, 0.0],
+                }
+            ]
+            task = replace(task, payload=payload)
+            runner = NativeRecordingRunner(
+                workspace / "internal" / "prepared-models",
+                first_variant_tiny=True,
+            )
+            worker = AgentNativeCreoWorker(
+                powershell="pwsh",
+                batch_script=Path("native.ps1"),
+                models_root=Path("cad"),
+                render_plan_json=Path("plan.json"),
+                runner=runner,
+            )
+
+            result = worker.render(
+                worker.open_session(workspace, RenderPlan("render-plan/v2", (task,))),
+                task,
+                1,
+            )
+            profile_written = (
+                workspace
+                / "internal"
+                / "screen-centering"
+                / "frozen-framing-profiles.json"
+            ).exists()
+
+        self.assertEqual(result.disposition, "questioned")
+        self.assertEqual(result.error_code, "SUBJECT_TOO_SMALL")
+        self.assertTrue(result.output_hash)
+        self.assertEqual(len(runner.commands), 1)
+        self.assertFalse(profile_written)
+
+    def test_native_selected_fit_policy_never_enters_probe_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            task = _native_task()
+            payload = deepcopy(task.payload)
+            payload["presentation"]["framing_profile"] = {
+                "schema_version": "frozen-framing-profile-policy/v3",
+                "policy": "native_zoom_to_selected/v1",
+                "scale_signature": "creo_selected_object_bbox/v1",
+                "probe_interface_status": "frozen_diagnostic_only/v1",
+                "on_failure": "question_without_probe/v1",
+            }
+            payload["presentation"]["native_selected_fit"] = {
+                "schema_version": "native-selected-fit/v1",
+                "command": "ProCmdZoomIntoOutline",
+                "selection_scope": "moving_occurrences/v1",
+                "zoom_to_selected_level": 0.8,
+                "level_policy": "cad_context_ratio_two_band/v1",
+                "max_commands_per_render": 1,
+                "absolute_pan_zoom_forbidden": True,
             }
             payload["presentation"]["variants"] = [
                 {

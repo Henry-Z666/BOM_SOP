@@ -221,16 +221,17 @@ class AgentNativeCreoWorker:
             )
             profile_policy = str(profile_contract.get("policy", "freeze_per_camera/v1"))
             default_refit = profile_policy == "default_refit/v1"
+            native_selected_fit = profile_policy == "native_zoom_to_selected/v1"
             if profile_policy == "manual_refit/v1":
                 raise ScreenCenteringError(
                     "manual framing is frozen in the production worker"
                 )
             profile_key = (
                 None
-                if default_refit
+                if default_refit or native_selected_fit
                 else _framing_profile_key(task.payload, camera_id=camera_id)
             )
-            if default_refit and (
+            if (default_refit or native_selected_fit) and (
                 variant_index != 0
                 or not math.isclose(float(variant["zoom"]), 1.0)
                 or tuple(float(value) for value in variant["pan"]) != (0.0, 0.0)
@@ -312,6 +313,12 @@ class AgentNativeCreoWorker:
             variant_index=variant_index,
             report=report,
         )
+        if native_selected_fit:
+            if report.passed:
+                return RenderAttempt.passed(
+                    f"sha256:{sha256(image_path.read_bytes()).hexdigest()}"
+                )
+            return _gate_attempt(image_path, report.failures)
         if (
             profile_policy == "freeze_per_scale_bucket/v1"
             and _outside_scale_probe_safe_boundary(task.payload)
