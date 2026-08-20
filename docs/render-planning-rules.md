@@ -2,7 +2,7 @@
 
 每一步的渲染合同必须同时给出：活动 occurrence 组、接收 occurrence、仅平移向量、可见 occurrence 集、接收面编号、固定相机组及构图参数。
 
-> 当前生产覆盖规则（2026-08-20）：探针接口冻结为诊断代码，不进入正式任务。正式任务采用 `native_zoom_to_selected/v1`：把完整 moving occurrence 写入 Creo Selection Buffer，只调用一次 `ProCmdZoomIntoOutline`，不设置绝对 PAN/ZOOM。`zoom_to_selected_level` 仅按 CAD 活动范围/上下文范围的产品无关比例分两档：比例小于 `0.2` 时为 `0.25`，其余为 `0.35`。失败保留真实单帧并提问，不启动探针、修正图或构图缓存。
+> 当前生产覆盖规则（2026-08-20）：探针接口冻结为诊断代码，不进入正式任务。正式任务采用 `native_zoom_to_selected/v1`：把完整 moving occurrence 写入 Creo Selection Buffer，只调用一次 `ProCmdZoomIntoOutline`，不设置绝对 PAN/ZOOM。为避免命令只贴合爆炸态移动件而把接受位置挤出画面，`zoom_to_selected_level` 按“爆炸态移动件投影尺寸 / 完整态与爆炸态联合安装包络投影尺寸”连续计算，并限制在 `[0.15, 0.45]`；安装跨度越长，镜头退得越多。失败保留真实单帧并提问，不启动探针、修正图或构图缓存。
 
 - 可见集只包含当前 BOM 项及其前序项；后续项以 Creo 临时简化表示排除。
 - 数量大于一的同一 BOM 项作为一个活动组平移；已完成子装配进入父层时作为整体平移。

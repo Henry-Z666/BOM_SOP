@@ -48,10 +48,15 @@ def build_framing_scale_evidence(
         }
 
     translation = _vector(translation_vector_root or (0.0, 0.0, 0.0))
+    moving_items: list[Bounds] = []
+    installation_items: list[Bounds] = []
     activity_items: list[Bounds] = []
     for occurrence in moving:
         bounds = _required_bounds(occurrence_bounds_root, occurrence)
-        activity_items.extend((bounds, _translate(bounds, translation)))
+        exploded = _translate(bounds, translation)
+        moving_items.append(exploded)
+        installation_items.extend((bounds, exploded))
+        activity_items.extend((bounds, exploded))
     activity_items.extend(
         _required_bounds(occurrence_bounds_root, occurrence)
         for occurrence in receivers
@@ -60,6 +65,8 @@ def build_framing_scale_evidence(
         _required_bounds(occurrence_bounds_root, occurrence)
         for occurrence in visible
     ]
+    moving_selection = _union(moving_items)
+    installation = _union(installation_items)
     activity = _union(activity_items)
     context = _union(context_items)
 
@@ -68,11 +75,22 @@ def build_framing_scale_evidence(
     matrix = absolute_view_matrix(direction, up)
     right = tuple(float(matrix[index][0]) for index in range(3))
     screen_up = tuple(float(matrix[index][1]) for index in range(3))
+    moving_width, moving_height = _projected_size(moving_selection, right, screen_up)
+    installation_width, installation_height = _projected_size(
+        installation, right, screen_up
+    )
     activity_width, activity_height = _projected_size(activity, right, screen_up)
     context_width, context_height = _projected_size(context, right, screen_up)
+    moving_span = max(moving_width, moving_height)
+    installation_span = max(installation_width, installation_height)
     activity_span = max(activity_width, activity_height)
     context_span = max(context_width, context_height)
-    if activity_span <= 1.0e-9 or context_span <= 1.0e-9:
+    if (
+        moving_span <= 1.0e-9
+        or installation_span <= 1.0e-9
+        or activity_span <= 1.0e-9
+        or context_span <= 1.0e-9
+    ):
         raise FramingScaleError("CAD framing bounds are degenerate")
 
     activity_bucket = _half_octave_bucket(activity_span)
@@ -100,6 +118,14 @@ def build_framing_scale_evidence(
         "activity_projected_size_root": [
             round(activity_width, 6),
             round(activity_height, 6),
+        ],
+        "moving_projected_size_root": [
+            round(moving_width, 6),
+            round(moving_height, 6),
+        ],
+        "installation_projected_size_root": [
+            round(installation_width, 6),
+            round(installation_height, 6),
         ],
         "context_projected_size_root": [
             round(context_width, 6),

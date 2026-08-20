@@ -48,6 +48,10 @@ class FramingScaleTests(unittest.TestCase):
         self.assertEqual(result["activity_bounds_root"]["max"], [12.0, 17.0, 2.0])
         self.assertEqual(result["context_bounds_root"]["min"], [-20.0, -5.0, -5.0])
         self.assertEqual(result["context_bounds_root"]["max"], [20.0, 5.0, 5.0])
+        self.assertGreater(
+            max(result["installation_projected_size_root"]),
+            max(result["moving_projected_size_root"]),
+        )
 
     def test_nearby_scales_reuse_bucket_but_clear_change_invalidates(self) -> None:
         base = {

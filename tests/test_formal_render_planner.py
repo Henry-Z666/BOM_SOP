@@ -151,28 +151,42 @@ def fixture() -> tuple[NormalizedBom, DraftPlan, BomCadMap, dict]:
 
 
 class FormalRenderPlannerTests(unittest.TestCase):
-    def test_native_selected_fit_adds_margin_only_for_extreme_context_ratio(self) -> None:
-        small = _native_selected_fit_contract(
+    def test_native_selected_fit_scales_continuously_with_installation_envelope(self) -> None:
+        long_installation = _native_selected_fit_contract(
             {
                 "scale_evidence": {
                     "status": "available",
-                    "activity_projected_size_root": [100.0, 120.0],
-                    "context_projected_size_root": [700.0, 800.0],
+                    "moving_projected_size_root": [80.0, 100.0],
+                    "installation_projected_size_root": [320.0, 400.0],
                 }
             }
         )
-        ordinary = _native_selected_fit_contract(
+        compact_installation = _native_selected_fit_contract(
             {
                 "scale_evidence": {
                     "status": "available",
-                    "activity_projected_size_root": [200.0, 240.0],
+                    "moving_projected_size_root": [200.0, 240.0],
+                    "installation_projected_size_root": [250.0, 300.0],
+                }
+            }
+        )
+
+        self.assertEqual(long_installation["zoom_to_selected_level"], 0.15)
+        self.assertEqual(compact_installation["zoom_to_selected_level"], 0.36)
+
+    def test_native_selected_fit_covers_receiver_activity_envelope(self) -> None:
+        contract = _native_selected_fit_contract(
+            {
+                "scale_evidence": {
+                    "status": "available",
+                    "moving_projected_size_root": [80.0, 100.0],
+                    "installation_projected_size_root": [320.0, 400.0],
                     "context_projected_size_root": [700.0, 800.0],
                 }
             }
         )
 
-        self.assertEqual(small["zoom_to_selected_level"], 0.25)
-        self.assertEqual(ordinary["zoom_to_selected_level"], 0.35)
+        self.assertEqual(contract["zoom_to_selected_level"], 0.15)
 
     def test_uses_child_reference_from_parent_level_creo_constraint(self) -> None:
         bom, draft, mapping, graph = fixture()
@@ -443,8 +457,8 @@ class FormalRenderPlannerTests(unittest.TestCase):
                 "schema_version": "native-selected-fit/v1",
                 "command": "ProCmdZoomIntoOutline",
                 "selection_scope": "moving_occurrences/v1",
-                "zoom_to_selected_level": 0.35,
-                "level_policy": "cad_context_ratio_two_band/v1",
+                "zoom_to_selected_level": 0.3,
+                "level_policy": "cad_installation_envelope/v2",
                 "max_commands_per_render": 1,
                 "absolute_pan_zoom_forbidden": True,
             },

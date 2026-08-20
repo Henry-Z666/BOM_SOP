@@ -305,16 +305,19 @@ def _framing_profile_contract(
 
 
 def _native_selected_fit_contract(framing_profile: dict[str, Any]) -> dict[str, Any]:
-    level = 0.35
+    level = 0.3
     evidence = framing_profile.get("scale_evidence", {})
     if isinstance(evidence, dict) and evidence.get("status") == "available":
-        activity = evidence.get("activity_projected_size_root", [])
-        context = evidence.get("context_projected_size_root", [])
+        moving = evidence.get("moving_projected_size_root", [])
+        installation = evidence.get("installation_projected_size_root", [])
         try:
-            activity_size = max(float(value) for value in activity)
-            context_size = max(float(value) for value in context)
-            if context_size > 0.0 and activity_size / context_size < 0.2:
-                level = 0.25
+            moving_size = max(float(value) for value in moving)
+            installation_size = max(float(value) for value in installation)
+            if moving_size > 0.0 and installation_size > 0.0:
+                level = round(
+                    max(0.15, min(0.45, 0.45 * moving_size / installation_size)),
+                    2,
+                )
         except (TypeError, ValueError):
             pass
     return {
@@ -322,7 +325,7 @@ def _native_selected_fit_contract(framing_profile: dict[str, Any]) -> dict[str, 
         "command": "ProCmdZoomIntoOutline",
         "selection_scope": "moving_occurrences/v1",
         "zoom_to_selected_level": level,
-        "level_policy": "cad_context_ratio_two_band/v1",
+        "level_policy": "cad_installation_envelope/v2",
         "max_commands_per_render": 1,
         "absolute_pan_zoom_forbidden": True,
     }

@@ -49,7 +49,7 @@ PTC 提供配置项 `zoom_to_selected_level` 控制 Zoom to Selected 的留白�
 
 官方说明见 [`zoom_to_selected_level`](https://support.ptc.com/help/creo/creo_pma/r13/usascii/detail/detail_configuration_options.html)。这仍是“相对于所选对象包围范围”的统一策略，不是产品或步骤的绝对坐标。
 
-2026-08-20 已完成三档真实模型标定。正式策略采用两个产品无关的相对留白档：CAD 投影活动范围/上下文范围小于 `0.2` 时使用 `0.25`，其余使用 `0.35`。小、中、大三档均以 1 张正式帧通过，全部运行共生成 0 张探针帧；源 CAD 108 个文件哈希保持不变。
+2026-08-20 的首轮三档真实模型标定证明单次原生命令可以稳定执行，但后续 10 图测试暴露了固定两档留白的边界：命令以爆炸态移动件为中心时，长安装位移可能让完整态安装位置和接受件离开画面。当前正式策略改为产品无关的连续留白：`level = clamp(0.45 × moving_projected_span / installation_projected_span, 0.15, 0.45)`。其中 installation span 是移动件完整态与爆炸态包围范围的联合投影，安装跨度越长，level 越小、周边留白越多；不使用绝对坐标，也不增加探针或重试。
 
 ## 对现有实现的判断
 

@@ -132,7 +132,7 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   if ([string]$nativeSelectedFit.schema_version -ne 'native-selected-fit/v1' -or
       [string]$nativeSelectedFit.command -ne 'ProCmdZoomIntoOutline' -or
       [string]$nativeSelectedFit.selection_scope -ne 'moving_occurrences/v1' -or
-      [string]$nativeSelectedFit.level_policy -ne 'cad_context_ratio_two_band/v1' -or
+      [string]$nativeSelectedFit.level_policy -ne 'cad_installation_envelope/v2' -or
       [int]$nativeSelectedFit.max_commands_per_render -ne 1 -or
       [bool]$nativeSelectedFit.absolute_pan_zoom_forbidden -ne $true) {
     throw "Task $taskId has no supported native selected-fit contract."

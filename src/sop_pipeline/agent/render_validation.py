@@ -180,7 +180,7 @@ class DeterministicNativeRenderValidator:
                 or selected_fit.get("schema_version") != "native-selected-fit/v1"
                 or selected_fit.get("command") != "ProCmdZoomIntoOutline"
                 or selected_fit.get("selection_scope") != "moving_occurrences/v1"
-                or selected_fit.get("level_policy") != "cad_context_ratio_two_band/v1"
+                or selected_fit.get("level_policy") != "cad_installation_envelope/v2"
                 or selected_fit.get("max_commands_per_render") != 1
                 or selected_fit.get("absolute_pan_zoom_forbidden") is not True
                 or not 0.1 <= selected_fit_level <= 2.0

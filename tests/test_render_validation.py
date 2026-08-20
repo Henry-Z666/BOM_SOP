@@ -305,7 +305,7 @@ class RenderValidationTests(unittest.TestCase):
                 "command": "ProCmdZoomIntoOutline",
                 "selection_scope": "moving_occurrences/v1",
                 "zoom_to_selected_level": 0.35,
-                "level_policy": "cad_context_ratio_two_band/v1",
+                "level_policy": "cad_installation_envelope/v2",
                 "max_commands_per_render": 1,
                 "absolute_pan_zoom_forbidden": True,
             }
