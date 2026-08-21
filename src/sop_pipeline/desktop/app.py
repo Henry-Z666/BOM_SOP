@@ -32,6 +32,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sop_pipeline.camera_visibility import CAMERA_VISIBILITY_AUDIT_ENABLED
+
 from .backend import SubprocessAgentBackend
 from .quick_prompts import (
     DEFAULT_QUICK_PROMPT_PROVIDER,
@@ -64,9 +66,61 @@ _CATEGORY_LABELS = {
 
 _DETERMINISTIC_POLICY = (
     "纯本地确定性流程：BOM 决定层级与顺序，最终 Creo 总装决定 occurrence、"
-    "接收面、爆炸方向和坐标。每步只锁定 fixed_123 / fixed_456 中的一台相机，"
-    "正式渲染后不会因图片审查切换视角、改 Zoom 或生成替代构图。"
+    "接收面和坐标。图片质量不再由机器自动通过或驳回，每张真实图片都由人工"
+    "预览后采用或选择问题进行二次生成。二次生成只使用固定选项重写渲染任务；"
+    "备注不会被解析为脚本。"
 )
+
+
+_ALL_CAMERA_VISIBILITY_CODES = {
+    "MOVING_SET_OCCLUDED",
+    "MOVING_OCCURRENCE_OCCLUDED",
+    "RECEIVER_INTERFACE_OCCLUDED",
+    "RECEIVER_INTERFACE_PATCH_OCCLUDED",
+    "NO_ELIGIBLE_FIXED_CAMERA",
+}
+_CAMERA_VISIBILITY_CODES = (
+    _ALL_CAMERA_VISIBILITY_CODES if CAMERA_VISIBILITY_AUDIT_ENABLED else set()
+)
+
+
+def _actionable_error_message(message: str) -> tuple[str, bool]:
+    """Return a concise user-facing recovery message and retry eligibility."""
+
+    raw = str(message).strip()
+    if "CREO_RENDER_FAILED" in raw or "render-batch" in raw:
+        return (
+            "Creo 没有成功产出步骤图片；这不是图片人工审查拒绝。\n\n"
+            "解决方案：点击“重试未成功步骤”。系统会保留成功检查点，只重跑"
+            "没有出图的步骤；如果再次失败，可打开诊断目录查看具体 Creo/脚本错误。",
+            True,
+        )
+    if "SOURCE_CAD_HASH_CHANGED" in raw:
+        return (
+            "生成期间 CAD 文件发生变化，系统无法继续使用已锁定的装配真值。\n\n"
+            "解决方案：恢复开始生成时的 CAD 版本，然后重新开始该任务。",
+            False,
+        )
+    if "MOVING_ARROW_ANCHOR_UNAVAILABLE" in raw:
+        return (
+            "移动件缺少可用于箭头的确定性 Creo 锚点。\n\n"
+            "解决方案：返回任务页，补齐该零件的 Creo 几何/occurrence 映射后重试。",
+            False,
+        )
+    return (
+        "当前操作失败。\n\n解决方案：返回任务页后重试当前任务；若错误重复出现，"
+        "打开诊断目录并按日志中的 solution 处理。",
+        False,
+    )
+
+
+def _diagnostic_log_path(message: str) -> Path | None:
+    marker = "诊断日志："
+    if marker not in message:
+        return None
+    candidate = message.split(marker, 1)[1].splitlines()[0].strip().rstrip("。")
+    path = Path(candidate)
+    return path if path.is_file() else None
 
 
 def _actionable_review_details(entry: dict[str, object]) -> list[str]:
@@ -164,6 +218,15 @@ class MainWindow(QMainWindow):
             "background: #173a33; color: #d7f5e8;"
         )
         layout.addWidget(policy)
+        self.audit_mode_status = QLabel(
+            "图片自动审查：已停用 · 全部真实图片由人工采用或选择问题二次生成"
+        )
+        self.audit_mode_status.setWordWrap(True)
+        self.audit_mode_status.setStyleSheet(
+            "padding: 8px; border-radius: 4px; background: #244a3f; "
+            "color: #ecfff8; font-weight: 600;"
+        )
+        layout.addWidget(self.audit_mode_status)
 
         setup = QGroupBox("首次配置")
         self.setup_group = setup
@@ -321,7 +384,7 @@ class MainWindow(QMainWindow):
     def _build_review_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        heading = QLabel("复核确定性结果与待确认事实")
+        heading = QLabel("人工审查步骤图片与二次生成")
         heading.setStyleSheet("font-size: 22px; font-weight: 600;")
         layout.addWidget(heading)
         self.review_guidance = QLabel()
@@ -355,7 +418,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(body, 1)
         self.review_instruction = QTextEdit()
         self.review_instruction.setPlaceholderText(
-            "可记录采用或退回原因；此处文字不会生成坐标、改 occurrence、切换相机或触发重构图。"
+            "可记录采用或退回原因；此处文字不会重写脚本，脚本修改只来自下方问题选项。"
         )
         self.review_instruction.setMaximumHeight(100)
         self.review_instruction_label = QLabel(
@@ -363,8 +426,9 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(self.review_instruction_label)
         self.review_instruction_help = QLabel(
-            "当前步骤已自动绑定。安装方向只有在 Creo 已锁定轴时才显示结构化正负号表单；"
-            "缺少 occurrence、接收面或安装轴时必须修复 BOM/Creo 数据，不能用备注补造。"
+            "所有真实图片均由人工决定是否采用。选择问题后，系统会按固定映射修改爆炸向量、"
+            "固定相机、精确可见集或取景参数；缺少 occurrence、接收面或安装轴时仍必须修复"
+            " BOM/Creo 数据。"
         )
         self.review_instruction_help.setWordWrap(True)
         layout.addWidget(self.review_instruction_help)
@@ -614,7 +678,14 @@ class MainWindow(QMainWindow):
         entry = dict(item.data(Qt.UserRole) or {})
         self.current_review_item = entry
         self._refresh_quick_prompts(entry)
-        self._load_guided_form(entry.get("guided_form"))
+        error_code = str(entry.get("error_code", "")).strip()
+        guided_form = entry.get("guided_form")
+        if (
+            not CAMERA_VISIBILITY_AUDIT_ENABLED
+            and error_code in _ALL_CAMERA_VISIBILITY_CODES
+        ):
+            guided_form = None
+        self._load_guided_form(guided_form)
         step_number = entry.get("step_number")
         step_title = str(entry.get("step_title", "")).strip()
         if step_number:
@@ -629,7 +700,6 @@ class MainWindow(QMainWindow):
         image_path = str(entry.get("image_path", ""))
         self.review_image_path.setText(image_path)
         issues = entry.get("issues", [])
-        error_code = str(entry.get("error_code", "")).strip()
         error_message = str(entry.get("error_message", "")).strip()
         reason_parts: list[str] = []
         if step_number:
@@ -638,6 +708,11 @@ class MainWindow(QMainWindow):
             reason_parts.append(f"错误代码：{error_code}")
         if error_message:
             reason_parts.append(error_message)
+        if error_code in _CAMERA_VISIBILITY_CODES:
+            reason_parts.append(
+                "无 AI 图片审核结论：fixed_123 与 fixed_456 的移动件/安装接口"
+                "可见比例未满足硬门；请选择下方有界方式重新生成。"
+            )
         reason_parts.extend(str(issue) for issue in issues)
         reason_parts.extend(_actionable_review_details(entry))
         self.review_reason.setText(
@@ -678,7 +753,7 @@ class MainWindow(QMainWindow):
             choose_label = "采用兼容历史候选图"
         self.choose_candidate_button.setText(choose_label)
         self.choose_candidate_button.setEnabled(is_candidate)
-        guided = entry.get("guided_form")
+        guided = guided_form
         if isinstance(guided, dict):
             self.instruct_button.setText(
                 str(guided.get("submit_label") or "按关键信息重新生成")
@@ -687,7 +762,7 @@ class MainWindow(QMainWindow):
         else:
             self.instruct_button.setText("需修复 BOM/Creo 事实后重试")
             self.instruct_button.setToolTip(
-                "自由文本不能创建 occurrence、接收面、坐标、相机或取景参数。"
+                "当前步骤缺少可安全重写的基础几何；请修复 BOM/Creo 事实。"
             )
             self.instruct_button.setEnabled(False)
 
@@ -710,10 +785,22 @@ class MainWindow(QMainWindow):
                 continue
             if field.get("type") == "choice":
                 widget: QWidget = QComboBox()
-                options = [str(option) for option in field.get("options", [])]
-                widget.addItems(options)  # type: ignore[attr-defined]
+                options: list[str] = []
+                option_values: list[str] = []
+                for option in field.get("options", []):
+                    if isinstance(option, dict):
+                        label = str(option.get("label") or option.get("value") or "")
+                        option_value = str(option.get("value") or label)
+                    else:
+                        label = str(option)
+                        option_value = label
+                    options.append(label)
+                    option_values.append(option_value)
+                    widget.addItem(label, option_value)  # type: ignore[attr-defined]
                 default = str(field.get("default") or "")
-                if default in options:
+                if default in option_values:
+                    widget.setCurrentIndex(option_values.index(default))  # type: ignore[attr-defined]
+                elif default in options:
                     widget.setCurrentText(default)  # type: ignore[attr-defined]
                 widget.currentTextChanged.connect(self._refresh_guided_sentence)  # type: ignore[attr-defined]
             else:
@@ -728,7 +815,8 @@ class MainWindow(QMainWindow):
         values: dict[str, str] = {}
         for name, widget in self.guided_widgets.items():
             if isinstance(widget, QComboBox):
-                values[name] = widget.currentText().strip()
+                data = widget.currentData()
+                values[name] = str(data if data is not None else widget.currentText()).strip()
             elif isinstance(widget, QLineEdit):
                 values[name] = widget.text().strip()
         return values
@@ -820,8 +908,8 @@ class MainWindow(QMainWindow):
         entry = self.current_review_item or {}
         if self.current_guided_form is None:
             self._show_error(
-                "当前问题没有可提交的结构化几何表单。请修复 BOM/Creo 映射或补齐接收面证据；"
-                "审核备注不能用于生成坐标或切换视角。"
+                "当前问题没有可提交的结构化修订选项。请修复 BOM/Creo 映射或补齐接收面证据；"
+                "审核备注不能用于生成坐标、切换视角或修改渲染脚本。"
             )
             return
         structured_inputs: dict[str, str] = {}
@@ -874,7 +962,33 @@ class MainWindow(QMainWindow):
             self.review_guidance.setText(
                 "当前步骤处理失败；只能修改结构化事实选择，或修复 BOM/Creo 数据后重试。"
             )
-        QMessageBox.critical(self, "Creo SOP Agent", message)
+        actionable, retryable = _actionable_error_message(message)
+        diagnostic_log = _diagnostic_log_path(message)
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Critical)
+        dialog.setWindowTitle("Creo SOP Agent · 可恢复错误")
+        dialog.setText(actionable)
+        dialog.setDetailedText(message)
+        retry_button = None
+        if retryable and self.current_run_id:
+            retry_button = dialog.addButton(
+                "重试未成功步骤", QMessageBox.AcceptRole
+            )
+            dialog.setDefaultButton(retry_button)
+        return_button = dialog.addButton("返回任务页", QMessageBox.RejectRole)
+        log_button = None
+        if diagnostic_log is not None:
+            log_button = dialog.addButton("打开诊断目录", QMessageBox.ActionRole)
+        dialog.exec()
+        clicked = dialog.clickedButton()
+        if retry_button is not None and clicked is retry_button:
+            self.pages.setCurrentWidget(self.progress_page)
+            self._resume()
+        elif log_button is not None and clicked is log_button:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(diagnostic_log.parent)))
+            self.pages.setCurrentWidget(self.progress_page)
+        elif clicked is return_button:
+            self.pages.setCurrentWidget(self.progress_page)
 
     def _set_operation_active(self, active: bool) -> None:
         self.operation_active = active

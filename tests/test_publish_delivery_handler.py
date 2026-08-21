@@ -219,6 +219,7 @@ class PublishDeliveryHandlerTests(unittest.TestCase):
                                 "step_id": "step-1",
                                 "status": "PASSED",
                                 "image_path": "rendered/step-1.jpg",
+                                "human_disposition": "accept_current_image",
                             },
                             {"step_id": "step-2", "status": "QUESTIONED"},
                         ]

@@ -9,6 +9,8 @@ from typing import Any, Iterable
 import numpy as np
 from PIL import Image
 
+from sop_pipeline.camera_visibility import CAMERA_VISIBILITY_AUDIT_ENABLED
+
 
 @dataclass(frozen=True)
 class ArrowEvidence:
@@ -101,8 +103,14 @@ PRESENTATION_FAILURES = frozenset(
 class DeterministicNativeRenderValidator:
     """Validate a Creo-native image and audit through one publication seam."""
 
-    def __init__(self, *, vector_tolerance: float = 1.0e-5) -> None:
+    def __init__(
+        self,
+        *,
+        vector_tolerance: float = 1.0e-5,
+        camera_visibility_enabled: bool = CAMERA_VISIBILITY_AUDIT_ENABLED,
+    ) -> None:
         self.vector_tolerance = vector_tolerance
+        self.camera_visibility_enabled = bool(camera_visibility_enabled)
 
     def validate(
         self,
@@ -117,6 +125,7 @@ class DeterministicNativeRenderValidator:
             image_file, task_payload, failures
         )
         self._validate_camera(task_payload, variant_index, failures)
+        self._validate_camera_visibility(task_payload, variant_index, failures)
         self._validate_arrow_audit(audit_file, task_payload, failures)
         unique = tuple(dict.fromkeys(failures))
         return NativeRenderGateReport(
@@ -175,7 +184,10 @@ class DeterministicNativeRenderValidator:
                 != "fixed_native_selection_margin/v1"
                 or selected_fit.get("max_commands_per_render") != 1
                 or selected_fit.get("absolute_pan_zoom_forbidden") is not True
-                or not math.isclose(selected_fit_level, 0.75, abs_tol=1.0e-9)
+                or not any(
+                    math.isclose(selected_fit_level, allowed, abs_tol=1.0e-9)
+                    for allowed in (0.85, 0.95)
+                )
             ):
                 failures.append("PRESENTATION_CONTRACT_INVALID")
                 return None, None
@@ -338,6 +350,72 @@ class DeterministicNativeRenderValidator:
         projected = translation - float(np.dot(translation, direction)) * direction
         if float(np.linalg.norm(projected)) <= 1.0e-6:
             failures.append("EXPLOSION_NOT_VISIBLE_IN_CAMERA")
+
+    def _validate_camera_visibility(
+        self,
+        payload: dict[str, Any],
+        variant_index: int,
+        failures: list[str],
+    ) -> None:
+        if not self.camera_visibility_enabled:
+            return
+        contract = payload.get("camera_visibility")
+        if not isinstance(contract, dict) or contract.get("status") != "ready":
+            return
+        decision = payload.get("camera_selection")
+        if not isinstance(decision, dict) or (
+            decision.get("schema_version") != "camera-selection-decision/v1"
+            or decision.get("status") != "selected"
+            or decision.get("selection_policy")
+            != "eligible_worst_visibility_then_stable_id/v1"
+        ):
+            failures.append("CAMERA_VISIBILITY_AUDIT_INVALID")
+            return
+        selected_id = str(decision.get("selected_camera_id") or "")
+        variant = _camera_variant(payload, variant_index)
+        variant_camera_id = str(
+            variant.get("camera_id") or variant.get("id") or ""
+        )
+        if (
+            selected_id not in {"fixed_123", "fixed_456"}
+            or selected_id != str(payload.get("camera_id") or "")
+            or selected_id != variant_camera_id
+        ):
+            failures.append("CAMERA_VISIBILITY_AUDIT_INVALID")
+            return
+        audits = decision.get("audits")
+        if not isinstance(audits, list) or len(audits) != 2:
+            failures.append("CAMERA_VISIBILITY_AUDIT_INVALID")
+            return
+        by_id = {
+            str(item.get("camera_id") or ""): item
+            for item in audits
+            if isinstance(item, dict)
+        }
+        selected = by_id.get(selected_id)
+        if set(by_id) != {"fixed_123", "fixed_456"} or not isinstance(
+            selected, dict
+        ):
+            failures.append("CAMERA_VISIBILITY_AUDIT_INVALID")
+            return
+        hashes = (
+            selected.get("isolated_sha256"),
+            selected.get("staged_sha256"),
+        )
+        if (
+            selected.get("schema_version") != "camera-visibility-audit/v1"
+            or selected.get("source")
+            != "creo-lossless-component-label-raster/v1"
+            or selected.get("eligible") is not True
+            or selected.get("failures") != []
+            or any(
+                not isinstance(value, str)
+                or not value.startswith("sha256:")
+                or len(value) != 71
+                for value in hashes
+            )
+        ):
+            failures.append("CAMERA_VISIBILITY_AUDIT_INVALID")
 
     def _validate_arrow_audit(
         self,

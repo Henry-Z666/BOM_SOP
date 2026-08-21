@@ -5,6 +5,8 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping
 
+from sop_pipeline.camera_visibility import CAMERA_VISIBILITY_AUDIT_ENABLED
+
 
 ACCEPT_WITH_OVERRIDE = "accept_with_override"
 HUMAN_OVERRIDE_IMAGE_ID = "human-override-current-image"
@@ -19,6 +21,15 @@ _OCCURRENCE_CODES = {
     "RECEIVER_OCCURRENCE_UNRESOLVED",
     "NO_NATIVE_RECEIVER_GEOMETRY",
 }
+_CAMERA_VISIBILITY_CODES = {
+    "MOVING_SET_OCCLUDED",
+    "MOVING_OCCURRENCE_OCCLUDED",
+    "RECEIVER_INTERFACE_OCCLUDED",
+    "RECEIVER_INTERFACE_PATCH_OCCLUDED",
+    "NO_ELIGIBLE_FIXED_CAMERA",
+}
+
+
 def prepare_review_step(
     run_workspace: Path,
     validation_step: Mapping[str, Any],
@@ -66,6 +77,10 @@ def prepare_review_step(
     elif has_real_image:
         actions.insert(0, ACCEPT_WITH_OVERRIDE)
 
+    guided_form = _guided_form(primary_code, plan_step or {})
+    if guided_form is None and normal_acceptance and has_real_image:
+        guided_form = _manual_rerender_form()
+
     return {
         "schema_version": "step-review-package/v1",
         "machine_status": machine_status,
@@ -76,7 +91,7 @@ def prepare_review_step(
         "normal_acceptance_allowed": normal_acceptance and has_real_image,
         "override_allowed": has_real_image,
         "available_actions": actions,
-        "guided_form": _guided_form(primary_code, plan_step or {}),
+        "guided_form": guided_form,
         "attempt_history": _attempt_history(validation_step),
     }
 
@@ -148,9 +163,89 @@ def _guided_form(code: str, plan_step: Mapping[str, Any]) -> dict[str, Any] | No
                 },
             ],
         }
+    if code in _CAMERA_VISIBILITY_CODES:
+        if not CAMERA_VISIBILITY_AUDIT_ENABLED:
+            return None
+        return {
+            "schema_version": "guided-review-form/v1",
+            "title": "选择二次生成方式",
+            "instruction": (
+                "两台固定相机都未通过可见性门禁；只选择修复目标，"
+                "系统会修改内部合同并重新审计。"
+            ),
+            "sentence_template": "按“{camera_resolution_option}”重新生成本步骤",
+            "submit_label": "按所选方式重新生成",
+            "fields": [
+                {
+                    "name": "camera_resolution_option",
+                    "label": "修复方式",
+                    "type": "choice",
+                    "options": [
+                        "增加一级爆炸距离后重新比较",
+                        "聚焦移动件与安装接口后重新比较",
+                    ],
+                    "default": "增加一级爆炸距离后重新比较",
+                    "required": True,
+                }
+            ],
+        }
     if code in _OCCURRENCE_CODES:
         return None
     return None
+
+
+def _manual_rerender_form() -> dict[str, Any]:
+    """Offer only choices that have a real, deterministic task rewrite."""
+
+    return {
+        "schema_version": "manual-rerender-form/v1",
+        "title": "选择图片问题并二次生成",
+        "instruction": (
+            "请选择最主要的问题。系统会按固定映射重写当前步骤的渲染任务，"
+            "不会解析备注或要求用户编辑脚本。"
+        ),
+        "sentence_template": "按所选问题重写渲染任务并重新生成当前步骤",
+        "submit_label": "按所选问题二次生成",
+        "fields": [
+            {
+                "name": "rerender_option",
+                "label": "图片问题",
+                "type": "choice",
+                "options": [
+                    {
+                        "value": "normal_explosion",
+                        "label": "法向爆炸（沿 Creo 承接面法向）",
+                    },
+                    {
+                        "value": "reverse_explosion",
+                        "label": "爆炸方向相反",
+                    },
+                    {
+                        "value": "switch_fixed_camera",
+                        "label": "视角选错，换另一个固定视角",
+                    },
+                    {
+                        "value": "rebuild_exact_visibility",
+                        "label": "未能完全屏蔽后续件",
+                    },
+                    {
+                        "value": "increase_explosion_distance",
+                        "label": "零件被遮挡或距离太小，增大爆炸距离",
+                    },
+                    {
+                        "value": "decrease_explosion_distance",
+                        "label": "爆炸距离太大，缩短爆炸距离",
+                    },
+                    {
+                        "value": "focus_installation_region",
+                        "label": "安装区域太小，放大并聚焦",
+                    },
+                ],
+                "default": "normal_explosion",
+                "required": True,
+            }
+        ],
+    }
 
 
 def _axis_and_sign(value: object) -> tuple[str, str] | None:

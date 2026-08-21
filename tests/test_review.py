@@ -12,6 +12,43 @@ from sop_pipeline.agent.review import (
 
 
 class ReviewModuleTests(unittest.TestCase):
+    def test_structurally_valid_real_image_always_offers_manual_rerender_choices(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            image = root / "rendered" / "step-1.jpg"
+            image.parent.mkdir()
+            image.write_bytes(b"creo-image")
+            package = prepare_review_step(
+                root,
+                {
+                    "step_id": "step-1",
+                    "status": "QUESTIONED",
+                    "category": "human_review",
+                    "image_path": "rendered/step-1.jpg",
+                    "manual_acceptance_allowed": True,
+                },
+                {
+                    "receiver_normal_root": [1.0, 0.0, 0.0],
+                    "camera_id": "fixed_123",
+                },
+            )
+
+        self.assertTrue(package["normal_acceptance_allowed"])
+        self.assertEqual(package["available_actions"][0], "accept")
+        form = package["guided_form"]
+        self.assertEqual(form["schema_version"], "manual-rerender-form/v1")
+        field = form["fields"][0]
+        self.assertEqual(field["name"], "rerender_option")
+        option_ids = {option["value"] for option in field["options"]}
+        self.assertTrue(
+            {
+                "normal_explosion",
+                "reverse_explosion",
+                "switch_fixed_camera",
+                "rebuild_exact_visibility",
+            }.issubset(option_ids)
+        )
+
     def test_failed_real_image_remains_reviewable_with_guided_direction(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -72,6 +109,20 @@ class ReviewModuleTests(unittest.TestCase):
                     "error_code": "DIRECTION_SIGN_WEAK",
                 },
                 {"receiver_normal_root": None},
+            )
+
+        self.assertIsNone(package["guided_form"])
+
+    def test_frozen_occlusion_audit_offers_no_rerender_form(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            package = prepare_review_step(
+                Path(folder),
+                {
+                    "step_id": "step-1",
+                    "status": "FAILED",
+                    "category": "auto_repair",
+                    "error_code": "NO_ELIGIBLE_FIXED_CAMERA",
+                },
             )
 
         self.assertIsNone(package["guided_form"])

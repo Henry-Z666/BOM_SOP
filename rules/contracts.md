@@ -18,7 +18,7 @@ Use `render-plan/v2` with `creo-render-task/v1`. Every formal task contains:
 - camera ID restricted to `fixed_123` or `fixed_456`;
 - `fixed-frame-presentation/v1` with `native-selected-fit/v1`;
 - `selection_scope=moving_and_receiver_occurrences/v1`;
-- `level_policy=fixed_native_selection_margin/v1` with `zoom_to_selected_level=0.75`, one command per render, and absolute PAN/ZOOM forbidden;
+- `level_policy=fixed_native_selection_margin/v1` with initial `zoom_to_selected_level=0.85` or the registered human focus revision `0.95`, one command per render, and absolute PAN/ZOOM forbidden;
 - native arrow anchors, output audit references, process text, and status.
 
 The validated task contract—not the publication workbook—is execution truth.
@@ -27,6 +27,7 @@ The validated task contract—not the publication workbook—is execution truth.
 
 - `arrow-projection/v1` records covered occurrence paths, anchor source, complete/exploded root points, direction, merge coverage, and status. Endpoint difference equals the audited translation.
 - `native-framing-audit/v1` records task/image identity, Creo version/datecode, verified `ProCmdZoomIntoOutline`, selection scope, level, one-command limit, and absolute PAN/ZOOM prohibition.
+- Automatic image-quality audits are not part of approval. Existing visibility-audit code may remain dormant, but it cannot accept, reject, or rewrite a step.
 
 ## Hard render gates
 
@@ -39,17 +40,17 @@ A formal image passes only when all apply:
 - required receivers are visible;
 - explosion is pure translation with unchanged rotations;
 - camera is one of the two locked fixed matrices;
-- moving item, receiver, installation boundary, and receiver face are readable;
-- final raster composition passes compiled size, centering, clipping, and fixed-frame thresholds;
-- arrow count/merge coverage, same-CAD-point direction, size, border, and non-overlap gates pass;
+- arrow count/merge coverage and same-CAD-point direction pass;
 - no datum, annotation, weld cosmetic, UI, or unrelated geometry appears;
-- output is exactly 1600×1600 and the fixed crop did not rescale pixels.
+- output file exists and has the contracted dimensions.
 
-Failure blocks automatic publication. A real raster may remain for review; bounded system retry is allowed only at scheduler level and never creates extra framing variants inside one attempt.
+Readability, composition, centering, clipping, apparent occlusion, arrow presentation, and view preference are human-review concerns. They never approve or reject an image automatically.
+
+Structural failure blocks publication. Image composition is not automatically accepted or rejected: every structurally valid real raster enters human review. A selected rerender option must produce a versioned step revision and an executable render-task field change.
 
 ## Publication gates
 
-- Only machine-passed or explicitly human-approved steps enter a formal workbook.
+- Only explicitly human-approved steps enter a formal workbook.
 - Preserve BOM order and the current dynamic page layout.
 - Populate material, quantity, process, control, and tooling fields from traceable sources.
 - Validate sheet/image counts, relationships, print areas, merged cells, and visible page layout.

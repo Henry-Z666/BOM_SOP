@@ -78,7 +78,16 @@ class ProgressViewTests(unittest.TestCase):
                 json.dumps({"tasks": tasks}), encoding="utf-8"
             )
             (run_workspace / "internal" / "render-checkpoint-0001.json").write_text(
-                json.dumps({"steps": [{"step_id": f"step-{index}"} for index in range(4)]}),
+                json.dumps(
+                    {
+                        "steps": [
+                            {"step_id": "step-0", "status": "PASSED"},
+                            {"step_id": "step-1", "status": "QUESTIONED"},
+                            {"step_id": "step-2", "status": "FAILED"},
+                            {"step_id": "step-3", "status": "FAILED"},
+                        ]
+                    }
+                ),
                 encoding="utf-8",
             )
             write_progress(
@@ -91,9 +100,10 @@ class ProgressViewTests(unittest.TestCase):
             snapshot = progress_snapshot(workspace, "run-1")
 
         self.assertEqual(snapshot["completed_tasks"], 4)
+        self.assertEqual(snapshot["successful_tasks"], 2)
         self.assertEqual(snapshot["total_tasks"], 10)
         self.assertEqual(snapshot["percent"], 68)
-        self.assertIn("4 / 10", snapshot["detail"])
+        self.assertEqual(snapshot["detail"], "Creo 步骤图片：已处理 4 / 10，成功出图 2")
 
     def test_frozen_creo_scripts_resolve_inside_meipass(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -334,7 +344,7 @@ class ProgressViewTests(unittest.TestCase):
         self.assertEqual(packet["candidate_count"], 1)
         self.assertEqual(packet["items"][0]["kind"], "current")
         self.assertEqual(packet["items"][0]["candidate_id"], "current-image")
-        self.assertIn("可直接采用", packet["items"][0]["label"])
+        self.assertIn("等待人工审查", packet["items"][0]["label"])
 
     def test_review_packet_hides_steps_already_passed_by_publication(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

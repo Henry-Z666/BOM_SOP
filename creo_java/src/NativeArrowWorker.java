@@ -108,11 +108,13 @@ public final class NativeArrowWorker {
           Files.deleteIfExists(request);
           break;
         }
-        if (fields.length != 2 || !fields[0].equals("RENDER"))
+        if (fields.length != 2 || (!fields[0].equals("RENDER") && !fields[0].equals("VISIBILITY")))
           throw new IllegalArgumentException("Unsupported worker command");
         Path manifest = directChild(manifests, fields[1], ".tsv");
         try {
-          int rendered = NativeArrowBatch.renderManifest(session, args[1], manifest);
+          int rendered = fields[0].equals("RENDER")
+              ? NativeArrowBatch.renderManifest(session, args[1], manifest)
+              : NativeArrowBatch.renderVisibilityManifest(session, args[1], manifest);
           completedCommands++;
           if (completedCommands >= maxCommands) Files.deleteIfExists(ready);
           // Publish a fresh liveness record before the command result.  A Creo

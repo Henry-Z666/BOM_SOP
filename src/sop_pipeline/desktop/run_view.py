@@ -38,13 +38,16 @@ def progress_snapshot(workspace: Path, run_id: str | None = None) -> dict[str, A
     snapshot["run_id"] = str(payload.get("run_id", run_workspace.name))
     snapshot["detail"] = str(payload.get("message", payload.get("stage", "")))
     if payload.get("skill") == "render-batch" and payload.get("state") == "RUNNING":
-        completed, total = _render_counts(run_workspace)
+        completed, successful, total = _render_counts(run_workspace)
         start = int(payload.get("stage_start_percent", 55))
         end = int(payload.get("stage_end_percent", 88))
         if total:
             snapshot["percent"] = start + round((end - start) * completed / total)
-            snapshot["detail"] = f"Creo 步骤图片：已完成 {completed} / {total}"
+            snapshot["detail"] = (
+                f"Creo 步骤图片：已处理 {completed} / {total}，成功出图 {successful}"
+            )
             snapshot["completed_tasks"] = completed
+            snapshot["successful_tasks"] = successful
             snapshot["total_tasks"] = total
     return snapshot
 
@@ -195,8 +198,8 @@ def review_packet(workspace: Path, run_id: str) -> dict[str, Any]:
                     "image_path": str(image_path) if image_path else "",
                     **review_fields,
                     "issues": issues
-                    or ["图片已通过几何硬门；相机和爆炸向量均已锁定。"],
-                    "label": f"{display_name} · 已锁定图片（可直接采用）",
+                    or ["请人工查看图片；可直接采用或选择问题二次生成。"],
+                    "label": f"{display_name} · 等待人工审查",
                 }
             )
             candidate_count += 1
@@ -282,9 +285,8 @@ def review_packet(workspace: Path, run_id: str) -> dict[str, Any]:
         message = "没有待处理步骤。"
     elif candidate_count:
         message = (
-            "请选择步骤查看已锁定的 Creo 几何、爆炸向量和固定相机。"
-            "合格图片可直接采用；机器未通过的原图可知情采用，"
-            "只有出现结构化轴符号表单时才允许重新生成。"
+            "请逐步预览真实 Creo 图片。满意时直接采用；有问题时从固定选项中"
+            "选择后重新生成当前步骤。每个选项都会重写对应的渲染任务字段。"
         )
     else:
         message = (
@@ -424,7 +426,7 @@ def _run_workspace(workspace: Path, run_id: str | None) -> Path | None:
     return max(candidates, key=lambda path: path.stat().st_mtime_ns)
 
 
-def _render_counts(run_workspace: Path) -> tuple[int, int]:
+def _render_counts(run_workspace: Path) -> tuple[int, int, int]:
     plan_files = sorted((run_workspace / "plans").glob("locked-render-jobs-*.json"))
     total = 0
     if plan_files:
@@ -439,10 +441,18 @@ def _render_counts(run_workspace: Path) -> tuple[int, int]:
         key=lambda path: path.stat().st_mtime_ns,
     )
     completed = 0
+    successful = 0
     if checkpoints:
         checkpoint = _read_json(checkpoints[-1]) or {}
-        completed = len(checkpoint.get("steps", []))
-    return min(completed, total) if total else completed, total
+        steps = checkpoint.get("steps", [])
+        completed = len(steps)
+        successful = sum(
+            1
+            for step in steps
+            if step.get("status") in {"PASSED", "QUESTIONED"}
+        )
+    processed = min(completed, total) if total else completed
+    return processed, min(successful, processed), total
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:

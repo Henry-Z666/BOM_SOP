@@ -5,6 +5,28 @@ from typing import Any, Mapping
 from .step_revision import RevisionKind, StepRevision, validate_revision
 
 
+_CAMERA_RESOLUTION_CHOICES = {
+    "增加一级爆炸距离后重新比较": (
+        "increase_bounded_explosion_distance",
+        RevisionKind.INSTALLATION_GEOMETRY,
+    ),
+    "聚焦移动件与安装接口后重新比较": (
+        "focus_receiver_interface",
+        RevisionKind.PRESENTATION,
+    ),
+}
+
+_RERENDER_CHOICES = {
+    "normal_explosion": RevisionKind.INSTALLATION_GEOMETRY,
+    "reverse_explosion": RevisionKind.INSTALLATION_GEOMETRY,
+    "switch_fixed_camera": RevisionKind.PRESENTATION,
+    "rebuild_exact_visibility": RevisionKind.PRESENTATION,
+    "increase_explosion_distance": RevisionKind.INSTALLATION_GEOMETRY,
+    "decrease_explosion_distance": RevisionKind.INSTALLATION_GEOMETRY,
+    "focus_installation_region": RevisionKind.PRESENTATION,
+}
+
+
 def structured_step_revision(
     step_id: str,
     instruction: str,
@@ -21,6 +43,33 @@ def structured_step_revision(
         for key, value in (structured_inputs or {}).items()
         if str(value).strip()
     }
+    rerender_option = fields.get("rerender_option")
+    if rerender_option:
+        kind = _RERENDER_CHOICES.get(rerender_option)
+        if kind is None:
+            raise ValueError("二次生成选项不属于当前脚本重写映射")
+        return validate_revision(
+            StepRevision(
+                revision=revision,
+                step_id=step_id,
+                kind=kind,
+                changes={"rerender_option": rerender_option},
+            )
+        )
+    camera_choice = fields.get("camera_resolution_option")
+    if camera_choice:
+        selected = _CAMERA_RESOLUTION_CHOICES.get(camera_choice)
+        if selected is None:
+            raise ValueError("相机修复选项不属于当前有界选项集")
+        option_id, kind = selected
+        return validate_revision(
+            StepRevision(
+                revision=revision,
+                step_id=step_id,
+                kind=kind,
+                changes={"camera_resolution_option": option_id},
+            )
+        )
     direction = _direction_from_fields(fields)
     if direction is not None:
         return validate_revision(

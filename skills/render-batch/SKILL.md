@@ -17,11 +17,15 @@ installation direction remains a placeholder and must not be rendered from infer
 For a targeted rerender, success requires a new real image and removal of the correction's
 unresolved required field. Never report success while retaining only the old placeholder.
 
+The fixed-camera lossless-label audit is temporarily frozen. A contract with `status=frozen` proceeds
+directly to the one formal raster using the deterministically selected fixed camera. Do not produce
+audit label rasters, retry a missing audit, or emit camera-audit resolution choices while frozen.
+
 Classify every deterministic failure through the shared four-class gate policy:
 
 - `hard_block`: assembly, camera compatibility, transform, and arrow truth failures reject the image.
-- `auto_repair`: reserved for a future deterministic planner repair; the production worker does
-  not launch extra camera, PAN, Zoom, or explosion renders from this category.
+- `auto_repair`: camera-visibility repair options are frozen; the production worker does not expose
+  them or launch free camera, PAN, Zoom, or explosion searches from this category.
 - `human_review`: keep a real image with presentation-only warnings as `QUESTIONED`.
 - `system_retry`: roll back a failed local attempt and retain the previous valid image as history.
 

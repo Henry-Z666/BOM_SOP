@@ -80,12 +80,16 @@ _ALLOWED_CHANGES = {
         "arrow_anchor",
         "arrow_layout",
         "candidate_id",
+        "camera_resolution_option",
+        "rerender_option",
         "affected_steps",
     },
     RevisionKind.INSTALLATION_GEOMETRY: {
         "moving_occurrences",
         "receiver_occurrences",
         "direction",
+        "camera_resolution_option",
+        "rerender_option",
         "affected_steps",
     },
     RevisionKind.COMPLETE_STATE: {

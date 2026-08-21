@@ -72,6 +72,7 @@ class DesktopAgentServiceTests(unittest.TestCase):
         self.assertEqual(payload["schema_version"], "desktop-agent-worker-log/v1")
         self.assertEqual(payload["run_id"], "run-1")
         self.assertEqual(payload["stderr_tail"], "failure detail")
+        self.assertIn("解决方案", payload["solution"])
 
     def test_analysis_and_confirm_generate_run_off_the_ui_call_surface(self) -> None:
         backend = FakeBackend()

@@ -180,6 +180,35 @@ class RenderValidationTests(unittest.TestCase):
         self.assertGreater(report.composition.max_span_fraction, 0.54)
         self.assertGreater(report.arrow_raster.pixels, 120)
 
+    def test_ready_visibility_contract_requires_a_matching_hashed_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            image, audit = _write_native_files(Path(folder), (250, 300, 1200, 1150))
+            payload = _native_payload(
+                camera_id="fixed_123",
+                camera_visibility={
+                    "schema_version": "camera-visibility-contract/v1",
+                    "status": "ready",
+                },
+            )
+            validator = DeterministicNativeRenderValidator(
+                camera_visibility_enabled=True
+            )
+            missing = validator.validate(
+                image, audit, payload
+            )
+            payload["camera_selection"] = _camera_selection("fixed_123")
+            passed = validator.validate(
+                image, audit, payload
+            )
+            payload["camera_selection"]["selected_camera_id"] = "fixed_456"
+            mismatched = validator.validate(
+                image, audit, payload
+            )
+
+        self.assertIn("CAMERA_VISIBILITY_AUDIT_INVALID", missing.failures)
+        self.assertNotIn("CAMERA_VISIBILITY_AUDIT_INVALID", passed.failures)
+        self.assertIn("CAMERA_VISIBILITY_AUDIT_INVALID", mismatched.failures)
+
     def test_native_gate_does_not_treat_arrowhead_fragments_as_extra_arrows(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -284,7 +313,7 @@ class RenderValidationTests(unittest.TestCase):
                 "schema_version": "native-selected-fit/v1",
                 "command": "ProCmdZoomIntoOutline",
                 "selection_scope": "moving_and_receiver_occurrences/v1",
-                "zoom_to_selected_level": 0.75,
+                "zoom_to_selected_level": 0.85,
                 "level_policy": "fixed_native_selection_margin/v1",
                 "max_commands_per_render": 1,
                 "absolute_pan_zoom_forbidden": True,
@@ -339,6 +368,29 @@ class RenderValidationTests(unittest.TestCase):
             noisy_report.composition.center_pixel,
             clean_report.composition.center_pixel,
         )
+
+
+def _camera_selection(selected_id: str) -> dict:
+    digest = "sha256:" + "0" * 64
+    return {
+        "schema_version": "camera-selection-decision/v1",
+        "status": "selected",
+        "selected_camera_id": selected_id,
+        "selection_policy": "eligible_worst_visibility_then_stable_id/v1",
+        "options": [],
+        "audits": [
+            {
+                "schema_version": "camera-visibility-audit/v1",
+                "source": "creo-lossless-component-label-raster/v1",
+                "camera_id": camera_id,
+                "eligible": camera_id == selected_id,
+                "failures": [] if camera_id == selected_id else ["MOVING_SET_OCCLUDED"],
+                "isolated_sha256": digest,
+                "staged_sha256": digest,
+            }
+            for camera_id in ("fixed_123", "fixed_456")
+        ],
+    }
 
 
 if __name__ == "__main__":

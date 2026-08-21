@@ -14,6 +14,12 @@ import com.ptc.pfc.pfcSimpRep.*;
 import com.ptc.pfc.pfcWindow.*;
 
 import java.io.File;
+import java.awt.image.BufferedImage;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import javax.imageio.ImageIO;
 
 /** Creates a native Creo JPEG from an isolated model copy through J-Link async. */
 public final class RenderAssemblyImage {
@@ -289,6 +295,12 @@ public final class RenderAssemblyImage {
     final ComponentFeat feature; final double[][] parentToRoot;
     ResolvedComponent(ComponentFeat feature, double[][] parentToRoot) { this.feature = feature; this.parentToRoot = parentToRoot; }
   }
+  private static final class DynamicPose {
+    final String occurrenceId; final intseq ids; final Transform3D pose; final boolean componentPathApi;
+    DynamicPose(String occurrenceId, intseq ids, Transform3D pose, boolean componentPathApi) {
+      this.occurrenceId = occurrenceId; this.ids = ids; this.pose = pose; this.componentPathApi = componentPathApi;
+    }
+  }
   /** Fallback for Creo builds where ComponentPath.GetTransform rejects a live path. */
   private static ResolvedComponent resolveComponent(Session session, Assembly root, intseq ids) throws jxthrowable {
     Assembly current = root; double[][] currentToRoot = identityMatrix();
@@ -336,6 +348,32 @@ public final class RenderAssemblyImage {
     System.err.println("[RENDER] transform_audit occurrence=" + occurrencePathId(ids) + " api=ComponentFeatPathFallback rotation=" + rotationLog(rootPose)
       + " origin=[" + rootPose[3][0] + "," + rootPose[3][1] + "," + rootPose[3][2] + "]");
   }
+  private static java.util.List<DynamicPose> captureDynamicPoses(Session session, Assembly root,
+      java.util.List<intseq> occurrencePaths) throws jxthrowable {
+    java.util.List<DynamicPose> result = new java.util.ArrayList<DynamicPose>();
+    for (intseq ids : occurrencePaths) {
+      String occurrenceId = occurrencePathId(ids);
+      try {
+        Transform3D pose = pfcAssembly.CreateComponentPath(root, ids).GetTransform(true);
+        result.add(new DynamicPose(occurrenceId, ids, pose, true));
+      } catch (jxthrowable unsupportedPathTransform) {
+        result.add(new DynamicPose(occurrenceId, ids,
+            resolveComponent(session, root, ids).feature.GetPosition(), false));
+      }
+    }
+    return result;
+  }
+  private static void restoreDynamicPoses(Session session, Assembly root,
+      java.util.List<DynamicPose> poses, String excludedTarget) throws jxthrowable {
+    for (DynamicPose item : poses) {
+      if (item.occurrenceId.equals(excludedTarget)
+          || item.occurrenceId.startsWith(excludedTarget + "/")) continue;
+      if (item.componentPathApi)
+        pfcAssembly.CreateComponentPath(root, item.ids).SetTransform(true, item.pose);
+      else
+        resolveComponent(session, root, item.ids).feature.SetPosition(item.pose);
+    }
+  }
   private static boolean stageRelated(String path, java.util.Set<String> desired) {
     for (String keep : desired) if (keep.equals(path) || keep.startsWith(path + "/") || path.startsWith(keep + "/")) return true;
     return false;
@@ -350,6 +388,227 @@ public final class RenderAssemblyImage {
         item.SetAction(pfcSimpRep.SimpRepExclude_Create()); items.append(item); continue;
       }
       try { Model child = session.RetrieveModel(component.GetModelDescr()); if (child instanceof Assembly) addStageExclusions(session, (Assembly)child, path, desired, items); } catch (Throwable ignored) {}
+    }
+  }
+
+  private static void addVisibilityExclusions(Session session, Assembly assembly, String prefix,
+      java.util.Set<String> desired, String excludedTarget, SimpRepItems items) throws jxthrowable {
+    Features features = assembly.ListFeaturesByType(Boolean.FALSE, FeatureType.FEATTYPE_COMPONENT);
+    for (int i = 0; i < features.getarraysize(); i++) {
+      ComponentFeat component = (ComponentFeat)features.get(i);
+      String path = prefix.isEmpty() ? "" + component.GetId() : prefix + "/" + component.GetId();
+      if (path.equals(excludedTarget) || !stageRelated(path, desired)) {
+        intseq ids = parseOccurrencePaths(path).get(0);
+        SimpRepItem item = pfcSimpRep.SimpRepItem_Create(pfcSimpRep.SimpRepCompItemPath_Create(ids));
+        item.SetAction(pfcSimpRep.SimpRepExclude_Create()); items.append(item); continue;
+      }
+      try {
+        Model child = session.RetrieveModel(component.GetModelDescr());
+        if (child instanceof Assembly)
+          addVisibilityExclusions(session, (Assembly)child, path, desired, excludedTarget, items);
+      } catch (Throwable ignored) {}
+    }
+  }
+
+  private static void activateVisibilityRep(Session session, Assembly assembly,
+      java.util.Set<String> desired, String excludedTarget, String name) throws jxthrowable {
+    CreateNewSimpRepInstructions instructions = pfcSimpRep.CreateNewSimpRepInstructions_Create(name);
+    instructions.SetIsTemporary(true);
+    instructions.SetDefaultAction(SimpRepActionType.SIMPREP_INCLUDE);
+    SimpRepItems items = SimpRepItems.create();
+    addVisibilityExclusions(session, assembly, "", desired, excludedTarget, items);
+    instructions.SetItems(items);
+    assembly.ActivateSimpRep(assembly.CreateSimpRep(instructions));
+  }
+
+  private static LinkedHashMap<String,Integer> parseVisibilityLabels(String encoded) {
+    LinkedHashMap<String,Integer> result = new LinkedHashMap<String,Integer>();
+    for (String raw : encoded.split(";")) {
+      String item = raw.trim(); if (item.isEmpty()) continue;
+      int separator = item.lastIndexOf('=');
+      if (separator <= 0 || separator == item.length() - 1) throw new IllegalArgumentException("Invalid visibility label: " + item);
+      String occurrence = item.substring(0, separator).trim();
+      int label = Integer.parseInt(item.substring(separator + 1).trim());
+      if (label <= 0 || label > 0xFFFFFF || result.put(occurrence, label) != null)
+        throw new IllegalArgumentException("Invalid or duplicate visibility label: " + item);
+    }
+    if (result.isEmpty()) throw new IllegalArgumentException("No visibility labels supplied");
+    return result;
+  }
+
+  private static void exportVisibilityBitmap(Window window, Session session, Path output) throws Exception {
+    window.Repaint(); session.FlushCurrentWindow();
+    BitmapImageExportInstructions instructions = pfcWindow.BitmapImageExportInstructions_Create(8.0, 8.0);
+    instructions.SetDotsPerInch(DotsPerInch.RASTERDPI_100);
+    instructions.SetImageDepth(RasterDepth.RASTERDEPTH_24);
+    window.ExportRasterImage(output.toString(), instructions);
+    if (!Files.isRegularFile(output) || Files.size(output) == 0L)
+      throw new IllegalStateException("Creo did not export visibility bitmap: " + output);
+  }
+
+  private static int visibilityPixelDelta(int left, int right) {
+    int red = Math.abs(((left >> 16) & 255) - ((right >> 16) & 255));
+    int green = Math.abs(((left >> 8) & 255) - ((right >> 8) & 255));
+    int blue = Math.abs((left & 255) - (right & 255));
+    return Math.max(red, Math.max(green, blue));
+  }
+
+  private static int medianColor(java.util.List<BufferedImage> images,
+      java.util.List<Integer> pool, int x, int y) {
+    int[] red = new int[pool.size()], green = new int[pool.size()], blue = new int[pool.size()];
+    for (int offset = 0; offset < pool.size(); offset++) {
+      int pixel = images.get(pool.get(offset).intValue()).getRGB(x, y);
+      red[offset] = (pixel >> 16) & 255; green[offset] = (pixel >> 8) & 255; blue[offset] = pixel & 255;
+    }
+    java.util.Arrays.sort(red); java.util.Arrays.sort(green); java.util.Arrays.sort(blue);
+    int middle = pool.size() / 2;
+    int r = red[middle], g = green[middle], b = blue[middle];
+    if (pool.size() % 2 == 0) {
+      r = (r + red[middle - 1]) / 2; g = (g + green[middle - 1]) / 2; b = (b + blue[middle - 1]) / 2;
+    }
+    return (r << 16) | (g << 8) | b;
+  }
+
+  private static void assignVisibilityGroup(BufferedImage mask,
+      java.util.List<Map.Entry<String,Integer>> targets,
+      java.util.List<BufferedImage> excludedImages, java.util.List<Integer> group,
+      java.util.List<Integer> oppositeGroup, int[] assignedPixels) {
+    for (int y = 0; y < mask.getHeight(); y++) for (int x = 0; x < mask.getWidth(); x++) {
+      if ((mask.getRGB(x, y) & 0xFFFFFF) != 0) continue;
+      int bestIndex = -1, bestDelta = -1, secondDelta = -1;
+      for (Integer boxedIndex : group) {
+        int index = boxedIndex.intValue();
+        java.util.List<Integer> referencePool = new java.util.ArrayList<Integer>();
+        if (group.size() > 1) {
+          for (Integer candidate : group) if (candidate.intValue() != index) referencePool.add(candidate);
+        } else {
+          referencePool.addAll(oppositeGroup);
+        }
+        if (referencePool.isEmpty()) continue;
+        int reference = medianColor(excludedImages, referencePool, x, y);
+        int delta = visibilityPixelDelta(excludedImages.get(index).getRGB(x, y), reference);
+        if (delta > bestDelta) {
+          secondDelta = bestDelta; bestDelta = delta; bestIndex = index;
+        } else if (delta > secondDelta) {
+          secondDelta = delta;
+        }
+      }
+      if (bestIndex >= 0 && bestDelta >= 18 && bestDelta - Math.max(0, secondDelta) >= 8) {
+        mask.setRGB(x, y, targets.get(bestIndex).getValue().intValue());
+        assignedPixels[bestIndex]++;
+      }
+    }
+  }
+
+  private static void writeVisibilityMask(Path basePath, Map<String,Path> targetExcluded,
+      LinkedHashMap<String,Integer> labels, java.util.Set<String> movingTargets,
+      java.util.Set<String> receiverTargets, Path outputPng, boolean requireVisibleTarget) throws Exception {
+    BufferedImage base = ImageIO.read(basePath.toFile());
+    if (base == null) throw new IllegalStateException("Cannot read visibility base bitmap: " + basePath);
+    BufferedImage mask = new BufferedImage(base.getWidth(), base.getHeight(), BufferedImage.TYPE_INT_RGB);
+    java.util.List<Map.Entry<String,Integer>> targets = new java.util.ArrayList<Map.Entry<String,Integer>>(labels.entrySet());
+    java.util.List<BufferedImage> excludedImages = new java.util.ArrayList<BufferedImage>();
+    java.util.List<Integer> movingGroup = new java.util.ArrayList<Integer>();
+    java.util.List<Integer> receiverGroup = new java.util.ArrayList<Integer>();
+    int[] assignedPixels = new int[targets.size()];
+    for (int index = 0; index < targets.size(); index++) {
+      Map.Entry<String,Integer> target = targets.get(index);
+      BufferedImage selected = ImageIO.read(targetExcluded.get(target.getKey()).toFile());
+      if (selected == null || selected.getWidth() != base.getWidth() || selected.getHeight() != base.getHeight())
+        throw new IllegalStateException("Visibility exclusion bitmap is invalid for " + target.getKey());
+      excludedImages.add(selected);
+      if (movingTargets.contains(target.getKey())) movingGroup.add(Integer.valueOf(index));
+      else if (receiverTargets.contains(target.getKey())) receiverGroup.add(Integer.valueOf(index));
+      else throw new IllegalStateException("Visibility target has no moving/receiver role: " + target.getKey());
+    }
+    // Compare each excluded occurrence with frames where that same occurrence
+    // is still present.  Moving and receiver groups are assigned separately,
+    // which rejects the common simp-rep repaint delta while preserving tiny parts.
+    assignVisibilityGroup(mask, targets, excludedImages, movingGroup, receiverGroup, assignedPixels);
+    assignVisibilityGroup(mask, targets, excludedImages, receiverGroup, movingGroup, assignedPixels);
+    int totalChangedPixels = 0;
+    for (int index = 0; index < targets.size(); index++) {
+      totalChangedPixels += assignedPixels[index];
+      System.err.println("[VISIBILITY] target=" + targets.get(index).getKey()
+          + " assigned_pixels=" + assignedPixels[index]);
+    }
+    if (requireVisibleTarget && totalChangedPixels == 0)
+      throw new IllegalStateException("VISIBILITY_RASTER_EMPTY: isolated component exclusion produced zero target pixels");
+    Files.createDirectories(outputPng.getParent());
+    if (!ImageIO.write(mask, "png", outputPng.toFile())) throw new IllegalStateException("PNG writer is unavailable");
+    System.err.println("[VISIBILITY] wrote=" + outputPng + " assigned_pixels=" + totalChangedPixels);
+  }
+
+  private static void renderVisibilityScene(Session session, String assemblyFile, Path outputPng,
+      String movingPaths, String receiverPaths, double dx, double dy, double dz, String desiredPaths,
+      String cameraSpec, String focusPaths, LinkedHashMap<String,Integer> labels,
+      boolean requireVisibleTarget) throws Throwable {
+    Window window = null; boolean completed = false;
+    Path rawRoot = outputPng.resolveSibling(outputPng.getFileName().toString() + ".raw");
+    try {
+      Files.createDirectories(rawRoot);
+      ModelDescriptor descriptor = assemblyDescriptor(assemblyFile);
+      window = session.OpenFile(descriptor); window.Activate(); Model model = window.GetModel();
+      String requestedBase = new File(assemblyFile).getName().replaceFirst("\\.[0-9]+$", "");
+      if (!model.GetFileName().equalsIgnoreCase(requestedBase)) throw new IllegalStateException("Opened unexpected assembly");
+      Integer requestedVersion = descriptor.GetFileVersion(), actualVersion = model.GetDescr().GetFileVersion();
+      if (requestedVersion != null && !requestedVersion.equals(actualVersion)) throw new IllegalStateException("Opened unexpected assembly version");
+      Assembly assembly = (Assembly)model; hideAuxiliaryFeatures(session, model, new java.util.HashSet<String>());
+      java.util.Set<String> desired = new java.util.HashSet<String>();
+      for (String raw : desiredPaths.split(";")) if (!raw.trim().isEmpty()) desired.add(raw.trim());
+      java.util.Set<String> movingTargets = new java.util.HashSet<String>();
+      for (String raw : movingPaths.split(";")) if (!raw.trim().isEmpty()) movingTargets.add(raw.trim());
+      java.util.Set<String> receiverTargets = new java.util.HashSet<String>();
+      for (String raw : receiverPaths.split(";")) if (!raw.trim().isEmpty()) receiverTargets.add(raw.trim());
+      for (String target : labels.keySet()) if (!stageRelated(target, desired)) throw new IllegalArgumentException("Visibility target is outside the scene: " + target);
+      activateVisibilityRep(session, assembly, desired, "", "AI_SOP_VIS_BASE");
+      if (!assembly.GetDynamicPositioning()) assembly.SetDynamicPositioning(true);
+      java.util.List<intseq> movingOccurrencePaths = parseOccurrencePaths(movingPaths);
+      for (intseq ids : movingOccurrencePaths) translateResolved(session, assembly, ids, dx, dy, dz);
+      java.util.List<DynamicPose> movingPoses = captureDynamicPoses(session, assembly, movingOccurrencePaths);
+      applyCamera(assembly, cameraSpec);
+      Double fit = nativeSelectedFitLevel(cameraSpec);
+      if (fit == null) throw new IllegalArgumentException("Visibility audit requires native selected fit");
+      applyNativeSelectedFit(session, window, assembly, parseOccurrencePaths(focusPaths), fit);
+      ScreenTransform liveScreen = window.GetScreenTransform();
+      ScreenTransform fittedScreen = pfcBase.ScreenTransform_Create(
+          liveScreen.GetPanX(), liveScreen.GetPanY(), liveScreen.GetZoom());
+      Path base = rawRoot.resolve("base.bmp"); exportVisibilityBitmap(window, session, base);
+      LinkedHashMap<String,Path> targetExcluded = new LinkedHashMap<String,Path>(); int index = 0;
+      for (String occurrence : labels.keySet()) {
+        Path target = rawRoot.resolve(String.format(java.util.Locale.ROOT, "target-%03d.bmp", ++index));
+        activateVisibilityRep(session, assembly, desired, occurrence,
+            String.format(java.util.Locale.ROOT, "AI_SOP_VIS_%03d", index));
+        if (!assembly.GetDynamicPositioning()) assembly.SetDynamicPositioning(true);
+        restoreDynamicPoses(session, assembly, movingPoses, occurrence);
+        applyCamera(assembly, cameraSpec);
+        window.Repaint();
+        session.FlushCurrentWindow();
+        window.SetScreenTransform(fittedScreen);
+        exportVisibilityBitmap(window, session, target);
+        targetExcluded.put(occurrence, target);
+      }
+      writeVisibilityMask(base, targetExcluded, labels, movingTargets, receiverTargets,
+          outputPng, requireVisibleTarget); completed = true;
+    } finally {
+      if (window != null) try { window.Close(); } catch (Throwable ignored) {}
+      try { session.EraseUndisplayedModels(); } catch (Throwable ignored) {}
+      if (completed && Files.isDirectory(rawRoot)) try (java.util.stream.Stream<Path> paths = Files.walk(rawRoot)) {
+        paths.sorted(java.util.Comparator.reverseOrder()).forEach(path -> { try { Files.deleteIfExists(path); } catch (Exception ignored) {} });
+      }
+    }
+  }
+
+  static void renderVisibilityEvidenceInSession(Session session, String assemblyFile,
+      String outputDirectory, String taskId, String movingPaths, String receiverPaths,
+      double dx, double dy, double dz, String visiblePaths, String fixed123Camera,
+      String fixed456Camera, String focusPaths, String encodedLabels) throws Throwable {
+    LinkedHashMap<String,Integer> labels = parseVisibilityLabels(encodedLabels);
+    String isolatedPaths = movingPaths + ";" + receiverPaths;
+    for (String cameraId : new String[] { "fixed_123", "fixed_456" }) {
+      String camera = cameraId.equals("fixed_123") ? fixed123Camera : fixed456Camera;
+      renderVisibilityScene(session, assemblyFile, Path.of(outputDirectory, taskId + "." + cameraId + ".isolated.png"), movingPaths, receiverPaths, dx, dy, dz, isolatedPaths, camera, focusPaths, labels, true);
+      renderVisibilityScene(session, assemblyFile, Path.of(outputDirectory, taskId + "." + cameraId + ".staged.png"), movingPaths, receiverPaths, dx, dy, dz, visiblePaths, camera, focusPaths, labels, false);
     }
   }
 

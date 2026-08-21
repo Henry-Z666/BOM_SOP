@@ -4,6 +4,7 @@ from dataclasses import asdict, replace
 from copy import deepcopy
 from hashlib import sha256
 import json
+import math
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -589,14 +590,13 @@ def render_batch(
             if callable(diagnostic_reader):
                 diagnostic = diagnostic_reader(task.task_id)
             final_attempt = scheduled.final_attempts.get(task.step_id)
+            effective_error_code = _render_diagnostic_code(
+                diagnostic, final_attempt
+            )
             gate_failures = (
                 [str(value) for value in diagnostic.get("failures", ())]
-                if diagnostic
-                else (
-                    [str(final_attempt.error_code)]
-                    if final_attempt and final_attempt.error_code
-                    else []
-                )
+                if diagnostic and diagnostic.get("failures")
+                else ([effective_error_code] if effective_error_code else [])
             )
             execution_mode = str(task.payload.get("execution_mode") or "formal")
             planning_diagnostics = [
@@ -674,15 +674,7 @@ def render_batch(
                         planning_diagnostics[0]
                         if execution_mode == "diagnostic_preview"
                         and planning_diagnostics
-                        else (
-                            diagnostic.get("error_code")
-                            if diagnostic
-                            else (
-                                final_attempt.error_code
-                                if final_attempt
-                                else None
-                            )
-                        )
+                        else effective_error_code
                     ),
                     "primary_code": decision.primary_code or None,
                     "failures": _failure_details(all_failures),
@@ -789,11 +781,29 @@ def render_batch(
     return _passed(SkillArtifactValue("render-batch-result", payload))
 
 
+def _render_diagnostic_code(
+    diagnostic: Mapping[str, object] | None,
+    final_attempt: object | None,
+) -> str | None:
+    if diagnostic:
+        for key in ("error_code", "gate_code"):
+            value = str(diagnostic.get(key) or "").strip()
+            if value:
+                return value
+    value = str(getattr(final_attempt, "error_code", "") or "").strip()
+    return value or None
+
+
 def _render_diagnostic_message(diagnostic: Mapping[str, object]) -> str:
     for key in ("stderr_tail", "message", "stdout_tail"):
         value = str(diagnostic.get(key) or "").strip()
         if value:
             return value[-1000:]
+    error_code = str(
+        diagnostic.get("error_code") or diagnostic.get("gate_code") or ""
+    ).strip()
+    if error_code:
+        return gate_policy(error_code).user_message
     return "Creo渲染进程未返回详细错误信息"
 
 
@@ -870,11 +880,12 @@ def validate_repair(
             )
             manual_acceptance_allowed = False
             if geometry_passed and image_path is not None and image_path.is_file():
-                status = (
-                    StepStatus.QUESTIONED
-                    if planning_review_required or status is StepStatus.QUESTIONED
-                    else StepStatus.PASSED
-                )
+                # Image quality is now decided exclusively by the person who
+                # sees the real Creo raster. Structural gates have already
+                # established that the image is safe to present for review.
+                status = StepStatus.QUESTIONED
+                questioned = True
+                manual_acceptance_allowed = not planning_review_required
             else:
                 status = (
                     StepStatus.QUESTIONED
@@ -934,6 +945,26 @@ def validate_repair(
                     )
                     _write_placeholder(placeholder, step_id)
                     image_path = placeholder
+            review_error_code = item.get("error_code")
+            review_error_message = item.get("error_message")
+            review_primary_code = item.get("primary_code")
+            review_failures = structured_failures
+            review_category = item.get("category")
+            if (
+                geometry_passed
+                and image_path is not None
+                and image_path.is_file()
+                and not planning_review_required
+            ):
+                review_error_code = "MANUAL_IMAGE_REVIEW_REQUIRED"
+                review_error_message = (
+                    "图片质量不做自动判定；请人工预览后采用，或选择问题二次生成。"
+                )
+                review_primary_code = "MANUAL_IMAGE_REVIEW_REQUIRED"
+                review_failures = []
+                review_category = "human_review"
+                issues = [review_error_message]
+
             diagnostic_payload = {
                 "schema_version": "validation-diagnostic/v1",
                 "step_id": step_id,
@@ -949,6 +980,7 @@ def validate_repair(
                 "suggested_actions": item.get("suggested_actions", []),
                 "retained_image": item.get("retained_image"),
                 "review_mode": "deterministic_only/v1",
+                "image_review_mode": "human_only/v1",
                 "review_issues": issues,
                 "final_status": status.value,
                 "image_path": (
@@ -986,12 +1018,18 @@ def validate_repair(
                         if image_path
                         else None
                     ),
-                    "error_code": item.get("error_code"),
-                    "error_message": item.get("error_message"),
+                    "error_code": review_error_code,
+                    "error_message": review_error_message,
                     "issues": issues,
-                    "primary_code": item.get("primary_code"),
-                    "failures": structured_failures,
-                    "category": item.get("category"),
+                    "primary_code": review_primary_code,
+                    "failures": review_failures,
+                    "category": review_category,
+                    "machine_observations": {
+                        "error_code": item.get("error_code"),
+                        "primary_code": item.get("primary_code"),
+                        "failures": structured_failures,
+                        "category": item.get("category"),
+                    },
                     "expected": item.get("expected"),
                     "actual": item.get("actual"),
                     "attempted_actions": item.get("attempted_actions", []),
@@ -1104,6 +1142,11 @@ def publish_delivery(
             step = formal_by_step[step_id]
             status = StepStatus(item["status"])
             machine_status = status.value
+            # Legacy validation artifacts may say PASSED, but image-quality
+            # approval is now human-only. Publication must not silently carry
+            # that old machine disposition across this seam.
+            if status is StepStatus.PASSED:
+                status = StepStatus.QUESTIONED
             human_disposition: str | None = None
             applied_review_decision_ref: str | None = None
             image_path = context.run.workspace / str(item["image_path"])
@@ -1126,6 +1169,12 @@ def publish_delivery(
                 committed is not None
                 and committed.status is StepStatus.PASSED
                 and step_id not in invalidated
+                and str((prior or {}).get("human_disposition") or "")
+                in {
+                    "accept_current_image",
+                    "accept_candidate",
+                    ACCEPT_WITH_OVERRIDE,
+                }
             ):
                 prior_evidence = dict(prior or {})
                 prior_evidence["output_hash"] = committed.output_hash
@@ -1146,6 +1195,7 @@ def publish_delivery(
                 and selected_candidate == CURRENT_IMAGE_CANDIDATE_ID
             ):
                 status = StepStatus.PASSED
+                human_disposition = "accept_current_image"
             elif (
                 step_id == selected_step
                 and selected_candidate == HUMAN_OVERRIDE_IMAGE_ID
@@ -1192,6 +1242,7 @@ def publish_delivery(
                     raise ValueError("选中的候选图不属于当前步骤")
                 image_path = chosen.path
                 status = StepStatus.PASSED
+                human_disposition = "accept_candidate"
             if status is StepStatus.PASSED:
                 # Once a step is resolved, its alternatives leave both the
                 # review queue and the user delivery directory.
@@ -1690,6 +1741,178 @@ def _apply_step_revision(plan: RenderPlan, payload: dict[str, Any]) -> RenderPla
         variant["variant_id"] = f"step-revision-{revision.revision}"
         presentation["variants"] = [variant]
         contract["presentation"] = presentation
+        rerender_option = str(changes.get("rerender_option") or "")
+        if rerender_option:
+            current_translation = [
+                float(value)
+                for value in contract.get("translation_vector_root", ())
+            ]
+            if len(current_translation) != 3 or not all(
+                math.isfinite(value) for value in current_translation
+            ):
+                raise ValueError("锁定渲染任务缺少可修订的三维爆炸向量")
+            if rerender_option == "normal_explosion":
+                normal = _unit_vector(
+                    contract.get("receiver_normal_root"), "Creo 承接面法向"
+                )
+                distance = _vector_length(current_translation)
+                if distance <= 1.0e-9:
+                    raise ValueError("锁定渲染任务的爆炸距离无效")
+                contract["translation_vector_root"] = [
+                    round(value * distance, 6) for value in normal
+                ]
+                _refresh_arrow_endpoints(contract)
+            elif rerender_option == "reverse_explosion":
+                contract["translation_vector_root"] = [
+                    round(-value, 6) for value in current_translation
+                ]
+                _refresh_arrow_endpoints(contract)
+            elif rerender_option == "switch_fixed_camera":
+                current_camera = str(contract.get("camera_id") or "")
+                allowed = [
+                    str(value)
+                    for value in contract.get(
+                        "allowed_camera_ids", ("fixed_123", "fixed_456")
+                    )
+                ]
+                if set(allowed) != {"fixed_123", "fixed_456"}:
+                    raise ValueError("锁定渲染任务缺少固定双视角")
+                if current_camera not in allowed:
+                    raise ValueError("当前相机不属于固定双视角")
+                next_camera = (
+                    "fixed_456" if current_camera == "fixed_123" else "fixed_123"
+                )
+                catalog = contract.get("camera_catalog")
+                if not isinstance(catalog, Mapping) or not isinstance(
+                    catalog.get(next_camera), Mapping
+                ):
+                    raise ValueError("锁定渲染任务缺少另一台固定相机参数")
+                variant["camera_id"] = next_camera
+                presentation["variants"] = [variant]
+                contract["presentation"] = presentation
+                contract["camera_id"] = next_camera
+                contract["camera"] = deepcopy(catalog[next_camera])
+                contract.pop("camera_selection", None)
+            elif rerender_option == "rebuild_exact_visibility":
+                exact_visible = sorted(
+                    {
+                        str(value)
+                        for value in contract.get("visible_occurrences", ())
+                        if str(value)
+                    }
+                )
+                required_visible = {
+                    str(value)
+                    for value in (
+                        *contract.get("moving_occurrences", ()),
+                        *contract.get("receiver_occurrences", ()),
+                    )
+                }
+                if not exact_visible or not required_visible.issubset(exact_visible):
+                    raise ValueError("锁定渲染任务的精确可见集不完整")
+                contract["visible_occurrences"] = exact_visible
+                contract["visibility_enforcement"] = {
+                    "schema_version": "visibility-enforcement/v1",
+                    "mode": "rebuild_exact_exclusions/v1",
+                    "exact_visible_occurrences": exact_visible,
+                    "revision": revision.revision,
+                }
+            elif rerender_option in {
+                "increase_explosion_distance",
+                "decrease_explosion_distance",
+            }:
+                scale = (
+                    1.15
+                    if rerender_option == "increase_explosion_distance"
+                    else 0.85
+                )
+                contract["translation_vector_root"] = [
+                    round(value * scale, 6) for value in current_translation
+                ]
+                _refresh_arrow_endpoints(contract)
+            elif rerender_option == "focus_installation_region":
+                selected_fit = presentation.get("native_selected_fit")
+                if not isinstance(selected_fit, dict):
+                    raise ValueError("锁定渲染任务缺少原生安装区域聚焦合同")
+                selected_fit = dict(selected_fit)
+                selected_fit["zoom_to_selected_level"] = 0.95
+                presentation["native_selected_fit"] = selected_fit
+                contract["presentation"] = presentation
+            else:
+                raise ValueError("二次生成选项没有对应的脚本重写映射")
+            contract["manual_rerender_application"] = {
+                "schema_version": "manual-rerender-application/v1",
+                "option_id": rerender_option,
+                "revision": revision.revision,
+            }
+        camera_resolution_option = str(
+            changes.get("camera_resolution_option") or ""
+        )
+        if camera_resolution_option:
+            if camera_resolution_option == "increase_bounded_explosion_distance":
+                current_translation = [
+                    float(value)
+                    for value in contract.get("translation_vector_root", ())
+                ]
+                if len(current_translation) != 3 or not all(
+                    math.isfinite(value) for value in current_translation
+                ):
+                    raise ValueError("锁定渲染任务缺少可修订的三维爆炸向量")
+                prior_resolution = contract.get("camera_resolution", {})
+                prior_scale = (
+                    float(prior_resolution.get("explosion_scale", 1.0))
+                    if isinstance(prior_resolution, Mapping)
+                    else 1.0
+                )
+                if not math.isclose(prior_scale, 1.0, abs_tol=1.0e-9):
+                    raise ValueError("本步骤已使用唯一允许的一级爆炸距离修订")
+                next_scale = 1.15
+                contract["translation_vector_root"] = [
+                    round(value * next_scale, 6) for value in current_translation
+                ]
+                contract["camera_resolution"] = {
+                    "schema_version": "camera-resolution-application/v1",
+                    "option_id": camera_resolution_option,
+                    "explosion_scale": next_scale,
+                    "revision": revision.revision,
+                }
+                _refresh_arrow_endpoints(contract)
+            elif camera_resolution_option == "focus_receiver_interface":
+                selected_fit = presentation.get("native_selected_fit")
+                if not isinstance(selected_fit, dict):
+                    raise ValueError("锁定渲染任务缺少原生接口聚焦合同")
+                selected_fit = dict(selected_fit)
+                current_level = float(
+                    selected_fit.get("zoom_to_selected_level", 0.0)
+                )
+                if not math.isclose(current_level, 0.85, abs_tol=1.0e-9):
+                    raise ValueError("本步骤已使用唯一允许的接口聚焦修订")
+                selected_fit["zoom_to_selected_level"] = 0.95
+                presentation["native_selected_fit"] = selected_fit
+                contract["presentation"] = presentation
+                contract["camera_resolution"] = {
+                    "schema_version": "camera-resolution-application/v1",
+                    "option_id": camera_resolution_option,
+                    "native_selected_fit_level": 0.95,
+                    "revision": revision.revision,
+                }
+            else:
+                raise ValueError("相机修复选项不属于当前有界选项集")
+            # A prior decision is evidence for the superseded contract only.
+            # The revised geometry/framing must generate four fresh rasters.
+            contract.pop("camera_selection", None)
+            contract["diagnostics"] = [
+                code
+                for code in contract.get("diagnostics", [])
+                if code
+                not in {
+                    "MOVING_SET_OCCLUDED",
+                    "MOVING_OCCURRENCE_OCCLUDED",
+                    "RECEIVER_INTERFACE_OCCLUDED",
+                    "RECEIVER_INTERFACE_PATCH_OCCLUDED",
+                    "NO_ELIGIBLE_FIXED_CAMERA",
+                }
+            ]
         if "direction" in changes:
             requested_direction = _unit_vector(changes["direction"], "安装方向")
             measured_value = contract.get("receiver_normal_root")

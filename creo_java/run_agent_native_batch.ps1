@@ -5,6 +5,7 @@ param(
   [int]$StartIndex = 0,
   [int]$Count = 1,
   [ValidateRange(0, 3)][int]$VariantIndex = 0,
+  [ValidateSet('Render','Visibility')][string]$Operation = 'Render',
   [string]$PreparedModelsRoot = '',
   [string]$RunWorkspaceRoot = '',
   [string]$WorkerRoot = '',
@@ -101,6 +102,7 @@ $formatVector = { param($values) ((@($values) | ForEach-Object { ([double]$_).To
 $manifestRows = New-Object Collections.Generic.List[string]
 $renderedFiles = New-Object Collections.Generic.List[string]
 $auditFiles = New-Object Collections.Generic.List[string]
+$visibilityFiles = New-Object Collections.Generic.List[string]
 $framingAudits = New-Object Collections.Generic.List[object]
 for ($index = $StartIndex; $index -lt $stop; $index++) {
   $task = $tasks[$index]
@@ -114,6 +116,31 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   if ($taskId -notmatch '^[A-Za-z0-9._-]+$') { throw "Unsafe task ID: $taskId" }
   $moving = @($payload.moving_occurrences)
   $visible = @($payload.visible_occurrences)
+  # Initial render jobs predate manual rerender choices and therefore do not
+  # carry visibility_enforcement.  Read the optional revision through the
+  # PSObject property bag so StrictMode does not turn an absent field into a
+  # batch-wide render failure.
+  $visibilityProperty = $payload.PSObject.Properties['visibility_enforcement']
+  $visibilityEnforcement = if ($null -ne $visibilityProperty) {
+    $visibilityProperty.Value
+  }
+  else {
+    $null
+  }
+  if ($null -ne $visibilityEnforcement) {
+    if ([string]$visibilityEnforcement.schema_version -ne 'visibility-enforcement/v1' -or
+        [string]$visibilityEnforcement.mode -ne 'rebuild_exact_exclusions/v1') {
+      throw "Task $taskId has an invalid manual visibility rebuild contract."
+    }
+    $exactVisible = @($visibilityEnforcement.exact_visible_occurrences)
+    if ($exactVisible.Count -lt 1 -or
+        (@($exactVisible | Sort-Object -Unique) -join ';') -ne (@($visible | Sort-Object -Unique) -join ';')) {
+      throw "Task $taskId manual visibility rebuild does not match the locked forward-stage set."
+    }
+    # Feed the explicit revision set into the native exclusion script. This is
+    # the executable mapping behind the GUI option, not a display-only note.
+    $visible = $exactVisible
+  }
   $receivers = @($payload.receiver_occurrences)
   if ($moving.Count -lt 1 -or $visible.Count -lt 1 -or $receivers.Count -lt 1) { throw "Task $taskId has incomplete occurrence sets." }
   foreach ($required in @($moving + $receivers)) {
@@ -134,8 +161,62 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   }
   $selectedFitLevel = [double]$nativeSelectedFit.zoom_to_selected_level
   if ([double]::IsNaN($selectedFitLevel) -or [double]::IsInfinity($selectedFitLevel) -or
-      [Math]::Abs($selectedFitLevel - 0.75) -gt 1.0e-9) {
-    throw "Task $taskId must use the fixed native selected-fit margin 0.75."
+      ([Math]::Abs($selectedFitLevel - 0.85) -gt 1.0e-9 -and
+       [Math]::Abs($selectedFitLevel - 0.95) -gt 1.0e-9)) {
+    throw "Task $taskId must use a bounded native selected-fit margin (0.85 or 0.95)."
+  }
+  if ($Operation -eq 'Visibility') {
+    if (-not $WorkerRoot) { throw 'Visibility evidence must run inside NativeArrowWorker.' }
+    $contract = $payload.camera_visibility
+    if ([string]$contract.schema_version -ne 'camera-visibility-contract/v1' -or [string]$contract.status -ne 'ready' -or
+        (@($contract.candidate_camera_ids) -join ';') -ne 'fixed_123;fixed_456') {
+      throw "Task $taskId has no ready fixed-camera visibility contract."
+    }
+    $cameraSpecs = @{}
+    foreach ($candidateId in @('fixed_123','fixed_456')) {
+      $property = $payload.camera_catalog.PSObject.Properties[$candidateId]
+      if ($null -eq $property) { throw "Task $taskId has no camera catalog entry for $candidateId." }
+      $candidate = $property.Value
+      if (@($candidate.position_direction_root).Count -ne 3 -or @($candidate.up_reference_root).Count -ne 3) {
+        throw "Task $taskId has an invalid camera basis for $candidateId."
+      }
+      $spec = 'ABS:' + (& $formatVector $candidate.position_direction_root)
+      $spec += ',UP:' + (& $formatVector $candidate.up_reference_root)
+      $spec += ',FIT_SELECTED:' + $selectedFitLevel.ToString('G17', $culture)
+      $cameraSpecs[$candidateId] = $spec
+    }
+    $labelRows = New-Object Collections.Generic.List[string]
+    $seenOccurrences = New-Object Collections.Generic.HashSet[string]
+    $seenLabels = New-Object Collections.Generic.HashSet[int]
+    foreach ($group in @($contract.moving_labels, $contract.receiver_interface_labels)) {
+      foreach ($property in @($group.PSObject.Properties | Sort-Object Name)) {
+        $occurrence = [string]$property.Name; $label = [int]$property.Value
+        if (-not $seenOccurrences.Add($occurrence) -or -not $seenLabels.Add($label) -or $label -le 0 -or $label -gt 16777215) {
+          throw "Task $taskId has invalid visibility labels."
+        }
+        if (@($moving + $receivers) -notcontains $occurrence) { throw "Visibility label targets unknown occurrence $occurrence." }
+        $labelRows.Add($occurrence + '=' + $label.ToString($culture))
+      }
+    }
+    if ($seenOccurrences.Count -ne ($moving.Count + $receivers.Count)) { throw "Task $taskId visibility labels are incomplete." }
+    $focusOccurrences = @($moving + $receivers | Sort-Object -Unique)
+    foreach ($candidateId in @('fixed_123','fixed_456')) {
+      foreach ($kind in @('isolated','staged')) {
+        $path = Join-Path $output ($taskId + '.' + $candidateId + '.' + $kind + '.png')
+        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        $visibilityFiles.Add($path)
+      }
+    }
+    $manifestRows.Add((@(
+      $output,$taskId,($moving -join ';'),
+      ([double]$translation[0]).ToString('G17', $culture),
+      ([double]$translation[1]).ToString('G17', $culture),
+      ([double]$translation[2]).ToString('G17', $culture),
+      ($receivers -join ';'),($visible -join ';'),$cameraSpecs['fixed_123'],$cameraSpecs['fixed_456'],
+      ($focusOccurrences -join ';'),($labelRows -join ';')
+    ) -join "`t"))
+    Write-Output ("[AGENT_RENDER] task {0} visibility fixed_123 fixed_456" -f $taskId)
+    continue
   }
   if ([string]$presentation.focus_context -ne 'stage_visible_bbox/v1') { throw "Task $taskId has an invalid presentation focus context." }
   if ([string]$presentation.framing_priority -ne 'installation_activity/v1') { throw "Task $taskId does not prioritize the installation activity." }
@@ -221,6 +302,12 @@ $manifest = Join-Path $internalRoot ('native-arrow-' + [guid]::NewGuid().ToStrin
 [IO.File]::WriteAllLines($manifest, $manifestRows, [Text.UTF8Encoding]::new($false))
 
 function Test-NativeArtifactsReady {
+  if ($Operation -eq 'Visibility') {
+    foreach ($path in $visibilityFiles) {
+      if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -lt 100) { return $false }
+    }
+    return $visibilityFiles.Count -eq ($manifestRows.Count * 4)
+  }
   for ($artifactIndex = 0; $artifactIndex -lt $renderedFiles.Count; $artifactIndex++) {
     $imagePath = $renderedFiles[$artifactIndex]
     $auditPath = $auditFiles[$artifactIndex]
@@ -326,7 +413,7 @@ if ($WorkerRoot) {
   $temporaryRequest = $request + '.tmp'
   [IO.File]::WriteAllText(
     $temporaryRequest,
-    ("RENDER`t" + [IO.Path]::GetFileName($workerManifest) + "`n"),
+    ($Operation.ToUpperInvariant() + "`t" + [IO.Path]::GetFileName($workerManifest) + "`n"),
     [Text.UTF8Encoding]::new($false)
   )
   Move-Item -LiteralPath $temporaryRequest -Destination $request
@@ -426,4 +513,4 @@ foreach ($item in $framingAudits) {
   )
   Move-Item -LiteralPath $temporaryAudit -Destination $auditPath -Force
 }
-Write-Output ("[AGENT_RENDER] complete {0} tasks" -f $manifestRows.Count)
+Write-Output ("[AGENT_RENDER] complete {0} {1} tasks" -f $manifestRows.Count,$Operation.ToLowerInvariant())

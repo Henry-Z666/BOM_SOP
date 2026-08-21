@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from hashlib import sha256
 import json
 import math
@@ -9,6 +9,14 @@ import re
 import subprocess
 import tempfile
 from typing import Protocol
+
+from sop_pipeline.camera_visibility import (
+    CAMERA_VISIBILITY_AUDIT_ENABLED,
+    VisibilityThresholds,
+    apply_camera_selection,
+    audit_camera_visibility_files,
+    select_camera_from_visibility_audits,
+)
 
 from ..process_control import owned_process_creation_kwargs, terminate_process_tree
 from .gate_policy import GateCategory, classify_failures, gate_policy
@@ -95,6 +103,7 @@ class AgentNativeCreoWorker:
         stop_script: Path | None = None,
         runner: CommandRunner | None = None,
         validator: DeterministicNativeRenderValidator | None = None,
+        camera_visibility_enabled: bool = CAMERA_VISIBILITY_AUDIT_ENABLED,
     ) -> None:
         self.powershell = powershell
         self.batch_script = batch_script
@@ -104,8 +113,11 @@ class AgentNativeCreoWorker:
         self.stop_script = stop_script or batch_script.with_name(
             "stop_agent_native_worker.ps1"
         )
+        self.camera_visibility_enabled = bool(camera_visibility_enabled)
         self.runner = runner or SubprocessCommandRunner()
-        self.validator = validator or DeterministicNativeRenderValidator()
+        self.validator = validator or DeterministicNativeRenderValidator(
+            camera_visibility_enabled=self.camera_visibility_enabled
+        )
         self._diagnostics_by_task: dict[str, dict[str, object]] = {}
 
     def diagnostic_for(self, task_id: str) -> dict[str, object] | None:
@@ -138,6 +150,18 @@ class AgentNativeCreoWorker:
         plan_index = task.payload.get("plan_index")
         if not isinstance(plan_index, int) or plan_index < 0:
             return RenderAttempt.failed("INVALID_RENDER_TASK")
+        visibility_execution_error = self._ensure_camera_visibility(
+            session, task, plan_index=plan_index
+        )
+        if visibility_execution_error is not None:
+            return _batch_failure(visibility_execution_error)
+        task, visibility_plan, visibility_error = self._lock_camera_visibility(
+            session, task
+        )
+        if visibility_error is not None:
+            if visibility_error == "CAMERA_VISIBILITY_AUDIT_MISSING":
+                return RenderAttempt.retryable(visibility_error)
+            return RenderAttempt.failed(visibility_error)
         variant_index = 0
         try:
             variant = task.payload["presentation"]["variants"][variant_index]
@@ -155,7 +179,7 @@ class AgentNativeCreoWorker:
             return RenderAttempt.failed("FRAMING_PROFILE_CONTRACT_INVALID")
         execution_error = self._run_batch(
             session,
-            plan_path=self.render_plan_json,
+            plan_path=visibility_plan or self.render_plan_json,
             output_directory=session.output_directory,
             start_index=plan_index,
             count=1,
@@ -184,6 +208,184 @@ class AgentNativeCreoWorker:
                 f"sha256:{sha256(image_path.read_bytes()).hexdigest()}"
             )
         return _gate_attempt(image_path, report.failures)
+
+    def _ensure_camera_visibility(
+        self,
+        session: CreoSession,
+        task: RenderTask,
+        *,
+        plan_index: int,
+    ) -> str | None:
+        if not self.camera_visibility_enabled:
+            return None
+        contract = task.payload.get("camera_visibility")
+        if not isinstance(contract, dict) or contract.get("status") != "ready":
+            return None
+        audit_root = session.output_directory.parent / "internal" / "camera-visibility"
+        safe_task_id = _safe_name(task.task_id)
+        expected = tuple(
+            audit_root / f"{safe_task_id}.{camera_id}.{kind}.png"
+            for camera_id in ("fixed_123", "fixed_456")
+            for kind in ("isolated", "staged")
+        )
+        if all(path.is_file() for path in expected):
+            return None
+        command = [
+            self.powershell,
+            "-NoProfile",
+            "-File",
+            str(self.batch_script),
+            "-ModelsRoot",
+            str(self.models_root),
+            "-RenderPlanJson",
+            str(self.render_plan_json),
+            "-OutputFolder",
+            str(audit_root),
+            "-StartIndex",
+            str(plan_index),
+            "-Count",
+            "1",
+            "-Operation",
+            "Visibility",
+            "-RunWorkspaceRoot",
+            str(session.output_directory.parent),
+        ]
+        if self.runtime_config is not None:
+            command.extend(["-RuntimeConfig", str(self.runtime_config)])
+        if session.native_worker_root is not None:
+            command.extend(["-WorkerRoot", str(session.native_worker_root)])
+        if session.prepared_models_root is not None:
+            command.extend(["-PreparedModelsRoot", str(session.prepared_models_root)])
+        try:
+            result = self.runner.run(command)
+        except subprocess.TimeoutExpired as error:
+            self._record_batch_diagnostic(session, task.task_id, "CREO_TIMEOUT", message=str(error))
+            return "CREO_TIMEOUT"
+        except OSError as error:
+            self._record_batch_diagnostic(session, task.task_id, "CREO_PROCESS_ERROR", message=str(error))
+            return "CREO_PROCESS_ERROR"
+        prepared_match = self._PREPARED_PATTERN.search(result.stdout or "")
+        if prepared_match is not None:
+            session.prepared_models_root = Path(prepared_match.group(1).strip())
+        if self._WORKER_PATTERN.search(result.stdout or "") is not None:
+            session.native_worker_active = True
+        if result.returncode != 0:
+            self._record_batch_diagnostic(
+                session, task.task_id, "CREO_RENDER_FAILED",
+                returncode=result.returncode, stdout=result.stdout or "", stderr=result.stderr or "",
+            )
+            return "CREO_RENDER_FAILED"
+        if not all(path.is_file() for path in expected):
+            return "CAMERA_VISIBILITY_AUDIT_MISSING"
+        return None
+
+    def _lock_camera_visibility(
+        self,
+        session: CreoSession,
+        task: RenderTask,
+    ) -> tuple[RenderTask, Path | None, str | None]:
+        if not self.camera_visibility_enabled:
+            return task, None, None
+        contract = task.payload.get("camera_visibility")
+        if not isinstance(contract, dict) or contract.get("status") != "ready":
+            return task, None, None
+        audit_root = session.output_directory.parent / "internal" / "camera-visibility"
+        safe_task_id = _safe_name(task.task_id)
+        raster_paths = {
+            (camera_id, kind): audit_root
+            / f"{safe_task_id}.{camera_id}.{kind}.png"
+            for camera_id in ("fixed_123", "fixed_456")
+            for kind in ("isolated", "staged")
+        }
+        if not all(path.is_file() for path in raster_paths.values()):
+            return task, None, "CAMERA_VISIBILITY_AUDIT_MISSING"
+        try:
+            thresholds_payload = contract.get("thresholds")
+            if not isinstance(thresholds_payload, dict) or (
+                thresholds_payload.get("schema_version")
+                != "camera-visibility-thresholds/v1"
+            ):
+                raise ValueError("camera visibility thresholds are invalid")
+            thresholds = VisibilityThresholds(
+                **{
+                    key: value
+                    for key, value in thresholds_payload.items()
+                    if key != "schema_version"
+                }
+            )
+            moving_labels = contract.get("moving_labels")
+            receiver_labels = contract.get("receiver_interface_labels")
+            if not isinstance(moving_labels, dict) or not isinstance(
+                receiver_labels, dict
+            ):
+                raise ValueError("camera visibility labels are invalid")
+            audits = tuple(
+                audit_camera_visibility_files(
+                    camera_id=camera_id,
+                    isolated_raster=raster_paths[(camera_id, "isolated")],
+                    staged_raster=raster_paths[(camera_id, "staged")],
+                    moving_labels=tuple(int(value) for value in moving_labels.values()),
+                    receiver_labels=tuple(
+                        int(value) for value in receiver_labels.values()
+                    ),
+                    thresholds=thresholds,
+                )
+                for camera_id in ("fixed_123", "fixed_456")
+            )
+            decision = select_camera_from_visibility_audits(audits)
+            decision_path = audit_root / f"{safe_task_id}.decision.json"
+            decision_temporary = decision_path.with_suffix(".json.tmp")
+            decision_temporary.write_text(
+                json.dumps(
+                    decision.to_dict(),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            decision_temporary.replace(decision_path)
+            if decision.status != "selected":
+                self._diagnostics_by_task[task.task_id] = {
+                    "schema_version": "camera-resolution-request/v1",
+                    "task_id": task.task_id,
+                    "gate_code": "NO_ELIGIBLE_FIXED_CAMERA",
+                    "camera_selection": decision.to_dict(),
+                    "resolution_options": [
+                        dict(option) for option in decision.options
+                    ],
+                }
+                return task, None, "NO_ELIGIBLE_FIXED_CAMERA"
+            locked_payload = apply_camera_selection(task.payload, decision)
+            locked_task = replace(task, payload=locked_payload)
+            plan_payload = json.loads(self.render_plan_json.read_text(encoding="utf-8"))
+            tasks = plan_payload.get("tasks")
+            if not isinstance(tasks, list):
+                raise ValueError("render plan tasks are invalid")
+            plan_index = int(task.payload["plan_index"])
+            if (
+                plan_index < 0
+                or plan_index >= len(tasks)
+                or str(tasks[plan_index].get("task_id")) != task.task_id
+            ):
+                raise ValueError("camera decision does not match its render task")
+            tasks[plan_index]["payload"] = locked_payload
+            audit_root.mkdir(parents=True, exist_ok=True)
+            locked_plan = audit_root / f"{safe_task_id}.locked-plan.json"
+            temporary = locked_plan.with_suffix(".json.tmp")
+            temporary.write_text(
+                json.dumps(
+                    plan_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            temporary.replace(locked_plan)
+            return locked_task, locked_plan, None
+        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+            return task, None, "CAMERA_VISIBILITY_AUDIT_INVALID"
 
     def _run_batch(
         self,

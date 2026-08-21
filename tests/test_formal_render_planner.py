@@ -155,7 +155,7 @@ class FormalRenderPlannerTests(unittest.TestCase):
     def test_native_selected_fit_uses_one_fixed_relative_margin(self) -> None:
         contract = _native_selected_fit_contract()
 
-        self.assertEqual(contract["zoom_to_selected_level"], 0.75)
+        self.assertEqual(contract["zoom_to_selected_level"], 0.85)
         self.assertEqual(
             contract["selection_scope"],
             "moving_and_receiver_occurrences/v1",
@@ -690,6 +690,18 @@ class FormalRenderPlannerTests(unittest.TestCase):
         self.assertEqual(task.payload["arrow_renderer"], "creo_display_list/v1")
         self.assertIn(task.payload["camera"]["id"], {"fixed_123", "fixed_456"})
         self.assertEqual(set(task.payload["camera_catalog"]), {"fixed_123", "fixed_456"})
+        visibility = task.payload["camera_visibility"]
+        self.assertEqual(
+            visibility["schema_version"], "camera-visibility-contract/v1"
+        )
+        self.assertEqual(visibility["status"], "frozen")
+        self.assertEqual(
+            visibility["freeze_reason"],
+            "preview_backed_review_not_available/v1",
+        )
+        self.assertFalse(visibility["formal_render_requires_selected_audit"])
+        self.assertNotIn("moving_labels", visibility)
+        self.assertNotIn("receiver_interface_labels", visibility)
         self.assertIn("moving_bounds", task.payload["stage_geometry_root"])
         self.assertIn("context_bounds", task.payload["stage_geometry_root"])
         self.assertEqual(
@@ -702,7 +714,7 @@ class FormalRenderPlannerTests(unittest.TestCase):
                 "schema_version": "native-selected-fit/v1",
                 "command": "ProCmdZoomIntoOutline",
                 "selection_scope": "moving_and_receiver_occurrences/v1",
-                "zoom_to_selected_level": 0.75,
+                "zoom_to_selected_level": 0.85,
                 "level_policy": "fixed_native_selection_margin/v1",
                 "max_commands_per_render": 1,
                 "absolute_pan_zoom_forbidden": True,

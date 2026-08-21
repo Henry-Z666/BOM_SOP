@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+from hashlib import sha256
 from typing import Any
+
+from sop_pipeline.camera_visibility import (
+    CAMERA_VISIBILITY_AUDIT_ENABLED,
+    VisibilityThresholds,
+    visibility_contract,
+)
 
 from .formal_render_planner import FormalRenderPlan, FormalRenderStep
 from .render_scheduler import RenderPlan, RenderTask
@@ -59,6 +66,7 @@ def compile_locked_render_jobs(plan: FormalRenderPlan) -> RenderPlan:
             "allowed_camera_ids": list(step.allowed_camera_ids),
             "camera": _compile_camera(plan, step),
             "camera_catalog": _compile_camera_catalog(plan),
+            "camera_visibility": _compile_camera_visibility(step),
             "stage_geometry_root": _compile_stage_geometry(plan, step),
             "presentation": _compile_presentation(plan, step),
             "arrow_anchors": _compile_arrow_anchors(step),
@@ -196,6 +204,56 @@ def _compile_camera_catalog(plan: FormalRenderPlan) -> dict[str, dict[str, Any]]
     return result
 
 
+def _compile_camera_visibility(step: FormalRenderStep) -> dict[str, object]:
+    """Compile stable audit labels; the J-Link adapter owns their rasterization."""
+
+    if not CAMERA_VISIBILITY_AUDIT_ENABLED:
+        return {
+            "schema_version": "camera-visibility-contract/v1",
+            "status": "frozen",
+            "freeze_reason": "preview_backed_review_not_available/v1",
+            "formal_render_requires_selected_audit": False,
+        }
+
+    if not step.moving_occurrences or not step.receiver_occurrences:
+        return {
+            "schema_version": "camera-visibility-contract/v1",
+            "status": "unresolved",
+            "source": "creo-lossless-component-label-raster/v1",
+            "candidate_camera_ids": ["fixed_123", "fixed_456"],
+            "moving_labels": {},
+            "receiver_interface_labels": {},
+            "thresholds": VisibilityThresholds().to_contract(),
+            "formal_render_requires_selected_audit": True,
+            "on_no_eligible_camera": "structured_resolution_options/v1",
+        }
+    used: set[int] = set()
+    moving = {
+        occurrence: _stable_audit_label(f"moving:{occurrence}", used)
+        for occurrence in sorted(step.moving_occurrences)
+    }
+    receiver_interfaces = {
+        occurrence: _stable_audit_label(f"receiver-interface:{occurrence}", used)
+        for occurrence in sorted(step.receiver_occurrences)
+    }
+    contract = visibility_contract(
+        moving,
+        receiver_interfaces,
+        VisibilityThresholds(),
+    )
+    contract["status"] = "ready"
+    return contract
+
+
+def _stable_audit_label(value: str, used: set[int]) -> int:
+    digest = sha256(value.encode("utf-8")).digest()
+    candidate = int.from_bytes(digest[:3], "big") or 1
+    while candidate in used:
+        candidate = candidate % 0xFFFFFF + 1
+    used.add(candidate)
+    return candidate
+
+
 def _compile_stage_geometry(
     plan: FormalRenderPlan, step: FormalRenderStep
 ) -> dict[str, list[dict[str, list[float]]]]:
@@ -291,7 +349,7 @@ def _native_selected_fit_contract() -> dict[str, Any]:
         "schema_version": "native-selected-fit/v1",
         "command": "ProCmdZoomIntoOutline",
         "selection_scope": "moving_and_receiver_occurrences/v1",
-        "zoom_to_selected_level": 0.75,
+        "zoom_to_selected_level": 0.85,
         "level_policy": "fixed_native_selection_margin/v1",
         "max_commands_per_render": 1,
         "absolute_pan_zoom_forbidden": True,

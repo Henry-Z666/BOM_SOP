@@ -26,15 +26,17 @@ Use full root occurrence paths. Completed subassemblies remain rigid. Geometry m
 - Explosion is translation only and preserves every 3×3 rotation matrix. The interface normal remains the installation-axis truth. If a normal explosion still has material AABB overlap with staged context and is ambiguous because it telescopes along a long bridge, or because a part with aspect ratio at least `3` has strong contact-backed lateral evidence, the presentation vector may switch to one root axis within the receiver plane. The lateral candidate must reduce overlap to a bounded minimum and is selected before rendering; it is not a pixel review or retry.
 - A structured operator direction may confirm only the sign of an existing measured Creo receiver axis. Free text cannot generate coordinates, and the confirmation cannot replace the measured axis.
 - Formal cameras are exactly `fixed_123` and its center-opposite `fixed_456`; never create a third per-step view.
-- Evaluate only `fixed_123` and `fixed_456`. Because Creo surface direction signs do not prove a physical front side, use absolute receiver-axis alignment to reject silhouettes. After staged visibility is known, project the exploded activity and visible-context AABBs into both fixed cameras and lock the camera with the smaller front-overlap score; ties deterministically prefer `fixed_123`. No render-time camera switch is allowed.
+- Evaluate only `fixed_123` and `fixed_456`. Use absolute receiver-axis alignment, projected explosion, and staged-context AABB front overlap to lock one camera deterministically; exact ties prefer `fixed_123`. No formal render-time camera switch is allowed.
+- The lossless occurrence/interface label audit and its camera-repair choices are temporarily frozen. Do not generate audit rasters, emit `NO_ELIGIBLE_FIXED_CAMERA`, or ask the user to choose a rerender goal until the GUI can show the failed evidence as a preview.
 
 ## Native adaptive framing
 
 - Formal framing is `native_zoom_to_selected/v1` only.
 - Add the complete moving and receiver occurrence paths to Creo's Selection Buffer, then execute `ProCmdZoomIntoOutline` once.
-- Set `zoom_to_selected_level = 0.75`. Creo's fit to the selected moving-plus-receiver bounding box provides the size adaptation; this fixed relative margin must not be multiplied by a second CAD-size ratio.
+- Set `zoom_to_selected_level = 0.85`. Creo's fit to the selected moving-plus-receiver bounding box provides the size adaptation; this fixed relative margin must not be multiplied by a second CAD-size ratio.
 - External absolute PAN/ZOOM, screen-coordinate automation, probe renders, response caches, dynamic geometry crops, and post-crop upscaling are forbidden.
 - One render attempt may export one formal raster. Scheduler-level retries remain bounded and receive one new raster budget per attempt.
+- Camera label rasters are currently frozen and are not produced. The retained implementation must remain internal and dormant.
 - Persist `native-framing-audit/v1` with Creo version/datecode, command verification, selection scope, and level.
 - Recompute the intake BOM and full ASM/PRT tree hashes before and after formal rendering and again before publication. Any file-set or digest change blocks the run.
 
@@ -58,6 +60,7 @@ Use full root occurrence paths. Completed subassemblies remain rigid. Geometry m
 
 - Use official asynchronous pfc APIs: `ComponentPath.SetTransform` under `DynamicPositioning`, temporary SimpRep exclusions, Selection Buffer, `RunMacro`, layers, and display options.
 - Do not introduce synchronous-only `wfc*` calls into the asynchronous renderer.
+- Component-label evidence must be produced through the same asynchronous J-Link session or an equivalent lossless CAD projection adapter; never recover occurrence identity by classifying the beauty image.
 - Source CAD is read-only. Each formal task opens an isolated copy and erases its session state afterward.
 
 ## Forbidden fallbacks

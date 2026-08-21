@@ -13,6 +13,23 @@ from ..process_control import owned_process_creation_kwargs, terminate_process_t
 from .run_view import progress_snapshot, review_packet
 
 
+def _worker_log_solution(returncode: int, stdout: str, stderr: str) -> str:
+    details = f"{stdout}\n{stderr}"
+    if "CREO_RENDER_FAILED" in details:
+        return (
+            "解决方案：在 GUI 点击“重试未成功步骤”；系统会保留成功检查点，"
+            "只重跑失败步骤。若再次失败，查看运行目录 internal/render-diagnostics。"
+        )
+    if "SOURCE_CAD_HASH_CHANGED" in details:
+        return "解决方案：恢复生成开始时锁定的 CAD 文件版本，然后重新开始该任务。"
+    if returncode != 0:
+        return (
+            "解决方案：先在 GUI 返回任务页并重试当前任务；若重复失败，"
+            "根据本日志及运行目录 internal/render-diagnostics 中的最新记录处理。"
+        )
+    return "解决方案：本次后台命令成功，无需处理。"
+
+
 class SubprocessAgentBackend:
     """Runs each durable Agent command in a separate Python process."""
 
@@ -201,6 +218,7 @@ class SubprocessAgentBackend:
                     "action": action,
                     "run_id": run_id,
                     "returncode": returncode,
+                    "solution": _worker_log_solution(returncode, stdout, stderr),
                     "stdout_tail": stdout.replace("\x00", "")[-16000:],
                     "stderr_tail": stderr.replace("\x00", "")[-16000:],
                 },

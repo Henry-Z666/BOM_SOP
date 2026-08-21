@@ -93,6 +93,21 @@ class AlwaysFailingWorker(ImageWorker):
         return RenderAttempt.retryable("CREO_RUNTIME_CONFIG_MISSING")
 
 
+class NoEligibleCameraWorker(ImageWorker):
+    def render(self, session, task, attempt):
+        del session, attempt
+        self.calls.append(task.step_id)
+        return RenderAttempt.failed("NO_ELIGIBLE_FIXED_CAMERA")
+
+    def diagnostic_for(self, task_id):
+        return {
+            "schema_version": "camera-resolution-request/v1",
+            "task_id": task_id,
+            "gate_code": "NO_ELIGIBLE_FIXED_CAMERA",
+            "resolution_options": [],
+        }
+
+
 class CadMutatingWorker(ImageWorker):
     def __init__(self, model: Path) -> None:
         super().__init__()
@@ -304,7 +319,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
                 ),
             )
 
-            self.assertEqual(completed.status, RunStatus.COMPLETED)
+            self.assertEqual(completed.status, RunStatus.NEEDS_REVIEW)
             self.assertTrue(
                 (run.workspace / "revisions" / "step-revision-0001.json").exists()
             )
@@ -476,7 +491,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
                 ),
             )
 
-            self.assertEqual(outcome.status, RunStatus.COMPLETED)
+            self.assertEqual(outcome.status, RunStatus.NEEDS_REVIEW)
             self.assertEqual(worker.calls.count(target.step_id), calls_before + 1)
             validation = json.loads(
                 (run.workspace / "results" / "validation-0001.json").read_text(
@@ -631,6 +646,36 @@ class PipelineOrchestratorTests(unittest.TestCase):
             self.assertEqual(run.status, RunStatus.BLOCKED_SYSTEM)
             self.assertFalse((run.workspace / "delivery" / "SOP.xlsx").exists())
 
+    def test_zero_success_preserves_camera_resolution_error_in_pipeline_message(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            bom, cad, graph = _fixture(root)
+            core = AgentCore(
+                root / "workspace",
+                PipelineOrchestrator(
+                    adapters={
+                        "creo_discovery": StaticCreoDiscovery(graph),
+                        "render_worker": NoEligibleCameraWorker(),
+                    }
+                ),
+            )
+            run_id = core.create_run(bom, cad)
+            packet = core.analyze(run_id)
+            core.confirm(
+                run_id,
+                {
+                    item.item_id: item.recommended_option
+                    for item in packet.items
+                    if item.category == "CONFIRMATION"
+                },
+            )
+
+            with self.assertRaisesRegex(
+                SkillPipelineError,
+                "NO_ELIGIBLE_FIXED_CAMERA.*两个固定相机",
+            ):
+                core.generate(run_id)
+
     def test_agent_executes_real_skill_chain_through_public_interface(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -659,6 +704,20 @@ class PipelineOrchestratorTests(unittest.TestCase):
                 (run.workspace / "plans" / "locked-render-jobs-0001.json").exists()
             )
             outcome = core.generate(run_id)
+
+            while outcome.status is RunStatus.NEEDS_REVIEW:
+                target = next(
+                    step
+                    for step in outcome.steps
+                    if step.status is StepStatus.QUESTIONED
+                )
+                outcome = core.resolve(
+                    run_id,
+                    StepResolution(
+                        step_id=target.step_id,
+                        candidate_id="current-image",
+                    ),
+                )
 
             self.assertEqual(revision.revision, 1)
             self.assertEqual(outcome.status, RunStatus.COMPLETED)
@@ -842,7 +901,7 @@ class PipelineOrchestratorTests(unittest.TestCase):
             )
 
             self.assertEqual(pending.status, RunStatus.NEEDS_REVIEW)
-            self.assertEqual(completed.status, RunStatus.COMPLETED)
+            self.assertEqual(completed.status, RunStatus.NEEDS_REVIEW)
             self.assertEqual(worker.calls.count(target.step_id), 3)
 
     def test_generation_rejects_cad_changed_after_analysis(self) -> None:

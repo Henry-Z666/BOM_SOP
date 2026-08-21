@@ -315,7 +315,7 @@ def main() -> int:
     rendered = runtime.execute(
         run_id,
         "render-batch",
-        (jobs_path,),
+        ("analysis/input-manifest.json", jobs_path),
         render_parameters,
     )
     if rendered.status is not SkillStatus.PASSED:
@@ -325,7 +325,7 @@ def main() -> int:
     cached_render = runtime.execute(
         run_id,
         "render-batch",
-        (jobs_path,),
+        ("analysis/input-manifest.json", jobs_path),
         render_parameters,
     )
     frames_after_cache = _manifest_frame_counts(run_workspace, target_ids)

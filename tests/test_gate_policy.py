@@ -26,6 +26,7 @@ class GatePolicyTests(unittest.TestCase):
             "TRANSLATION_AUDIT_INVALID",
             "DIRECTION_SIGN_WEAK",
             "RECEIVER_NORMAL_NOT_AXIS_ALIGNED",
+            "CAMERA_VISIBILITY_AUDIT_INVALID",
         ):
             with self.subTest(code=code):
                 policy = gate_policy(code)
@@ -68,6 +69,31 @@ class GatePolicyTests(unittest.TestCase):
             "CREO_PROCESS_ERROR",
             "CREO_RENDER_FAILED",
             "PRESENTATION_CONTRACT_INVALID",
+        ):
+            with self.subTest(code=code):
+                self.assertEqual(
+                    gate_policy(code).category,
+                    GateCategory.SYSTEM_RETRY,
+                )
+
+    def test_exact_occlusion_codes_enter_bounded_auto_repair(self) -> None:
+        for code in (
+            "MOVING_SET_OCCLUDED",
+            "MOVING_OCCURRENCE_OCCLUDED",
+            "RECEIVER_INTERFACE_OCCLUDED",
+            "RECEIVER_INTERFACE_PATCH_OCCLUDED",
+            "NO_ELIGIBLE_FIXED_CAMERA",
+        ):
+            with self.subTest(code=code):
+                policy = gate_policy(code)
+                self.assertEqual(policy.category, GateCategory.AUTO_REPAIR)
+                self.assertFalse(policy.retain_real_image)
+
+    def test_missing_or_too_small_camera_audit_is_a_system_retry(self) -> None:
+        for code in (
+            "CAMERA_VISIBILITY_AUDIT_MISSING",
+            "MOVING_AUDIT_TARGET_TOO_SMALL",
+            "RECEIVER_INTERFACE_AUDIT_TARGET_TOO_SMALL",
         ):
             with self.subTest(code=code):
                 self.assertEqual(

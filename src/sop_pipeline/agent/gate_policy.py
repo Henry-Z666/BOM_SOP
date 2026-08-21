@@ -197,6 +197,43 @@ _POLICIES = {
         "返回规划层重新选择固定相机或确定性调整爆炸距离。",
         retain_real_image=False,
     ),
+    # Exact component-label visibility audits may request a bounded contract
+    # revision, but may never silently accept an occluded fixed camera.
+    "MOVING_SET_OCCLUDED": _policy(
+        "MOVING_SET_OCCLUDED",
+        GateCategory.AUTO_REPAIR,
+        "移动件整体可见比例不足。",
+        "在锁定双视角内增加一级爆炸距离后重新审计。",
+        retain_real_image=False,
+    ),
+    "MOVING_OCCURRENCE_OCCLUDED": _policy(
+        "MOVING_OCCURRENCE_OCCLUDED",
+        GateCategory.AUTO_REPAIR,
+        "至少一个移动 occurrence 被装配上下文明显遮挡。",
+        "局部修订该步骤的爆炸距离或安装焦点后重新审计。",
+        retain_real_image=False,
+    ),
+    "RECEIVER_INTERFACE_OCCLUDED": _policy(
+        "RECEIVER_INTERFACE_OCCLUDED",
+        GateCategory.AUTO_REPAIR,
+        "安装接口整体可见比例不足。",
+        "聚焦移动件与接收接口后重新审计固定双视角。",
+        retain_real_image=False,
+    ),
+    "RECEIVER_INTERFACE_PATCH_OCCLUDED": _policy(
+        "RECEIVER_INTERFACE_PATCH_OCCLUDED",
+        GateCategory.AUTO_REPAIR,
+        "至少一个接收接口区域被遮挡。",
+        "使用接口局部取景修订后重新审计。",
+        retain_real_image=False,
+    ),
+    "NO_ELIGIBLE_FIXED_CAMERA": _policy(
+        "NO_ELIGIBLE_FIXED_CAMERA",
+        GateCategory.AUTO_REPAIR,
+        "两个固定相机都没有通过移动件与安装接口可见性审计。",
+        "显示有界修复选项；禁止猜测或创建第三个相机。",
+        retain_real_image=False,
+    ),
     "DIRECTION_SIGN_WEAK": _policy(
         "DIRECTION_SIGN_WEAK",
         GateCategory.HARD_BLOCK,
@@ -295,6 +332,34 @@ _POLICIES = {
         GateCategory.SYSTEM_RETRY,
         "Creo 未产生预期的渲染文件。",
         "检查输出路径和 Creo 会话后重试。",
+        retain_real_image=False,
+    ),
+    "CAMERA_VISIBILITY_AUDIT_MISSING": _policy(
+        "CAMERA_VISIBILITY_AUDIT_MISSING",
+        GateCategory.SYSTEM_RETRY,
+        "Creo 没有产生固定双视角可见性审计。",
+        "恢复内部无损标签审计产物后重试；禁止退回 AABB 硬判。",
+        retain_real_image=False,
+    ),
+    "CAMERA_VISIBILITY_AUDIT_INVALID": _policy(
+        "CAMERA_VISIBILITY_AUDIT_INVALID",
+        GateCategory.HARD_BLOCK,
+        "固定双视角可见性审计无法复算或与渲染任务不一致。",
+        "重新生成无损标签审计；禁止手工改写相机结果。",
+        retain_real_image=False,
+    ),
+    "MOVING_AUDIT_TARGET_TOO_SMALL": _policy(
+        "MOVING_AUDIT_TARGET_TOO_SMALL",
+        GateCategory.SYSTEM_RETRY,
+        "移动件审计标签像素不足，无法证明可见性。",
+        "提高内部审计分辨率后重试。",
+        retain_real_image=False,
+    ),
+    "RECEIVER_INTERFACE_AUDIT_TARGET_TOO_SMALL": _policy(
+        "RECEIVER_INTERFACE_AUDIT_TARGET_TOO_SMALL",
+        GateCategory.SYSTEM_RETRY,
+        "安装接口审计标签像素不足，无法证明可见性。",
+        "扩大接口审计补丁或提高内部审计分辨率后重试。",
         retain_real_image=False,
     ),
     "RENDER_FRAME_INVALID": _policy(
