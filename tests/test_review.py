@@ -6,6 +6,7 @@ from pathlib import Path
 
 from sop_pipeline.agent.review import (
     ACCEPT_WITH_OVERRIDE,
+    SKIP_FROM_PUBLICATION,
     create_human_override_decision,
     prepare_review_step,
 )
@@ -35,6 +36,7 @@ class ReviewModuleTests(unittest.TestCase):
 
         self.assertTrue(package["normal_acceptance_allowed"])
         self.assertEqual(package["available_actions"][0], "accept")
+        self.assertIn(SKIP_FROM_PUBLICATION, package["available_actions"])
         form = package["guided_form"]
         self.assertEqual(form["schema_version"], "manual-rerender-form/v1")
         field = form["fields"][0]
@@ -78,6 +80,50 @@ class ReviewModuleTests(unittest.TestCase):
         self.assertEqual(fields["sign"]["default"], "负")
         self.assertEqual(len(package["attempt_history"]), 2)
 
+    def test_failed_real_image_without_specific_code_still_offers_rerender(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            image = root / "rendered" / "step-1.jpg"
+            image.parent.mkdir()
+            image.write_bytes(b"original-creo-image")
+            package = prepare_review_step(
+                root,
+                {
+                    "step_id": "step-1",
+                    "status": "FAILED",
+                    "category": "hard_block",
+                    "error_code": "ARROW_AUDIT_INVALID",
+                    "image_path": "rendered/step-1.jpg",
+                },
+            )
+
+        self.assertEqual(
+            package["guided_form"]["schema_version"],
+            "manual-rerender-form/v1",
+        )
+
+    def test_passed_real_image_can_be_selected_for_optional_rerender(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            image = root / "rendered" / "step-1.jpg"
+            image.parent.mkdir()
+            image.write_bytes(b"qualified-creo-image")
+            package = prepare_review_step(
+                root,
+                {
+                    "step_id": "step-1",
+                    "status": "PASSED",
+                    "category": "qualified",
+                    "image_path": "rendered/step-1.jpg",
+                },
+            )
+
+        self.assertTrue(package["has_real_image"])
+        self.assertEqual(
+            package["guided_form"]["schema_version"],
+            "manual-rerender-form/v1",
+        )
+
     def test_placeholder_cannot_be_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -97,6 +143,7 @@ class ReviewModuleTests(unittest.TestCase):
         self.assertFalse(package["has_real_image"])
         self.assertFalse(package["override_allowed"])
         self.assertNotIn(ACCEPT_WITH_OVERRIDE, package["available_actions"])
+        self.assertIn(SKIP_FROM_PUBLICATION, package["available_actions"])
 
     def test_missing_receiver_axis_does_not_offer_a_default_direction_form(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

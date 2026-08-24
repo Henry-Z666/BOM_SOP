@@ -129,6 +129,24 @@ class UnsafeDeliveryWorkflow(SuccessfulWorkflow):
         )
 
 
+class PassedRerenderWorkflow(SuccessfulWorkflow):
+    def resolve(self, run, resolution):
+        self.last_resolution = resolution
+        return GenerationResult(
+            steps=(
+                StepResult(
+                    step_id="process-001-step-001",
+                    main_process_id="process-001",
+                    status=StepStatus.PASSED,
+                    depends_on=(),
+                    complete_state_hash="sha256:complete-state",
+                    output_hash="sha256:rerendered-image",
+                ),
+            ),
+            delivery_directory=run.workspace / "delivery",
+        )
+
+
 class MutatingIndependentWorkflow(QuestionedWorkflow):
     def resolve(self, run, resolution):
         result = super().resolve(run, resolution)
@@ -208,6 +226,35 @@ class AgentCoreTests(unittest.TestCase):
         self.assertEqual(first.steps[1].status, StepStatus.PASSED)
         self.assertEqual(resolved.status, RunStatus.COMPLETED)
         self.assertEqual(resolved.steps[1].output_hash, "sha256:unchanged-image")
+
+    def test_completed_passed_step_can_be_explicitly_rerendered(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            bom = root / "BOM.xlsx"
+            bom.write_bytes(b"bom-v1")
+            cad = root / "cad"
+            cad.mkdir()
+            (cad / "root.asm.1").write_bytes(b"assembly-v1")
+            workflow = PassedRerenderWorkflow()
+            core = AgentCore(root / "agent-workspace", workflow=workflow)
+            run_id = core.create_run(bom, cad)
+            core.analyze(run_id)
+            core.confirm(run_id, answers={})
+            core.generate(run_id)
+
+            rerendered = core.resolve(
+                run_id,
+                StepResolution(
+                    step_id="process-001-step-001",
+                    instruction="按法向爆炸重新生成",
+                    metadata={
+                        "structured_inputs": {"rerender_option": "normal_explosion"}
+                    },
+                ),
+            )
+
+        self.assertEqual(rerendered.status, RunStatus.COMPLETED)
+        self.assertEqual(rerendered.steps[0].output_hash, "sha256:rerendered-image")
 
     def test_resume_continues_a_confirmed_run_after_process_restart(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

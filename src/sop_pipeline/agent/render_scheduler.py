@@ -201,13 +201,10 @@ class RenderScheduleResult:
 class RenderScheduler:
     """Deterministic DAG executor; worker behavior stays behind an adapter."""
 
-    def __init__(self, *, max_attempts: int = 3, tasks_per_session: int = 20) -> None:
+    def __init__(self, *, max_attempts: int = 3) -> None:
         if max_attempts < 1:
             raise ValueError("max_attempts must be positive")
-        if tasks_per_session < 1:
-            raise ValueError("tasks_per_session must be positive")
         self.max_attempts = max_attempts
-        self.tasks_per_session = tasks_per_session
 
     def execute(
         self,
@@ -227,7 +224,6 @@ class RenderScheduler:
         }
         restored_steps = len(completed)
         session: Any | None = None
-        rendered_in_session = 0
         rendered_tasks = 0
         render_attempts = 0
         worker_sessions = 0
@@ -248,7 +244,6 @@ class RenderScheduler:
                 if session is None:
                     session = worker.open_session(run_workspace, plan)
                     worker_sessions += 1
-                    rendered_in_session = 0
 
                 final_attempt: RenderAttempt | None = None
                 for attempt_number in range(1, self.max_attempts + 1):
@@ -264,12 +259,7 @@ class RenderScheduler:
                 final_attempts[task.step_id] = final_attempt
                 completed[task.step_id] = _result_from_attempt(task, final_attempt)
                 rendered_tasks += 1
-                rendered_in_session += 1
                 checkpoints.save(plan.fingerprint, completed)
-
-                if rendered_in_session == self.tasks_per_session:
-                    worker.close_session(session)
-                    session = None
         finally:
             if session is not None:
                 worker.close_session(session)

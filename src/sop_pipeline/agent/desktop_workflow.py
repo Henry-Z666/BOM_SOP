@@ -42,6 +42,11 @@ class DesktopWorkflow:
     def resolve(self, run: RunRecord, resolution: StepResolution) -> GenerationResult:
         return self._delegate.resolve(run, resolution)
 
+    def resolve_batch(
+        self, run: RunRecord, resolutions: tuple[StepResolution, ...]
+    ) -> GenerationResult:
+        return self._delegate.resolve_batch(run, resolutions)
+
 
 def _mapping_questions(mapping) -> tuple[ClarificationItem, ...]:
     result: list[ClarificationItem] = []

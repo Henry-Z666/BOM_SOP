@@ -8,7 +8,12 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QComboBox, QListWidgetItem
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QComboBox,
+    QListWidgetItem,
+)
 
 from sop_pipeline.desktop.app import (
     MainWindow,
@@ -63,6 +68,23 @@ class DesktopResolutionFlowTests(unittest.TestCase):
         self.assertIn("不是图片人工审查拒绝", message)
         self.assertIn("解决方案：", message)
         self.assertIn("重试未成功步骤", message)
+
+    def test_review_gallery_supports_multiselect_batch_actions(self) -> None:
+        window = MainWindow(_PendingResolutionService())  # type: ignore[arg-type]
+        try:
+            self.assertEqual(
+                window.candidate_gallery.selectionMode(),
+                QAbstractItemView.ExtendedSelection,
+            )
+            self.assertEqual(window.batch_accept_button.text(), "批量采用选中项")
+            self.assertEqual(
+                window.batch_rerender_button.text(), "批量重新生成选中项"
+            )
+            self.assertEqual(
+                window.batch_skip_button.text(), "跳过选中项（不进入SOP）"
+            )
+        finally:
+            window.close()
 
     def test_error_dialog_can_retry_the_current_run(self) -> None:
         class RecoveryService(_PendingResolutionService):

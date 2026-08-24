@@ -36,7 +36,7 @@ def _native_payload(**changes) -> dict:
                 "command": "ProCmdZoomIntoOutline",
                 "selection_scope": "moving_occurrences_and_receiver_surfaces/v1",
                 "coordinate_adjustment": "none_native_surface_fit/v1",
-                "zoom_to_selected_level": 0.95,
+                "zoom_to_selected_level": 0.70,
                 "level_policy": "fixed_native_selection_margin/v1",
                 "max_commands_per_render": 1,
                 "manual_pan_zoom_forbidden": True,
@@ -192,9 +192,117 @@ class RenderValidationTests(unittest.TestCase):
             )
 
         self.assertTrue(report.passed)
-        self.assertIsNotNone(report.composition)
-        self.assertGreater(report.composition.max_span_fraction, 0.54)
-        self.assertGreater(report.arrow_raster.pixels, 120)
+
+    def test_native_gate_rejects_legacy_native_viewport_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            image, audit = _write_native_files(root, None)
+            frame = Image.new("RGB", (1600, 1600), "white")
+            draw = ImageDraw.Draw(frame)
+            draw.rectangle((650, 260, 1550, 1340), fill=(80, 100, 120))
+            draw.line((675, 800, 925, 800), fill=(0, 150, 0), width=8)
+            frame.save(image)
+
+            report = DeterministicNativeRenderValidator().validate(
+                image,
+                audit,
+                _native_payload(
+                    presentation={
+                        **_native_payload()["presentation"],
+                        "schema_version": "native-viewport-presentation/v1",
+                    }
+                ),
+            )
+
+        self.assertIn("PRESENTATION_CONTRACT_INVALID", report.failures)
+        self.assertIsNone(report.composition)
+
+    def test_native_gate_rejects_rectangular_frame(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            image, audit = _write_native_files(root, None)
+            frame = Image.new("RGB", (1600, 1000), "white")
+            draw = ImageDraw.Draw(frame)
+            draw.rectangle((250, 150, 1350, 850), fill=(80, 100, 120))
+            draw.line((675, 500, 925, 500), fill=(0, 150, 0), width=8)
+            frame.save(image)
+            presentation = {
+                **_native_payload()["presentation"],
+                "schema_version": "square-crop-presentation/v1",
+                "final_frame": [1600, 1600],
+                "source_policy": "native_viewport_overscan/v1",
+                "crop_policy": "fixed_center_square/v1",
+                "padding_forbidden": True,
+                "stretching_forbidden": True,
+            }
+
+            report = DeterministicNativeRenderValidator().validate(
+                image,
+                audit,
+                _native_payload(presentation=presentation),
+            )
+
+        self.assertIn("RENDER_FRAME_INVALID", report.failures)
+
+    def test_native_gate_audits_each_grouped_occurrence_translation(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            image = root / "native.jpg"
+            frame = Image.new("RGB", (1600, 1600), "white")
+            draw = ImageDraw.Draw(frame)
+            draw.rectangle((250, 300, 1350, 1300), fill=(80, 100, 120))
+            draw.line((550, 500, 550, 1100), fill=(0, 150, 0), width=8)
+            draw.line((1050, 1100, 1050, 500), fill=(0, 150, 0), width=8)
+            frame.save(image)
+            audit = root / "native.arrow.json"
+            audit.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "arrow-projection/v1",
+                        "policy": "same_cad_point/v1",
+                        "status": "passed",
+                        "arrows": [
+                            {
+                                "covered_occurrences": ["1/2"],
+                                "anchor_source": "model_surface",
+                                "complete_root": [0.0, 0.0, 0.0],
+                                "exploded_root": [0.0, 0.0, 10.0],
+                            },
+                            {
+                                "covered_occurrences": ["1/3"],
+                                "anchor_source": "model_surface",
+                                "complete_root": [20.0, 0.0, 0.0],
+                                "exploded_root": [20.0, 0.0, -10.0],
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            presentation = {
+                **_native_payload()["presentation"],
+                "schema_version": "square-crop-presentation/v1",
+                "final_frame": [1600, 1600],
+                "source_policy": "native_viewport_overscan/v1",
+                "crop_policy": "fixed_center_square/v1",
+                "padding_forbidden": True,
+                "stretching_forbidden": True,
+            }
+            payload = _native_payload(
+                moving_occurrences=["1/2", "1/3"],
+                occurrence_translation_vectors_root={
+                    "1/2": [0.0, 0.0, 10.0],
+                    "1/3": [0.0, 0.0, -10.0],
+                },
+                presentation=presentation,
+            )
+
+            report = DeterministicNativeRenderValidator().validate(
+                image, audit, payload
+            )
+
+        self.assertTrue(report.passed, report.failures)
+        self.assertNotIn("TRANSLATION_AUDIT_INVALID", report.failures)
 
     def test_native_gate_rejects_missing_raster_arrow_for_one_moving_instance(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

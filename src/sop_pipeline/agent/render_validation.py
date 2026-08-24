@@ -96,6 +96,7 @@ PRESENTATION_FAILURES = frozenset(
         "ARROW_CLIPPED",
         "ACTIVITY_NOT_CENTERED",
         "ARROW_NOT_CENTERED",
+        "LETTERBOXED_VIEWPORT",
     }
 )
 
@@ -155,7 +156,8 @@ class DeterministicNativeRenderValidator:
         try:
             with Image.open(image_file) as image:
                 rgb = image.convert("RGB")
-                if rgb.size != (1600, 1600):
+                width, height = rgb.size
+                if width != 1600 or height != 1600:
                     failures.append("RENDER_FRAME_INVALID")
                     return None, None
                 pixels = np.asarray(rgb)
@@ -164,9 +166,18 @@ class DeterministicNativeRenderValidator:
             return None, None
 
         presentation = payload.get("presentation", {})
+        presentation_schema = (
+            str(presentation.get("schema_version", ""))
+            if isinstance(presentation, dict)
+            else ""
+        )
         if (
             not isinstance(presentation, dict)
-            or presentation.get("schema_version") != "fixed-frame-presentation/v1"
+            or presentation_schema
+            not in {
+                "fixed-frame-presentation/v1",
+                "square-crop-presentation/v1",
+            }
             or presentation.get("focus_context") != "installation_activity_bbox/v1"
             or presentation.get("framing_priority") != "installation_activity/v1"
             or presentation.get("zoom_anchor")
@@ -201,8 +212,17 @@ class DeterministicNativeRenderValidator:
             or selected_fit.get("manual_pan_zoom_forbidden") is not True
             or not any(
                 math.isclose(selected_fit_level, allowed, abs_tol=1.0e-9)
-                for allowed in (0.85, 0.95)
+                for allowed in (0.70, 0.80, 0.85, 0.95)
             )
+        ):
+            failures.append("PRESENTATION_CONTRACT_INVALID")
+            return None, None
+        if presentation_schema == "square-crop-presentation/v1" and (
+            presentation.get("final_frame") != [1600, 1600]
+            or presentation.get("source_policy") != "native_viewport_overscan/v1"
+            or presentation.get("crop_policy") != "fixed_center_square/v1"
+            or presentation.get("padding_forbidden") is not True
+            or presentation.get("stretching_forbidden") is not True
         ):
             failures.append("PRESENTATION_CONTRACT_INVALID")
             return None, None
@@ -211,12 +231,15 @@ class DeterministicNativeRenderValidator:
             not isinstance(centering, dict)
             or centering.get("schema_version")
             != "native-composition-center-gate/v1"
-            or centering.get("target_pixel") != [800, 800]
+            or (
+                centering.get("target_policy") != "native_frame_center/v1"
+                and centering.get("target_pixel") != [800, 800]
+            )
         ):
             failures.append("PRESENTATION_CONTRACT_INVALID")
             return None, None
         try:
-            target_pixel = tuple(int(value) for value in centering["target_pixel"])
+            target_pixel = (width // 2, height // 2)
             max_activity_center_offset = float(
                 centering["max_activity_center_offset_pixels"]
             )
@@ -251,7 +274,9 @@ class DeterministicNativeRenderValidator:
             min_arrow_pixels = int(gate["min_arrow_pixels"])
             min_arrow_span = int(gate["min_arrow_span_pixels"])
             min_arrow_margin = int(gate["min_arrow_border_margin_pixels"])
-            ignored_regions = _ignored_regions(gate["ignored_regions"])
+            ignored_regions = _ignored_regions(
+                gate["ignored_regions"], width=width, height=height
+            )
         except (KeyError, TypeError, ValueError, OverflowError):
             failures.append("PRESENTATION_CONTRACT_INVALID")
             return None, None
@@ -465,10 +490,28 @@ class DeterministicNativeRenderValidator:
         if not isinstance(arrows, list) or not arrows:
             failures.append("ARROW_COVERAGE_INVALID")
             return None
-        expected_translation = payload.get("translation_vector_root")
-        if not isinstance(expected_translation, (list, tuple)) or len(
-            expected_translation
-        ) != 3:
+        moving_occurrences = [
+            str(value) for value in payload.get("moving_occurrences", [])
+        ]
+        raw_translations = payload.get("occurrence_translation_vectors_root")
+        if not isinstance(raw_translations, dict):
+            uniform = payload.get("translation_vector_root")
+            raw_translations = {
+                occurrence: uniform for occurrence in moving_occurrences
+            }
+        if set(str(value) for value in raw_translations) != set(moving_occurrences):
+            failures.append("TRANSLATION_AUDIT_INVALID")
+            return None
+        expected_translations: dict[str, list[float]] = {}
+        try:
+            for occurrence, vector in raw_translations.items():
+                if not isinstance(vector, (list, tuple)) or len(vector) != 3:
+                    raise ValueError
+                converted = [float(value) for value in vector]
+                if not all(math.isfinite(value) for value in converted):
+                    raise ValueError
+                expected_translations[str(occurrence)] = converted
+        except (TypeError, ValueError):
             failures.append("TRANSLATION_AUDIT_INVALID")
             return None
         covered: list[str] = []
@@ -498,19 +541,26 @@ class DeterministicNativeRenderValidator:
                     float(exploded[index]) - float(complete[index])
                     for index in range(3)
                 ]
-                expected = [float(value) for value in expected_translation]
-                if not all(math.isfinite(value) for value in actual + expected):
+                if not all(math.isfinite(value) for value in actual):
                     raise ValueError
             except (TypeError, ValueError):
                 failures.append("TRANSLATION_AUDIT_INVALID")
                 continue
-            if any(
-                not math.isclose(
-                    actual[index],
-                    expected[index],
-                    abs_tol=self.vector_tolerance,
+            expected_for_arrow = [
+                expected_translations.get(str(occurrence))
+                for occurrence in arrow_coverage
+            ]
+            if any(expected is None for expected in expected_for_arrow) or any(
+                any(
+                    not math.isclose(
+                        actual[index],
+                        expected[index],
+                        abs_tol=self.vector_tolerance,
+                    )
+                    for index in range(3)
                 )
-                for index in range(3)
+                for expected in expected_for_arrow
+                if expected is not None
             ):
                 failures.append("TRANSLATION_AUDIT_INVALID")
         if sorted(covered) != sorted(
@@ -771,18 +821,29 @@ def _arrow_raster_metrics(
     )
 
 
-def _ignored_regions(values: Any) -> tuple[tuple[int, int, int, int], ...]:
+def _ignored_regions(
+    values: Any,
+    *,
+    width: int,
+    height: int,
+) -> tuple[tuple[int, int, int, int], ...]:
     if not isinstance(values, list):
         raise TypeError("ignored_regions must be a list")
     result: list[tuple[int, int, int, int]] = []
     for item in values:
         if not isinstance(item, list) or len(item) != 4:
             raise TypeError("ignored region must have four coordinates")
-        x0, y0, x1, y1 = (int(value) for value in item)
-        if not (0 <= x0 < x1 <= 1600 and 0 <= y0 < y1 <= 1600):
+        base_x0, base_y0, base_x1, base_y1 = (int(value) for value in item)
+        if not (0 <= base_x0 < base_x1 <= 1600 and 0 <= base_y0 < base_y1 <= 1600):
             raise ValueError("ignored region is outside the fixed frame")
+        x0 = round(base_x0 * width / 1600)
+        x1 = round(base_x1 * width / 1600)
+        y0 = round(base_y0 * height / 1600)
+        y1 = round(base_y1 * height / 1600)
         result.append((x0, y0, x1, y1))
     return tuple(result)
+
+
 
 
 def _significant_components(

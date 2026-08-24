@@ -203,7 +203,7 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         self.assertIn("native-framing-audit/v1", batch)
         self.assertIn("$zoom -ne 1.0", batch)
 
-    def test_formal_export_is_square_without_post_render_center_crop(self) -> None:
+    def test_formal_export_overscans_native_viewport_then_center_crops_square(self) -> None:
         root = Path(__file__).resolve().parents[1]
         batch = (root / "creo_java/run_agent_native_batch.ps1").read_text(
             encoding="utf-8"
@@ -212,10 +212,19 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        self.assertIn(
-            "JPEGImageExportInstructions_Create(8.0, 8.0)", renderer
-        )
+        self.assertIn("GetGraphicsAreaWidth()", renderer)
+        self.assertIn("GetGraphicsAreaHeight()", renderer)
+        # J-Link reports width and height as fractions of the screen's width
+        # and height respectively.  Dividing those normalized values directly
+        # turns a landscape Creo viewport into a near-square/portrait export.
+        self.assertIn("Toolkit.getDefaultToolkit().getScreenSize()", renderer)
+        self.assertIn("graphicsWidth * screenSize.getWidth()", renderer)
+        self.assertIn("graphicsHeight * screenSize.getHeight()", renderer)
+        self.assertIn("squareCropSourceExportInstructions", renderer)
+        self.assertIn("cropCenterSquare", renderer)
+        self.assertNotIn("JPEGImageExportInstructions_Create(8.0, 8.0)", renderer)
         self.assertNotIn("fit_creo_image.ps1", batch)
+        self.assertIn("$bitmap.Width -ne 1600 -or $bitmap.Height -ne 1600", batch)
 
     def test_async_runtime_uses_ptc_common_files_as_pro_directory(self) -> None:
         root = Path(__file__).resolve().parents[1]

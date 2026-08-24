@@ -23,8 +23,8 @@ public final class NativeArrowBatch {
       String row = rows.get(line);
       if (row.trim().isEmpty() || row.startsWith("#")) continue;
       String[] fields = row.split("\\t", -1);
-      if (fields.length != 11)
-        throw new IllegalArgumentException("Expected 11 TSV fields on line " + (line + 1));
+      if (fields.length != 12)
+        throw new IllegalArgumentException("Expected 12 TSV fields on line " + (line + 1));
       String output = required(fields, 0, line + 1);
       String moving = required(fields, 1, line + 1);
       String visible = required(fields, 5, line + 1);
@@ -33,6 +33,7 @@ public final class NativeArrowBatch {
       String focus = required(fields, 8, line + 1);
       String plannedAnchors = required(fields, 9, line + 1);
       String receiverSelections = required(fields, 10, line + 1);
+      String occurrenceTranslations = required(fields, 11, line + 1);
       System.err.println("[NATIVE_ARROW] start=" + (completed + 1) + " output=" + output);
       RenderAssemblyImage.renderInSession(
           session,
@@ -48,6 +49,7 @@ public final class NativeArrowBatch {
           focus,
           plannedAnchors,
           receiverSelections,
+          occurrenceTranslations,
           true);
       completed++;
       System.err.println("[NATIVE_ARROW] completed=" + completed);
@@ -61,11 +63,11 @@ public final class NativeArrowBatch {
     for (int line = 0; line < rows.size(); line++) {
       String row = rows.get(line); if (row.trim().isEmpty() || row.startsWith("#")) continue;
       String[] fields = row.split("\\t", -1);
-      if (fields.length != 12) throw new IllegalArgumentException("Expected 12 visibility TSV fields on line " + (line + 1));
+      if (fields.length != 13) throw new IllegalArgumentException("Expected 13 visibility TSV fields on line " + (line + 1));
       RenderAssemblyImage.renderVisibilityEvidenceInSession(session, assemblyFile,
           required(fields, 0, line + 1), required(fields, 1, line + 1), required(fields, 2, line + 1), required(fields, 6, line + 1),
           Double.parseDouble(required(fields, 3, line + 1)), Double.parseDouble(required(fields, 4, line + 1)), Double.parseDouble(required(fields, 5, line + 1)),
-          required(fields, 7, line + 1), required(fields, 8, line + 1), required(fields, 9, line + 1), required(fields, 10, line + 1), required(fields, 11, line + 1));
+          required(fields, 7, line + 1), required(fields, 8, line + 1), required(fields, 9, line + 1), required(fields, 10, line + 1), required(fields, 11, line + 1), required(fields, 12, line + 1));
       completed++;
     }
     return completed;

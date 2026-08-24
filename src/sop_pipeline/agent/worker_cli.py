@@ -31,7 +31,14 @@ def _json_value(value: Any) -> Any:
 
 
 def execute(workspace: Path, action: str, payload: dict[str, Any]) -> Any:
-    allowed_actions = {"start-analysis", "confirm", "generate", "resolve", "resume"}
+    allowed_actions = {
+        "start-analysis",
+        "confirm",
+        "generate",
+        "resolve",
+        "resolve-batch",
+        "resume",
+    }
     if action not in allowed_actions:
         raise ValueError(f"unsupported worker action: {action}")
     experience_mode = os.environ.get("CREO_SOP_EXPERIENCE_MODE") == "1"
@@ -69,6 +76,23 @@ def execute(workspace: Path, action: str, payload: dict[str, Any]) -> Any:
                 instruction=resolution.get("instruction"),
                 action=resolution.get("action"),
                 metadata=dict(resolution.get("metadata", {})),
+            ),
+        )
+    if action == "resolve-batch":
+        raw_resolutions = payload.get("resolutions", [])
+        if not isinstance(raw_resolutions, list):
+            raise ValueError("resolutions must be a list")
+        return core.resolve_batch(
+            run_id,
+            tuple(
+                StepResolution(
+                    step_id=str(resolution["step_id"]),
+                    candidate_id=resolution.get("candidate_id"),
+                    instruction=resolution.get("instruction"),
+                    action=resolution.get("action"),
+                    metadata=dict(resolution.get("metadata", {})),
+                )
+                for resolution in raw_resolutions
             ),
         )
     if action == "resume":

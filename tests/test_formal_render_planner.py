@@ -8,6 +8,7 @@ from sop_pipeline.agent.bom_cad_mapper import BomCadMap, BomOccurrenceMapping
 from sop_pipeline.agent.bom_normalizer import NormalizedBom, NormalizedBomRow
 from sop_pipeline.agent.draft_planner import DraftInstallationStep, DraftPlan
 from sop_pipeline.agent.formal_render_planner import (
+    _topologically_order,
     compile_formal_render_plan,
     formal_render_plan_from_dict,
     lock_formal_render_plan,
@@ -160,7 +161,7 @@ class FormalRenderPlannerTests(unittest.TestCase):
     def test_native_fit_selects_receiver_surfaces_not_complete_receiver_occurrence(self) -> None:
         contract = _native_selected_fit_contract()
 
-        self.assertEqual(contract["zoom_to_selected_level"], 0.95)
+        self.assertEqual(contract["zoom_to_selected_level"], 0.70)
         self.assertEqual(
             contract["selection_scope"],
             "moving_occurrences_and_receiver_surfaces/v1",
@@ -327,7 +328,7 @@ class FormalRenderPlannerTests(unittest.TestCase):
         self.assertGreater(child_step.translation_vector_root[2], 0.0)
         self.assertNotIn("DIRECTION_SIGN_WEAK", child_step.diagnostics)
 
-    def test_same_unsigned_axis_splits_when_occurrences_need_opposite_clearance(self) -> None:
+    def test_same_bom_fasteners_share_one_step_and_one_direction(self) -> None:
         bom, draft, mapping, graph = fixture()
         rows = list(bom.rows)
         rows[3] = replace(rows[3], quantity=2)
@@ -381,10 +382,15 @@ class FormalRenderPlannerTests(unittest.TestCase):
         plan = compile_formal_render_plan(bom, draft, mapping, graph)
         bolt_steps = [step for step in plan.steps if step.source_bom_rows == (5,)]
 
-        self.assertEqual(len(bolt_steps), 2)
+        self.assertEqual(len(bolt_steps), 1)
+        self.assertEqual(bolt_steps[0].moving_occurrences, ("10/2", "10/3"))
         self.assertEqual(
-            {math.copysign(1.0, step.translation_vector_root[2]) for step in bolt_steps},
-            {-1.0, 1.0},
+            {
+                occurrence: math.copysign(1.0, vector[2])
+                for occurrence, vector in
+                bolt_steps[0].occurrence_translation_vectors_root.items()
+            },
+            {"10/2": 1.0, "10/3": 1.0},
         )
 
     def test_long_bridge_switches_from_axial_to_clear_lateral_translation(self) -> None:
@@ -559,7 +565,7 @@ class FormalRenderPlannerTests(unittest.TestCase):
             any(item.code == "CAMERA_BASIS_AUTO_COMPLETED" for item in plan.diagnostics)
         )
 
-    def test_later_fixed_root_item_is_questioned_not_silently_made_foundation(self) -> None:
+    def test_later_fixed_root_item_is_not_visible_before_its_bom_step(self) -> None:
         bom, draft, mapping, graph = fixture()
         rows = bom.rows + (bom_row(9, "30.3", "FIXED", "后续固定件"),)
         bom = replace(bom, rows=rows)
@@ -585,10 +591,19 @@ class FormalRenderPlannerTests(unittest.TestCase):
 
         plan = compile_formal_render_plan(bom, draft, mapping, graph)
 
-        fixed = next(step for step in plan.steps if step.source_bom_rows == (9,))
-        self.assertEqual(fixed.status, "questioned")
-        self.assertIsNone(fixed.translation_vector_root)
-        self.assertIn("NO_NATIVE_RECEIVER_GEOMETRY", fixed.diagnostics)
+        fixed_step = next(step for step in plan.steps if step.source_bom_rows == (9,))
+        self.assertNotIn("30", plan.initial_completed_occurrences)
+        self.assertEqual(fixed_step.moving_occurrences, ("30",))
+        self.assertEqual(fixed_step.status, "questioned")
+        self.assertIn("NO_NATIVE_RECEIVER_GEOMETRY", fixed_step.diagnostics)
+        self.assertFalse(
+            any(
+                "30" in earlier.visible_occurrences
+                for earlier in plan.steps
+                if earlier.step_id != fixed_step.step_id
+                and earlier.source_bom_rows[0] < 9
+            )
+        )
 
     def test_same_bom_row_splits_only_when_native_directions_differ(self) -> None:
         bom, draft, mapping, graph = fixture()
@@ -612,8 +627,41 @@ class FormalRenderPlannerTests(unittest.TestCase):
         bolt_steps = [step for step in plan.steps if step.source_bom_rows == (5,)]
         self.assertEqual(len(bolt_steps), 2)
         self.assertEqual(
+            [step.step_id for step in bolt_steps],
+            sorted(step.step_id for step in bolt_steps),
+        )
+        self.assertEqual(
             {step.receiver_occurrences for step in bolt_steps},
             {("10/1",), ("10",)},
+        )
+
+    def test_lock_order_keeps_same_bom_groups_contiguous_and_numeric(self) -> None:
+        bom, draft, mapping, graph = fixture()
+        plan = compile_formal_render_plan(bom, draft, mapping, graph)
+        first = replace(
+            plan.steps[0],
+            step_id="process-001-row-0005-group-01",
+            source_bom_rows=(5,),
+            depends_on=(),
+        )
+        second = replace(
+            plan.steps[0],
+            step_id="process-001-row-0005-group-02",
+            source_bom_rows=(5,),
+            depends_on=(),
+        )
+        unrelated = replace(
+            plan.steps[0],
+            step_id="process-001-row-0006-group-01",
+            source_bom_rows=(6,),
+            depends_on=(),
+        )
+
+        ordered = _topologically_order([second, unrelated, first])
+
+        self.assertEqual(
+            [step.step_id for step in ordered],
+            [first.step_id, second.step_id, unrelated.step_id],
         )
 
     def test_fingerprint_and_complete_states_are_deterministic(self) -> None:
@@ -723,13 +771,28 @@ class FormalRenderPlannerTests(unittest.TestCase):
             "native_receiver_surface_fit/v1",
         )
         self.assertEqual(
+            task.payload["presentation"]["schema_version"],
+            "square-crop-presentation/v1",
+        )
+        self.assertEqual(task.payload["presentation"]["final_frame"], [1600, 1600])
+        self.assertEqual(
+            task.payload["presentation"]["source_policy"],
+            "native_viewport_overscan/v1",
+        )
+        self.assertEqual(
+            task.payload["presentation"]["crop_policy"],
+            "fixed_center_square/v1",
+        )
+        self.assertTrue(task.payload["presentation"]["padding_forbidden"])
+        self.assertTrue(task.payload["presentation"]["stretching_forbidden"])
+        self.assertEqual(
             task.payload["presentation"]["native_selected_fit"],
             {
                 "schema_version": "native-selected-fit/v2",
                 "command": "ProCmdZoomIntoOutline",
                 "selection_scope": "moving_occurrences_and_receiver_surfaces/v1",
                 "coordinate_adjustment": "none_native_surface_fit/v1",
-                "zoom_to_selected_level": 0.95,
+                "zoom_to_selected_level": 0.70,
                 "level_policy": "fixed_native_selection_margin/v1",
                 "max_commands_per_render": 1,
                 "manual_pan_zoom_forbidden": True,
@@ -816,7 +879,7 @@ class FormalRenderPlannerTests(unittest.TestCase):
             task.payload["presentation"]["center_gate"],
             {
                 "schema_version": "native-composition-center-gate/v1",
-                "target_pixel": [800, 800],
+                "target_policy": "native_frame_center/v1",
                 "max_activity_center_offset_pixels": 400,
                 "max_arrow_center_offset_pixels": 400,
             },

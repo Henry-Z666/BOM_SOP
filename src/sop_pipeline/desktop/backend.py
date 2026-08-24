@@ -64,6 +64,14 @@ class SubprocessAgentBackend:
             "resolve", {"run_id": run_id, "resolution": resolution}
         )
 
+    def resolve_batch(
+        self, run_id: str, resolutions: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        return self._call(
+            "resolve-batch",
+            {"run_id": run_id, "resolutions": [dict(item) for item in resolutions]},
+        )
+
     def resume(self, run_id: str) -> dict[str, Any]:
         return self._call("resume", {"run_id": run_id})
 

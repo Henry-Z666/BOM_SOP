@@ -10,6 +10,7 @@ import sys
 from PySide6.QtCore import QObject, QSettings, Signal, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -410,13 +411,16 @@ class MainWindow(QMainWindow):
         body = QHBoxLayout()
         self.candidate_gallery = QListWidget()
         self.candidate_gallery.setMinimumWidth(300)
+        self.candidate_gallery.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.candidate_gallery.itemClicked.connect(self._candidate_clicked)
         body.addWidget(self.candidate_gallery, 1)
         preview_column = QVBoxLayout()
         self.review_preview = QLabel("请选择左侧待确认步骤")
         self.review_preview.setAlignment(Qt.AlignCenter)
         self.review_preview.setMinimumSize(480, 300)
-        self.review_preview.setStyleSheet("border: 1px solid #666; background: #111;")
+        self.review_preview.setStyleSheet(
+            "border: 1px solid #666; background: #e7e9ee;"
+        )
         preview_column.addWidget(self.review_preview, 1)
         self.review_reason = QLabel("选中后显示检查结果。")
         self.review_reason.setWordWrap(True)
@@ -478,11 +482,23 @@ class MainWindow(QMainWindow):
         self.instruct_button = QPushButton("等待结构化几何证据")
         self.instruct_button.setEnabled(False)
         self.instruct_button.clicked.connect(self._resolve_instruction)
+        self.batch_accept_button = QPushButton("批量采用选中项")
+        self.batch_accept_button.setEnabled(False)
+        self.batch_accept_button.clicked.connect(self._resolve_selected_candidates)
+        self.batch_rerender_button = QPushButton("批量重新生成选中项")
+        self.batch_rerender_button.setEnabled(False)
+        self.batch_rerender_button.clicked.connect(self._resolve_selected_instructions)
+        self.batch_skip_button = QPushButton("跳过选中项（不进入SOP）")
+        self.batch_skip_button.setEnabled(False)
+        self.batch_skip_button.clicked.connect(self._skip_selected_steps)
         self.open_delivery_button = QPushButton("打开交付目录")
         self.open_delivery_button.clicked.connect(self._open_delivery_directory)
         actions.addWidget(back)
         actions.addWidget(self.choose_candidate_button)
         actions.addWidget(self.instruct_button)
+        actions.addWidget(self.batch_accept_button)
+        actions.addWidget(self.batch_rerender_button)
+        actions.addWidget(self.batch_skip_button)
         actions.addWidget(self.open_delivery_button)
         layout.addLayout(actions)
         self.current_review_item: dict | None = None
@@ -606,7 +622,8 @@ class MainWindow(QMainWindow):
             self.progress_detail.setText(
                 f"交付结果：{outcome.get('delivery_directory', '')}"
             )
-            self.review_button.setEnabled(False)
+            self._load_candidate_gallery(outcome)
+            self.review_button.setEnabled(bool(self.candidate_gallery.count()))
         else:
             self.progress_title.setText("部分几何事实需要确认")
             self.progress_detail.setText(
@@ -635,6 +652,9 @@ class MainWindow(QMainWindow):
         self._load_guided_form(None)
         self.choose_candidate_button.setEnabled(False)
         self.instruct_button.setEnabled(False)
+        self.batch_accept_button.setEnabled(False)
+        self.batch_rerender_button.setEnabled(False)
+        self.batch_skip_button.setEnabled(False)
         if not self.current_run_id:
             self.review_guidance.setText("当前没有可处理的任务。")
             return
@@ -770,6 +790,18 @@ class MainWindow(QMainWindow):
                 "当前步骤缺少可安全重写的基础几何；请修复 BOM/Creo 事实。"
             )
             self.instruct_button.setEnabled(False)
+        selected = self._selected_review_entries()
+        self.batch_accept_button.setEnabled(
+            any(
+                entry.get("kind") in {"candidate", "current", "failed_image"}
+                for entry in selected
+            )
+        )
+        self.batch_rerender_button.setEnabled(
+            bool(selected)
+            and all(isinstance(entry.get("guided_form"), dict) for entry in selected)
+        )
+        self.batch_skip_button.setEnabled(bool(selected))
 
     def _load_guided_form(self, value: object) -> None:
         while self.guided_form_layout.rowCount() > 2:
@@ -908,6 +940,135 @@ class MainWindow(QMainWindow):
                     str(entry.get("candidate_id", "")),
                 )
             )
+
+    def _selected_review_entries(self) -> list[dict]:
+        result: list[dict] = []
+        seen: set[str] = set()
+        for item in self.candidate_gallery.selectedItems():
+            entry = dict(item.data(Qt.UserRole) or {})
+            step_id = str(entry.get("step_id", ""))
+            if step_id and step_id not in seen:
+                result.append(entry)
+                seen.add(step_id)
+        return result
+
+    def _resolve_selected_candidates(self) -> None:
+        entries = [
+            entry
+            for entry in self._selected_review_entries()
+            if entry.get("kind") in {"candidate", "current", "failed_image"}
+        ]
+        if not self.current_run_id or not entries:
+            self._show_error("请至少多选一项可采用的真实图片。")
+            return
+        resolutions: list[dict[str, object]] = []
+        reason = self.review_instruction.toPlainText().strip()
+        for entry in entries:
+            if entry.get("kind") == "failed_image":
+                resolutions.append(
+                    {
+                        "step_id": str(entry["step_id"]),
+                        "action": "accept_with_override",
+                        "metadata": {"acknowledged": True, "reason": reason},
+                    }
+                )
+            else:
+                resolutions.append(
+                    {
+                        "step_id": str(entry["step_id"]),
+                        "candidate_id": str(entry.get("candidate_id", "")),
+                    }
+                )
+        self._start_batch_resolution(
+            resolutions,
+            f"正在批量采用 {len(resolutions)} 个步骤……",
+        )
+
+    def _resolve_selected_instructions(self) -> None:
+        entries = self._selected_review_entries()
+        if not self.current_run_id or not entries:
+            self._show_error("请至少多选一个需要重新生成的步骤。")
+            return
+        if self.current_guided_form is None:
+            self._show_error("请先点选其中一项并选择统一的重新生成方式。")
+            return
+        field_names = set(self._guided_values())
+        for entry in entries:
+            form = entry.get("guided_form")
+            names = {
+                str(field.get("name"))
+                for field in form.get("fields", [])
+                if isinstance(field, dict)
+            } if isinstance(form, dict) else set()
+            if names != field_names:
+                self._show_error("所选步骤的问题类型不同，不能使用同一组参数批量生成。")
+                return
+        values = self._guided_values()
+        if not values or any(not value for value in values.values()):
+            self._show_error("请填写全部关键信息后再批量生成。")
+            return
+        resolutions: list[dict[str, object]] = []
+        for entry in entries:
+            form = dict(entry["guided_form"])
+            template = str(form.get("sentence_template") or "")
+            instruction = template.format(**values)
+            resolutions.append(
+                {
+                    "step_id": str(entry["step_id"]),
+                    "instruction": instruction,
+                    "metadata": {"structured_inputs": dict(values)},
+                }
+            )
+        self._start_batch_resolution(
+            resolutions,
+            f"正在批量重新生成 {len(resolutions)} 个步骤……",
+        )
+
+    def _skip_selected_steps(self) -> None:
+        entries = self._selected_review_entries()
+        if not self.current_run_id or not entries:
+            self._show_error("请至少选择一个本次不进入 SOP 的步骤。")
+            return
+        answer = QMessageBox.question(
+            self,
+            "确认跳过步骤",
+            f"将跳过 {len(entries)} 个步骤并出版其余步骤。"
+            "这些步骤仍会保留在审核列表中，可稍后重新生成。是否继续？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        reason = self.review_instruction.toPlainText().strip()
+        resolutions = [
+            {
+                "step_id": str(entry["step_id"]),
+                "action": "skip_from_publication",
+                "metadata": {"acknowledged": True, "reason": reason},
+            }
+            for entry in entries
+        ]
+        self._start_batch_resolution(
+            resolutions,
+            f"正在跳过 {len(resolutions)} 个步骤并一次性更新 SOP……",
+        )
+
+    def _start_batch_resolution(
+        self,
+        resolutions: list[dict[str, object]],
+        message: str,
+    ) -> None:
+        self.progress_previous_page = self.review_page
+        self._set_operation_active(True)
+        self.choose_candidate_button.setEnabled(False)
+        self.instruct_button.setEnabled(False)
+        self.batch_accept_button.setEnabled(False)
+        self.batch_rerender_button.setEnabled(False)
+        self.batch_skip_button.setEnabled(False)
+        self.review_guidance.setText(message)
+        self.bridge.succeeded.connect(self._resolution_ready, Qt.SingleShotConnection)
+        self.progress_timer.start()
+        self.bridge.watch(self.service.resolve_batch(self.current_run_id, resolutions))
 
     def _resolve_instruction(self) -> None:
         entry = self.current_review_item or {}

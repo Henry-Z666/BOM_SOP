@@ -311,7 +311,7 @@ def apply_camera_selection(
         **deepcopy(dict(catalog[selected_id])),
         "zoom": 1.0,
         "pan": [0.0, 0.0],
-        "frame": "square",
+        "frame": "native_graphics_area",
     }
     payload["presentation"] = locked_presentation
     payload["camera_selection"] = decision.to_dict()

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from hashlib import sha256
 import json
 import math
@@ -66,6 +66,9 @@ class FormalRenderStep:
     complete_state_hash: str
     status: str
     diagnostics: tuple[str, ...] = ()
+    occurrence_translation_vectors_root: dict[
+        str, tuple[float, float, float]
+    ] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -123,7 +126,6 @@ def compile_formal_render_plan(
 
     camera_basis = _camera_basis(graph)
     process_by_row = _process_index(draft_plan)
-    descendant_rows = _descendant_rows(mapping.rows)
     occurrence_owner = _occurrence_owner(mapping.rows)
     diagnostics: list[PlanningDiagnostic] = []
     if camera_basis.get("calibration", {}).get("fallback"):
@@ -173,6 +175,13 @@ def compile_formal_render_plan(
             continue
 
         fixed_scope = _fixed_scope_parent(mapped, constraints)
+        # A FIX constraint proves final placement, not process chronology.
+        # Only the first BOM root child is the assembly foundation.  Promoting
+        # any later root-fixed component to initial context leaks future parts
+        # into every earlier ROOT-scoped image and makes exact visibility
+        # rebuilding incapable of hiding them.
+        if fixed_scope == "ROOT":
+            fixed_scope = None
         if fixed_scope is not None and fixed_scope != "ROOT":
             for occurrence_id in mapped.occurrence_ids:
                 scope_bases.setdefault(fixed_scope, set()).add(occurrence_id)
@@ -195,7 +204,8 @@ def compile_formal_render_plan(
             for occurrence_id, item in evidence.items()
             if item is None
         )
-        grouped: dict[tuple[int, int, str], list[_OccurrenceEvidence]] = {}
+        grouped: dict[tuple[int | str, int, str], list[_OccurrenceEvidence]] = {}
+        row_role = physical_role(row.name)
         for item in proven:
             face = classify_receiver_face(item.outward_normal, camera_basis)
             # Repeated identical BOM items belong in one image when their
@@ -204,12 +214,18 @@ def compile_formal_render_plan(
             # a presentation grouping rather than a loss of geometry evidence.
             receiver_layer = (
                 _nearest_occurrence_owner(item.receiver_id, occurrence_owner)
-                if physical_role(row.name) == "seal"
+                if row_role == "seal"
                 else "shared-presentation-layer"
             )
+            # Repeated parts from one BOM row are one installation action when
+            # their insertion axes are parallel.  The group resolves one
+            # common signed direction; a single noisy/opposite surface sign
+            # must not split the step or reverse one fastener.  Seals keep
+            # signed-face grouping because opposite interfaces are distinct
+            # seal layers.
             key = (
-                int(face["face_id"]),
-                int(face["sign"]),
+                int(face["face_id"]) if row_role == "seal" else str(face["axis"]),
+                int(face["sign"]) if row_role == "seal" else 0,
                 receiver_layer,
             )
             grouped.setdefault(key, []).append(item)
@@ -230,7 +246,7 @@ def compile_formal_render_plan(
                 nodes=nodes,
                 display_distance=_display_distance(nodes),
             )
-            rank = max(descendant_rows.get(mapped.bom_row, (mapped.bom_row,)))
+            rank = mapped.bom_row
             raw_steps.append(((rank, 1 if _mapped_assembly(mapped, nodes) else 0, mapped.bom_row), step))
 
         if missing:
@@ -267,7 +283,7 @@ def compile_formal_render_plan(
                 status="questioned",
                 diagnostics=("NO_NATIVE_RECEIVER_GEOMETRY",),
             )
-            rank = max(descendant_rows.get(mapped.bom_row, (mapped.bom_row,)))
+            rank = mapped.bom_row
             raw_steps.append(((rank, 1 if _mapped_assembly(mapped, nodes) else 0, mapped.bom_row), step))
             diagnostics.append(
                 PlanningDiagnostic(
@@ -481,6 +497,17 @@ def formal_render_plan_from_dict(payload: dict[str, Any]) -> FormalRenderPlan:
                     "affected_descendants": tuple(item["affected_descendants"]),
                     "state_delta": tuple(item["state_delta"]),
                     "diagnostics": tuple(item.get("diagnostics", ())),
+                    "occurrence_translation_vectors_root": {
+                        str(occurrence): tuple(float(value) for value in vector)
+                        for occurrence, vector in item.get(
+                            "occurrence_translation_vectors_root",
+                            {
+                                occurrence: item.get("translation_vector_root")
+                                for occurrence in item.get("moving_occurrences", ())
+                                if item.get("translation_vector_root") is not None
+                            },
+                        ).items()
+                    },
                 }
             )
             for item in payload["steps"]
@@ -541,26 +568,6 @@ def _process_index(draft_plan: DraftPlan) -> dict[int, str]:
         for row in step.source_bom_rows:
             result.setdefault(int(row), step.main_process_id)
     return result
-
-
-def _children_by_parent(rows: tuple[BomOccurrenceMapping, ...]) -> dict[int, list[BomOccurrenceMapping]]:
-    result: dict[int, list[BomOccurrenceMapping]] = {}
-    for row in sorted(rows, key=lambda item: item.bom_row):
-        if row.parent_bom_row is not None and row.status == "matched":
-            result.setdefault(row.parent_bom_row, []).append(row)
-    return result
-
-
-def _descendant_rows(rows: tuple[BomOccurrenceMapping, ...]) -> dict[int, tuple[int, ...]]:
-    by_parent = _children_by_parent(rows)
-
-    def collect(row_number: int) -> tuple[int, ...]:
-        result = [row_number]
-        for child in by_parent.get(row_number, ()):
-            result.extend(collect(child.bom_row))
-        return tuple(result)
-
-    return {row.bom_row: collect(row.bom_row) for row in rows}
 
 
 def _fixed_to_parent(
@@ -751,12 +758,19 @@ def _proven_step(
         )
     )
     if normal is None:
-        raise ValueError("同组 occurrence 的接收面法向相互抵消")
+        # An exact tie is possible because Creo surface directions are
+        # unsigned.  Occurrence ordering is stable, so the first measured axis
+        # supplies a deterministic common sign for the whole BOM-row action.
+        normal = members[0].outward_normal
     point = tuple(
         sum(item.receiver_point[index] for item in members) / len(members)
         for index in range(3)
     )
     translation = tuple(round(value * display_distance, 6) for value in normal)
+    occurrence_translations = {
+        item.occurrence_id: translation
+        for item in members
+    }
     face = classify_receiver_face(normal, camera_basis)
     camera = generate_camera_candidates(camera_basis, face, translation)[0]
     moving = tuple(sorted((item.occurrence_id for item in members), key=_path_key))
@@ -825,6 +839,7 @@ def _proven_step(
         complete_state_hash="",
         status="questioned" if step_diagnostics else "ready",
         diagnostics=step_diagnostics,
+        occurrence_translation_vectors_root=occurrence_translations,
     )
 
 
@@ -943,6 +958,18 @@ def _topologically_order(steps: list[FormalRenderStep]) -> list[FormalRenderStep
 
     by_id = {step.step_id: step for step in steps}
     original_index = {step.step_id: index for index, step in enumerate(steps)}
+    row_cluster_index: dict[tuple[int, ...], int] = {}
+    for index, step in enumerate(steps):
+        row_cluster_index.setdefault(step.source_bom_rows, index)
+
+    def priority(step_id: str) -> tuple[int, str, int]:
+        step = by_id[step_id]
+        return (
+            row_cluster_index[step.source_bom_rows],
+            step.step_id,
+            original_index[step_id],
+        )
+
     remaining = {
         step.step_id: {item for item in step.depends_on if item in by_id}
         for step in steps
@@ -953,7 +980,7 @@ def _topologically_order(steps: list[FormalRenderStep]) -> list[FormalRenderStep
             children[dependency].add(step_id)
     ready = sorted(
         (step_id for step_id, dependencies in remaining.items() if not dependencies),
-        key=lambda step_id: (original_index[step_id], step_id),
+        key=priority,
     )
     ordered: list[FormalRenderStep] = []
     emitted: set[str] = set()
@@ -961,11 +988,11 @@ def _topologically_order(steps: list[FormalRenderStep]) -> list[FormalRenderStep
         step_id = ready.pop(0)
         ordered.append(by_id[step_id])
         emitted.add(step_id)
-        for child in sorted(children[step_id], key=lambda value: (original_index[value], value)):
+        for child in sorted(children[step_id], key=priority):
             remaining[child].discard(step_id)
             if not remaining[child] and child not in emitted and child not in ready:
                 ready.append(child)
-        ready.sort(key=lambda value: (original_index[value], value))
+        ready.sort(key=priority)
     if len(ordered) != len(steps):
         cycle = sorted(step_id for step_id, dependencies in remaining.items() if dependencies)
         raise ValueError("正式规划依赖图存在循环：" + ", ".join(cycle[:20]))
@@ -1250,6 +1277,28 @@ def _lock_stage_explosion_modes(
         distance = math.sqrt(
             sum(value * value for value in step.translation_vector_root)
         )
+        translations = step.occurrence_translation_vectors_root or {
+            occurrence: step.translation_vector_root
+            for occurrence in step.moving_occurrences
+        }
+        directions = {
+            tuple(round(value / magnitude, 9) for value in translation)
+            for translation in translations.values()
+            if (
+                magnitude := math.sqrt(
+                    sum(value * value for value in translation)
+                )
+            )
+            > 1e-9
+        }
+
+        # A repeated fastener group may legitimately need opposite signed
+        # clearance vectors at different interfaces.  It still represents one
+        # BOM installation action, so retain those per-occurrence translations
+        # instead of replacing the whole group with one presentation vector.
+        if len(directions) > 1:
+            result.append(step)
+            continue
         selection = select_display_translation(
             step.receiver_normal_root,
             distance,
@@ -1257,13 +1306,30 @@ def _lock_stage_explosion_modes(
             context_bounds,
             [anchor.complete_point_root for anchor in step.arrow_anchors],
         )
+        selected_translation = tuple(
+            float(value) for value in selection["translation_vector_root"]
+        )
+        selected_distance = math.sqrt(
+            sum(value * value for value in selected_translation)
+        )
+        occurrence_translations = {
+            occurrence: tuple(
+                value
+                * (
+                    math.sqrt(sum(component * component for component in original))
+                    / selected_distance
+                    if selected_distance > 1e-9
+                    else 1.0
+                )
+                for value in selected_translation
+            )
+            for occurrence, original in translations.items()
+        }
         result.append(
             replace(
                 step,
-                translation_vector_root=tuple(
-                    float(value)
-                    for value in selection["translation_vector_root"]
-                ),
+                translation_vector_root=selected_translation,
+                occurrence_translation_vectors_root=occurrence_translations,
             )
         )
     return result

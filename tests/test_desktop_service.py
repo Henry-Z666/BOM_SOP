@@ -40,6 +40,10 @@ class FakeBackend:
         self.calls.append(("resolve", run_id, resolution))
         return {"run_id": run_id, "status": "COMPLETED"}
 
+    def resolve_batch(self, run_id, resolutions):
+        self.calls.append(("resolve_batch", run_id, resolutions))
+        return {"run_id": run_id, "status": "COMPLETED"}
+
     def resume(self, run_id):
         self.calls.append(("resume", run_id))
         return {"run_id": run_id, "status": "GENERATING"}
@@ -117,6 +121,32 @@ class DesktopAgentServiceTests(unittest.TestCase):
         self.assertEqual(resolution["action"], "accept_with_override")
         self.assertTrue(resolution["metadata"]["acknowledged"])
         self.assertEqual(resolution["metadata"]["reason"], "现场确认采用原图")
+
+    def test_batch_resolution_uses_one_backend_transaction(self) -> None:
+        backend = FakeBackend()
+        service = DesktopAgentService(backend)
+
+        outcome = service.resolve_batch(
+            "run-1",
+            [
+                {"step_id": "step-2", "candidate_id": "candidate-a"},
+                {
+                    "step_id": "step-3",
+                    "instruction": "按所选问题重写渲染任务并重新生成当前步骤",
+                    "metadata": {
+                        "structured_inputs": {"rerender_option": "normal_explosion"}
+                    },
+                },
+            ],
+        ).result(timeout=2)
+        service.close()
+
+        self.assertEqual(outcome["status"], "COMPLETED")
+        self.assertEqual([call[0] for call in backend.calls], ["resolve_batch"])
+        self.assertEqual(
+            [item["step_id"] for item in backend.calls[0][2]],
+            ["step-2", "step-3"],
+        )
 
     def test_pause_is_forwarded_to_the_independent_backend_process(self) -> None:
         backend = FakeBackend()

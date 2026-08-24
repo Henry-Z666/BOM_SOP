@@ -92,6 +92,11 @@ def review_packet(workspace: Path, run_id: str) -> dict[str, Any]:
         for step in publication.get("steps", [])
         if isinstance(step, dict)
     }
+    published_steps = {
+        str(step.get("step_id")): step
+        for step in publication.get("steps", [])
+        if isinstance(step, dict)
+    }
     items: list[dict[str, Any]] = []
     candidate_count = 0
     for validation_index, step in enumerate(validation.get("steps", []), start=1):
@@ -113,8 +118,7 @@ def review_packet(workspace: Path, run_id: str) -> dict[str, Any]:
         effective_status = published_status.get(
             step_id, str(step.get("status", ""))
         )
-        if effective_status == "PASSED":
-            continue
+        is_passed = effective_status == "PASSED"
         issues = [str(issue) for issue in step.get("issues", []) if str(issue).strip()]
         for failure in step.get("failures", []):
             if not isinstance(failure, dict):
@@ -143,6 +147,42 @@ def review_packet(workspace: Path, run_id: str) -> dict[str, Any]:
                 plan_contracts.get(step_id, {})
             ),
         }
+        if is_passed:
+            passed_image = str(review_contract["image_path"])
+            was_skipped = (
+                str(
+                    published_steps.get(step_id, {}).get("human_disposition", "")
+                )
+                == "skip_from_publication"
+            )
+            items.append(
+                {
+                    "kind": "skipped" if was_skipped else "passed",
+                    "step_id": step_id,
+                    "step_number": step_number,
+                    "step_title": title,
+                    "source_bom_rows": source_bom_rows,
+                    "error_code": error_code,
+                    "error_message": error_message,
+                    **diagnostics,
+                    "candidate_id": "",
+                    "recommended": False,
+                    "image_path": passed_image,
+                    **review_fields,
+                    "issues": [
+                        "本次已跳过、未写入 SOP；可随时选择问题重新生成。"
+                        if was_skipped
+                        else "机器校验已通过；如仍不满意，可再次选择问题重新生成。"
+                    ],
+                    "label": (
+                        f"{display_name} · 已跳过（可再次生成）"
+                        if was_skipped
+                        else f"{display_name} · 已通过（可再次生成）"
+                    ),
+                }
+            )
+            candidate_count += 1
+            continue
         selected_group = groups.get(step_id, {})
         group_candidates = (
             selected_group.get("candidates", [])

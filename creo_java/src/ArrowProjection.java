@@ -166,10 +166,13 @@ public final class ArrowProjection {
   private static double pointSegmentDistance(double[] p,double[] a,double[] b){double[] ab=sub(b,a);double d=dot(ab,ab);double t=d<1e-12?0:Math.max(0,Math.min(1,dot(sub(p,a),ab)/d));return norm(sub(p,add(a,mul(ab,t))));}
   private static double segmentDistance(double[] a,double[] b,double[] c,double[] d){return Math.min(Math.min(pointSegmentDistance(a,c,d),pointSegmentDistance(b,c,d)),Math.min(pointSegmentDistance(c,a,b),pointSegmentDistance(d,a,b)));}
 
-  public static Result layout(Assembly root,List<MovingOccurrence> moving,double[] translationRoot) throws jxthrowable {
+  public static Result layout(Assembly root,List<MovingOccurrence> moving,Map<String,double[]> translationsRoot) throws jxthrowable {
     Transform3D view=root.GetCurrentViewTransform(); double[] right=column(view,0),up=column(view,1),back=column(view,2);
     moving.sort(Comparator.comparing(m->m.id)); List<Arrow> selected=new ArrayList<>();
     for(MovingOccurrence occurrence:moving){
+      double[] translationRoot=translationsRoot.get(occurrence.id);
+      if(translationRoot==null||translationRoot.length!=3)
+        throw new IllegalArgumentException("missing occurrence translation="+occurrence.id);
       List<Arrow> choices=new ArrayList<>();
       for(Candidate anchor:occurrence.candidates){
         // Do not manufacture the exploded endpoint from the contract vector.
@@ -186,7 +189,12 @@ public final class ArrowProjection {
       Arrow accepted=null; Arrow conflict=null;
       for(Arrow choice:choices){boolean clear=true;for(Arrow prior:selected){double threshold=Math.max(2.0,Math.min(norm(sub(choice.complete2,choice.exploded2)),norm(sub(prior.complete2,prior.exploded2)))*0.06);if(segmentDistance(choice.exploded2,choice.complete2,prior.exploded2,prior.complete2)<threshold){clear=false;conflict=prior;break;}}if(clear){accepted=choice;break;}}
       if(accepted!=null) selected.add(accepted);
-      else if(conflict!=null) conflict.covered.add(occurrence.id);
+      else if(conflict!=null) {
+        double[] conflictVector=sub(conflict.exploded,conflict.complete);
+        if(norm(sub(conflictVector,translationRoot))>1.0e-5)
+          throw new IllegalStateException("arrow_layout_conflict_has_different_translation occurrence="+occurrence.id);
+        conflict.covered.add(occurrence.id);
+      }
       else throw new IllegalStateException("arrow_layout_failed occurrence="+occurrence.id);
     }
     return new Result(selected,right,up,back);

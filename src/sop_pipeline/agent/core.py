@@ -272,7 +272,11 @@ class AgentCore:
         )
         self._store.transition(
             run.run_id,
-            expected={RunStatus.GENERATING, RunStatus.NEEDS_REVIEW},
+            expected={
+                RunStatus.GENERATING,
+                RunStatus.NEEDS_REVIEW,
+                RunStatus.COMPLETED,
+            },
             status=status,
             updated_at=self._now(),
         )
@@ -338,8 +342,8 @@ class AgentCore:
 
     def resolve(self, run_id: str, resolution: StepResolution) -> RunOutcome:
         run = self._store.get(run_id)
-        if run.status is not RunStatus.NEEDS_REVIEW:
-            raise ValueError("只有 NEEDS_REVIEW 状态可以提交释疑")
+        if run.status not in {RunStatus.NEEDS_REVIEW, RunStatus.COMPLETED}:
+            raise ValueError("只有待审核或已完成任务可以处理步骤图片")
         supplied = sum(
             bool(value)
             for value in (
@@ -354,7 +358,10 @@ class AgentCore:
         target = next((step for step in before if step.step_id == resolution.step_id), None)
         if target is None:
             raise ValueError(f"找不到待释疑步骤：{resolution.step_id}")
-        if target.status not in {StepStatus.QUESTIONED, StepStatus.FAILED}:
+        allowed_statuses = {StepStatus.QUESTIONED, StepStatus.FAILED}
+        if resolution.instruction or resolution.action == "skip_from_publication":
+            allowed_statuses.add(StepStatus.PASSED)
+        if target.status not in allowed_statuses:
             raise ValueError(f"步骤 {resolution.step_id} 当前不需要释疑")
         affected = self._affected_steps(before, resolution.step_id)
         result = self._require_workflow().resolve(run, resolution)
@@ -372,6 +379,72 @@ class AgentCore:
             result,
             artifact_kind="resolution-result",
             artifact_path=f"results/resolution-{resolution.step_id}-{suffix}.json",
+        )
+
+    def resolve_batch(
+        self,
+        run_id: str,
+        resolutions: tuple[StepResolution, ...],
+    ) -> RunOutcome:
+        run = self._store.get(run_id)
+        if run.status not in {RunStatus.NEEDS_REVIEW, RunStatus.COMPLETED}:
+            raise ValueError("只有待审核或已完成任务可以批量处理步骤图片")
+        if not resolutions:
+            raise ValueError("批量处理至少需要一个步骤")
+        step_ids = [resolution.step_id for resolution in resolutions]
+        if len(step_ids) != len(set(step_ids)):
+            raise ValueError("同一批处理中不能重复提交同一个步骤")
+        before = self._store.list_steps(run_id)
+        by_step = {step.step_id: step for step in before}
+        affected: set[str] = set()
+        for resolution in resolutions:
+            supplied = sum(
+                bool(value)
+                for value in (
+                    resolution.candidate_id,
+                    resolution.instruction,
+                    resolution.action,
+                )
+            )
+            if supplied != 1:
+                raise ValueError(
+                    f"步骤 {resolution.step_id} 必须且只能提供一种处理决定"
+                )
+            target = by_step.get(resolution.step_id)
+            if target is None:
+                raise ValueError(f"找不到待处理步骤：{resolution.step_id}")
+            allowed_statuses = {StepStatus.QUESTIONED, StepStatus.FAILED}
+            if (
+                resolution.instruction
+                or resolution.action == "skip_from_publication"
+            ):
+                allowed_statuses.add(StepStatus.PASSED)
+            if target.status not in allowed_statuses:
+                raise ValueError(f"步骤 {resolution.step_id} 当前不需要处理")
+            affected.update(self._affected_steps(before, resolution.step_id))
+
+        workflow = self._require_workflow()
+        batch_resolver = getattr(workflow, "resolve_batch", None)
+        if batch_resolver is None:
+            raise RuntimeError("当前工作流不支持原子批量处理")
+        result = batch_resolver(run, resolutions)
+        self._assert_unaffected_unchanged(before, result.steps, affected)
+        suffix = uuid4().hex[:12]
+        self._artifacts.write_json(
+            run_id=run_id,
+            run_workspace=run.workspace,
+            kind="step-resolution-batch",
+            relative_path=f"resolutions/batch-{suffix}.json",
+            value={
+                "schema_version": "step-resolution-batch/v1",
+                "resolutions": resolutions,
+            },
+        )
+        return self._finish_generation(
+            run,
+            result,
+            artifact_kind="resolution-batch-result",
+            artifact_path=f"results/resolution-batch-{suffix}.json",
         )
 
     def resume(self, run_id: str) -> RunOutcome:

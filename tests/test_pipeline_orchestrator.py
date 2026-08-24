@@ -4,15 +4,18 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 from PIL import Image
 
 from sop_pipeline.agent import (
     AgentCore,
+    GenerationResult,
     PipelineOrchestrator,
     RenderAttempt,
     RunStatus,
+    RunRecord,
     SkillPipelineError,
     StepResolution,
     StepResult,
@@ -224,6 +227,94 @@ def _weak_direction_fixture(root: Path):
 
 
 class PipelineOrchestratorTests(unittest.TestCase):
+    def test_batch_rerender_compiles_renders_validates_and_publishes_once(self) -> None:
+        steps = (
+            StepResult(
+                "step-1", "process-1", StepStatus.QUESTIONED, (), "state-1", "image-1"
+            ),
+            StepResult(
+                "step-2", "process-1", StepStatus.QUESTIONED, (), "state-2", "image-2"
+            ),
+        )
+
+        class FakeArtifacts:
+            def __init__(self) -> None:
+                self.values: dict[str, dict] = {}
+
+            def read_json(self, _workspace: Path, reference: str) -> dict:
+                return self.values[reference]
+
+        class SpyOrchestrator(PipelineOrchestrator):
+            def __init__(self) -> None:
+                super().__init__()
+                self.calls: list[tuple[str, tuple[str, ...], dict]] = []
+                self.next_revision = 0
+                self.fake_artifacts = FakeArtifacts()
+                self.runtime = SimpleNamespace(
+                    store=SimpleNamespace(list_steps=lambda _run_id: steps),
+                    artifacts=self.fake_artifacts,
+                )
+
+            def _next_step_revision(self, _run: RunRecord) -> int:
+                self.next_revision += 1
+                return self.next_revision
+
+            def _run(self, _run_id, skill, refs=(), parameters=None):
+                parameters = dict(parameters or {})
+                self.calls.append((skill, tuple(refs), parameters))
+                if skill != "resolve-step":
+                    return SimpleNamespace(artifacts=())
+                revision = int(parameters["revision"])
+                step_id = str(parameters["step_id"])
+                revision_ref = f"revisions/step-revision-{revision:04d}.json"
+                invalidation_ref = f"revisions/invalidation-set-{revision:04d}.json"
+                self.fake_artifacts.values[revision_ref] = {
+                    "step_id": step_id,
+                    "changes": {"rerender_option": "normal_explosion"},
+                }
+                self.fake_artifacts.values[invalidation_ref] = {"steps": [step_id]}
+                return SimpleNamespace(
+                    artifacts=(
+                        SimpleNamespace(kind="step-revision", relative_path=revision_ref),
+                        SimpleNamespace(
+                            kind="invalidation-set", relative_path=invalidation_ref
+                        ),
+                    )
+                )
+
+            def _generation_result(self, run: RunRecord) -> GenerationResult:
+                return GenerationResult(steps, run.workspace / "delivery")
+
+        with tempfile.TemporaryDirectory() as folder:
+            run = RunRecord(
+                run_id="run-1",
+                bom_file=Path(folder) / "BOM.xlsx",
+                cad_directory=Path(folder) / "cad",
+                workspace=Path(folder) / "run-1",
+                status=RunStatus.NEEDS_REVIEW,
+                input_fingerprint="sha256:input",
+                plan_revision=1,
+                created_at="2026-08-24T00:00:00+00:00",
+                updated_at="2026-08-24T00:00:00+00:00",
+            )
+            orchestrator = SpyOrchestrator()
+            orchestrator.resolve_batch(
+                run,
+                (
+                    StepResolution("step-1", instruction="按法向重新生成"),
+                    StepResolution("step-2", instruction="按法向重新生成"),
+                ),
+            )
+
+        call_names = [call[0] for call in orchestrator.calls]
+        self.assertEqual(call_names.count("resolve-step"), 2)
+        self.assertEqual(call_names.count("compile-render-jobs"), 1)
+        self.assertEqual(call_names.count("render-batch"), 1)
+        self.assertEqual(call_names.count("validate-repair"), 1)
+        self.assertEqual(call_names.count("publish-delivery"), 1)
+        render_call = next(call for call in orchestrator.calls if call[0] == "render-batch")
+        self.assertEqual(render_call[2]["step_ids"], ["step-1", "step-2"])
+
     def test_unaffected_step_rejects_state_hash_drift(self) -> None:
         before = (
             StepResult(

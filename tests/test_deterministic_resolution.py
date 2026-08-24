@@ -212,7 +212,7 @@ class DeterministicResolutionTests(unittest.TestCase):
                 },
                 "moving_occurrences": ["2/1"],
                 "receiver_occurrences": ["1/1"],
-                "visible_occurrences": ["1/1", "1/2", "2/1"],
+                "visible_occurrences": ["1/1", "1/2", "2/1", "9/9"],
                 "constraint_ids": ["constraint:1"],
                 "arrow_anchors": [
                     {
@@ -285,9 +285,25 @@ class DeterministicResolutionTests(unittest.TestCase):
             {
                 "schema_version": "visibility-enforcement/v1",
                 "mode": "rebuild_exact_exclusions/v1",
-                "exact_visible_occurrences": ["1/1", "1/2", "2/1"],
+                "exact_visible_occurrences": ["1/1", "1/2", "2/1", "9/9"],
                 "revision": 2,
             },
+        )
+        future_cleaned = _apply_step_revision(
+            plan,
+            {
+                "revision": 2,
+                "step_id": "step-1",
+                "kind": "presentation",
+                "changes": {
+                    "rerender_option": "rebuild_exact_visibility",
+                    "excluded_future_occurrences": ["9/9"],
+                },
+            },
+        ).tasks[0]
+        self.assertEqual(
+            future_cleaned.payload["visible_occurrences"],
+            ["1/1", "1/2", "2/1"],
         )
 
         increased = revised("increase_explosion_distance")

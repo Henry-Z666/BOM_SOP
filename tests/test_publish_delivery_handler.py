@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 from PIL import Image
+from openpyxl import load_workbook
 
 from sop_pipeline.agent.artifacts import ArtifactStore
 from sop_pipeline.agent.models import (
@@ -14,6 +15,7 @@ from sop_pipeline.agent.models import (
     StepResult,
     StepStatus,
 )
+from sop_pipeline.agent.review import SKIP_PUBLICATION_CANDIDATE_ID
 from sop_pipeline.agent.skill_handlers import publish_delivery
 from sop_pipeline.agent.skill_registry import SkillInvocation
 from sop_pipeline.agent.skill_runtime import SkillContext
@@ -71,10 +73,18 @@ class PublishDeliveryHandlerTests(unittest.TestCase):
             workspace = root / "runs" / "run-1"
             rendered = workspace / "rendered"
             rendered.mkdir(parents=True)
-            for step_id, shade in (("step-1", 220), ("step-2", 200)):
+            for step_id, shade in (
+                ("step-1", 220),
+                ("step-2", 200),
+                ("step-3", 180),
+                ("step-3-revision-0001", 120),
+            ):
                 Image.new("RGB", (320, 240), (shade, shade, shade)).save(
                     rendered / f"{step_id}.jpg"
                 )
+            revised_step_3_hash = "sha256:" + sha256(
+                (rendered / "step-3-revision-0001.jpg").read_bytes()
+            ).hexdigest()
 
             store = RunStore(root / "agent.sqlite3")
             bom_file = root / "BOM.xlsx"
@@ -113,6 +123,14 @@ class PublishDeliveryHandlerTests(unittest.TestCase):
                         (),
                         "sha256:state-step-2",
                         None,
+                    ),
+                    StepResult(
+                        "step-3",
+                        "process-001",
+                        StepStatus.QUESTIONED,
+                        (),
+                        "sha256:state-step-3",
+                        revised_step_3_hash,
                     ),
                 ),
             )
@@ -160,6 +178,7 @@ class PublishDeliveryHandlerTests(unittest.TestCase):
                             _bom_row(1, "ROOT", "总装"),
                             _bom_row(2, "A", "零件A"),
                             _bom_row(3, "B", "零件B"),
+                            _bom_row(4, "C", "零件C"),
                         ],
                         "sheet_candidates": ["BOM"],
                     },
@@ -176,6 +195,7 @@ class PublishDeliveryHandlerTests(unittest.TestCase):
                         "steps": [
                             _formal_step("step-1", 2),
                             _formal_step("step-2", 3),
+                            _formal_step("step-3", 4),
                         ],
                         "diagnostics": [],
                         "ready_steps": 2,
@@ -202,6 +222,13 @@ class PublishDeliveryHandlerTests(unittest.TestCase):
                                 "complete_state_hash": "sha256:validated-state-step-2",
                                 "depends_on": [],
                             },
+                            {
+                                "step_id": "step-3",
+                                "status": "QUESTIONED",
+                                "image_path": "rendered/step-3.jpg",
+                                "complete_state_hash": "sha256:state-step-3",
+                                "depends_on": [],
+                            },
                         ]
                     },
                 ),
@@ -222,6 +249,12 @@ class PublishDeliveryHandlerTests(unittest.TestCase):
                                 "human_disposition": "accept_current_image",
                             },
                             {"step_id": "step-2", "status": "QUESTIONED"},
+                            {
+                                "step_id": "step-3",
+                                "status": "QUESTIONED",
+                                "image_path": "rendered/step-3-revision-0001.jpg",
+                                "output_hash": revised_step_3_hash,
+                            },
                         ]
                     },
                 ),
@@ -229,6 +262,31 @@ class PublishDeliveryHandlerTests(unittest.TestCase):
                     "invalidation-set",
                     "revisions/invalidation-set-0002.json",
                     {"steps": ["step-2"]},
+                ),
+                write(
+                    "step-revision",
+                    "revisions/step-revision-0002.json",
+                    {
+                        "schema_version": "step-revision/v1",
+                        "revision": 2,
+                        "step_id": "step-2",
+                        "kind": "presentation",
+                        "changes": {
+                            "candidate_id": SKIP_PUBLICATION_CANDIDATE_ID,
+                        },
+                    },
+                ),
+                write(
+                    "human-review-decision",
+                    "reviews/human-review-decision-0002.json",
+                    {
+                        "schema_version": "human-review-decision/v1",
+                        "revision": 2,
+                        "step_id": "step-2",
+                        "decision": "skip_from_publication",
+                        "reason": "当前图片无法满足要求，先出版其余步骤",
+                        "publication_transform": "omitted",
+                    },
                 ),
             )
             output = publish_delivery(
@@ -243,17 +301,40 @@ class PublishDeliveryHandlerTests(unittest.TestCase):
             )
             publication = output.artifacts[0].value
             by_step = {item["step_id"]: item for item in publication["steps"]}
+            workbook = load_workbook(
+                workspace / "delivery" / publication["workbook"],
+                read_only=True,
+                data_only=True,
+            )
+            published_text = "\n".join(
+                str(cell.value)
+                for sheet in workbook.worksheets
+                for row in sheet.iter_rows()
+                for cell in row
+                if cell.value is not None
+            )
+            workbook.close()
 
         self.assertEqual(by_step["step-1"]["status"], "PASSED")
         self.assertEqual(
             by_step["step-1"]["complete_state_hash"],
             "sha256:committed-state-step-1",
         )
-        self.assertEqual(by_step["step-2"]["status"], "QUESTIONED")
+        self.assertEqual(by_step["step-2"]["status"], "PASSED")
+        self.assertEqual(
+            by_step["step-2"]["human_disposition"], "skip_from_publication"
+        )
+        self.assertFalse(by_step["step-2"]["included_in_sop"])
+        self.assertNotIn("安装零件B", published_text)
         self.assertEqual(
             by_step["step-2"]["complete_state_hash"],
             "sha256:validated-state-step-2",
         )
+        self.assertEqual(
+            by_step["step-3"]["image_path"],
+            "rendered/step-3-revision-0001.jpg",
+        )
+        self.assertEqual(by_step["step-3"]["output_hash"], revised_step_3_hash)
 
 
 if __name__ == "__main__":

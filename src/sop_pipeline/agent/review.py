@@ -10,6 +10,8 @@ from sop_pipeline.camera_visibility import CAMERA_VISIBILITY_AUDIT_ENABLED
 
 ACCEPT_WITH_OVERRIDE = "accept_with_override"
 HUMAN_OVERRIDE_IMAGE_ID = "human-override-current-image"
+SKIP_FROM_PUBLICATION = "skip_from_publication"
+SKIP_PUBLICATION_CANDIDATE_ID = "skip-publication"
 
 
 _DIRECTION_CODES = {
@@ -58,6 +60,7 @@ def prepare_review_step(
         validation_step.get("manual_acceptance_allowed", False)
     ) and category not in {"hard_block", "system_retry"}
     machine_status = str(validation_step.get("status") or "")
+    already_passed = machine_status == "PASSED"
     primary_code = str(
         validation_step.get("primary_code")
         or validation_step.get("error_code")
@@ -71,14 +74,14 @@ def prepare_review_step(
     if primary_code and primary_code not in failures:
         failures.insert(0, primary_code)
 
-    actions = ["correct_and_rerender", "defer"]
+    actions = ["correct_and_rerender", SKIP_FROM_PUBLICATION, "defer"]
     if normal_acceptance and has_real_image:
         actions.insert(0, "accept")
-    elif has_real_image:
+    elif has_real_image and not already_passed:
         actions.insert(0, ACCEPT_WITH_OVERRIDE)
 
     guided_form = _guided_form(primary_code, plan_step or {})
-    if guided_form is None and normal_acceptance and has_real_image:
+    if guided_form is None and has_real_image:
         guided_form = _manual_rerender_form()
 
     return {
@@ -89,7 +92,7 @@ def prepare_review_step(
         "has_real_image": has_real_image,
         "image_path": str(image_path) if image_path is not None else "",
         "normal_acceptance_allowed": normal_acceptance and has_real_image,
-        "override_allowed": has_real_image,
+        "override_allowed": has_real_image and not already_passed,
         "available_actions": actions,
         "guided_form": guided_form,
         "attempt_history": _attempt_history(validation_step),
@@ -129,6 +132,34 @@ def create_human_override_decision(
         "decided_at": datetime.now(timezone.utc).isoformat(),
         "publication_transform": "none",
         "watermark": False,
+    }
+
+
+def create_skip_publication_decision(
+    run_workspace: Path,
+    validation_step: Mapping[str, Any],
+    *,
+    step_id: str,
+    revision: int,
+    reason: str,
+) -> dict[str, Any]:
+    """Audit an explicit decision to omit one step from this publication."""
+
+    prepared = prepare_review_step(run_workspace, validation_step)
+    normalized_reason = str(reason or "").strip()
+    if not normalized_reason:
+        normalized_reason = "当前步骤暂不进入本次SOP，保留后续重新生成入口。"
+    return {
+        "schema_version": "human-review-decision/v1",
+        "revision": revision,
+        "step_id": step_id,
+        "decision": SKIP_FROM_PUBLICATION,
+        "machine_status": prepared["machine_status"],
+        "machine_category": prepared["machine_category"],
+        "acknowledged_failures": prepared["machine_failures"],
+        "reason": normalized_reason,
+        "decided_at": datetime.now(timezone.utc).isoformat(),
+        "publication_transform": "omitted",
     }
 
 

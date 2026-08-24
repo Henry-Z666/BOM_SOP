@@ -148,8 +148,25 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   }
   $translation = @($payload.translation_vector_root)
   if ($translation.Count -ne 3) { throw "Task $taskId has no pure translation vector." }
+  $translationRows = New-Object Collections.Generic.List[string]
+  $translationProperties = @(
+    $payload.occurrence_translation_vectors_root.PSObject.Properties |
+      Sort-Object Name
+  )
+  foreach ($property in $translationProperties) {
+    $occurrence = [string]$property.Name
+    $vector = @($property.Value)
+    if ($moving -notcontains $occurrence -or $vector.Count -ne 3) {
+      throw "Task $taskId has an invalid per-occurrence translation for $occurrence."
+    }
+    $translationRows.Add($occurrence + '=' + (& $formatVector $vector))
+  }
+  if ($translationRows.Count -ne $moving.Count) {
+    throw "Task $taskId does not have one translation per moving occurrence."
+  }
+  $encodedTranslations = $translationRows -join ';'
   $presentation = $payload.presentation
-  if ([string]$presentation.schema_version -ne 'fixed-frame-presentation/v1') { throw "Task $taskId has no supported presentation contract." }
+  if ([string]$presentation.schema_version -notin @('fixed-frame-presentation/v1', 'native-viewport-presentation/v1')) { throw "Task $taskId has no supported presentation contract." }
   $nativeSelectedFit = $presentation.native_selected_fit
   if ([string]$nativeSelectedFit.schema_version -ne 'native-selected-fit/v2' -or
       [string]$nativeSelectedFit.command -ne 'ProCmdZoomIntoOutline' -or
@@ -162,9 +179,11 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   }
   $selectedFitLevel = [double]$nativeSelectedFit.zoom_to_selected_level
   if ([double]::IsNaN($selectedFitLevel) -or [double]::IsInfinity($selectedFitLevel) -or
-      ([Math]::Abs($selectedFitLevel - 0.85) -gt 1.0e-9 -and
+      ([Math]::Abs($selectedFitLevel - 0.70) -gt 1.0e-9 -and
+       [Math]::Abs($selectedFitLevel - 0.80) -gt 1.0e-9 -and
+       [Math]::Abs($selectedFitLevel - 0.85) -gt 1.0e-9 -and
        [Math]::Abs($selectedFitLevel - 0.95) -gt 1.0e-9)) {
-    throw "Task $taskId must use a bounded native selected-fit margin (0.85 or 0.95)."
+    throw "Task $taskId must use a bounded native selected-fit margin (0.70, 0.80, 0.85, or 0.95)."
   }
   if ($Operation -eq 'Visibility') {
     if (-not $WorkerRoot) { throw 'Visibility evidence must run inside NativeArrowWorker.' }
@@ -214,7 +233,7 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
       ([double]$translation[1]).ToString('G17', $culture),
       ([double]$translation[2]).ToString('G17', $culture),
       ($receivers -join ';'),($visible -join ';'),$cameraSpecs['fixed_123'],$cameraSpecs['fixed_456'],
-      ($focusOccurrences -join ';'),($labelRows -join ';')
+      ($focusOccurrences -join ';'),($labelRows -join ';'),$encodedTranslations
     ) -join "`t"))
     Write-Output ("[AGENT_RENDER] task {0} visibility fixed_123 fixed_456" -f $taskId)
     continue
@@ -294,7 +313,8 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
     $audit,
     ($focusOccurrences -join ';'),
     ($anchorRows -join ';'),
-    ($receiverSelectionRows -join ';')
+    ($receiverSelectionRows -join ';'),
+    $encodedTranslations
   ) -join "`t"))
   $renderedFiles.Add($image)
   $auditFiles.Add($audit)
@@ -506,7 +526,7 @@ foreach ($image in $renderedFiles) {
   $bitmap = [System.Drawing.Bitmap]::new($image)
   try {
     if ($bitmap.Width -ne 1600 -or $bitmap.Height -ne 1600) {
-      throw "Creo fixed-frame export is not 1600x1600: $image"
+      throw "Creo square publication export has invalid dimensions $($bitmap.Width)x$($bitmap.Height): $image"
     }
   }
   finally { $bitmap.Dispose() }
@@ -526,6 +546,11 @@ foreach ($item in $framingAudits) {
     max_commands_per_render = 1
     manual_pan_zoom_forbidden = $true
     coordinate_adjustment = [string]$item.coordinate_adjustment
+    final_frame = @(1600, 1600)
+    source_policy = 'native_viewport_overscan/v1'
+    crop_policy = 'fixed_center_square/v1'
+    padding_forbidden = $true
+    stretching_forbidden = $true
   }
   [IO.File]::WriteAllText(
     $temporaryAudit,

@@ -161,61 +161,78 @@ class PipelineOrchestrator:
     def resolve(
         self, run: RunRecord, resolution: StepResolution
     ) -> GenerationResult:
+        return self.resolve_batch(run, (resolution,))
+
+    def resolve_batch(
+        self,
+        run: RunRecord,
+        resolutions: tuple[StepResolution, ...],
+    ) -> GenerationResult:
+        if not resolutions:
+            raise ValueError("批量处理至少需要一个步骤")
         current_steps = self._runtime().store.list_steps(run.run_id)
         prior_hashes = {step.step_id: step.output_hash for step in current_steps}
         prior_publication_ref = (
             f"results/publication-{run.plan_revision:04d}.json"
         )
-        revision_number = self._next_step_revision(run)
-        result = self._run(
-            run.run_id,
-            "resolve-step",
-            (
-                f"results/candidate-set-{run.plan_revision:04d}.json",
-                f"results/validation-{run.plan_revision:04d}.json",
-                f"plans/locked-render-plan-{run.plan_revision:04d}.json",
-                "analysis/normalized-bom.json",
-            ),
-            {
-                "step_id": resolution.step_id,
-                "candidate_id": resolution.candidate_id,
-                "instruction": resolution.instruction,
-                "action": resolution.action,
-                "metadata": dict(resolution.metadata),
-                "revision": revision_number,
-            },
-        )
-        revision_ref = _artifact_path(result, "step-revision")
-        invalidation_ref = _artifact_path(result, "invalidation-set")
-        review_decision_ref = _optional_artifact_path(
-            result, "human-review-decision"
-        )
-        revision = self._runtime().artifacts.read_json(run.workspace, revision_ref)
-        if revision.get("changes", {}).get("candidate_id"):
-            publication_refs = [
-                "analysis/normalized-bom.json",
-                "analysis/input-manifest.json",
-                f"plans/locked-render-plan-{run.plan_revision:04d}.json",
-                f"results/validation-{run.plan_revision:04d}.json",
-                f"results/candidate-set-{run.plan_revision:04d}.json",
-                prior_publication_ref,
-                revision_ref,
-                invalidation_ref,
-            ]
-            if review_decision_ref is not None:
-                publication_refs.append(review_decision_ref)
-            self._run(
+        revision_refs: list[str] = []
+        invalidation_refs: list[str] = []
+        review_decision_refs: list[str] = []
+        render_revision_refs: list[str] = []
+        render_steps: set[str] = set()
+        affected: set[str] = set()
+
+        for resolution in resolutions:
+            revision_number = self._next_step_revision(run)
+            result = self._run(
                 run.run_id,
-                "publish-delivery",
-                tuple(publication_refs),
+                "resolve-step",
+                (
+                    f"results/candidate-set-{run.plan_revision:04d}.json",
+                    f"results/validation-{run.plan_revision:04d}.json",
+                    f"plans/locked-render-plan-{run.plan_revision:04d}.json",
+                    "analysis/normalized-bom.json",
+                    "analysis/bom-cad-map.json",
+                ),
+                {
+                    "step_id": resolution.step_id,
+                    "candidate_id": resolution.candidate_id,
+                    "instruction": resolution.instruction,
+                    "action": resolution.action,
+                    "metadata": dict(resolution.metadata),
+                    "revision": revision_number,
+                },
             )
-        else:
+            revision_ref = _artifact_path(result, "step-revision")
+            invalidation_ref = _artifact_path(result, "invalidation-set")
+            revision_refs.append(revision_ref)
+            invalidation_refs.append(invalidation_ref)
+            decision_ref = _optional_artifact_path(
+                result, "human-review-decision"
+            )
+            if decision_ref is not None:
+                review_decision_refs.append(decision_ref)
+            revision = self._runtime().artifacts.read_json(
+                run.workspace, revision_ref
+            )
+            invalidated = {
+                str(step_id)
+                for step_id in self._runtime().artifacts.read_json(
+                    run.workspace, invalidation_ref
+                ).get("steps", [])
+            }
+            affected.update(invalidated)
+            if not revision.get("changes", {}).get("candidate_id"):
+                render_revision_refs.append(revision_ref)
+                render_steps.update(invalidated)
+
+        if render_revision_refs:
             self._run(
                 run.run_id,
                 "compile-render-jobs",
-                (
-                    f"plans/locked-render-plan-{run.plan_revision:04d}.json",
-                    revision_ref,
+                tuple(
+                    [f"plans/locked-render-plan-{run.plan_revision:04d}.json"]
+                    + render_revision_refs
                 ),
             )
             self._run(
@@ -224,9 +241,9 @@ class PipelineOrchestrator:
                 (
                     f"plans/locked-render-jobs-{run.plan_revision:04d}.json",
                     "analysis/input-manifest.json",
-                    invalidation_ref,
                     f"results/validation-{run.plan_revision:04d}.json",
                 ),
+                {"step_ids": sorted(render_steps)},
             )
             self._run(
                 run.run_id,
@@ -236,23 +253,24 @@ class PipelineOrchestrator:
                     f"results/render-batch-{run.plan_revision:04d}.json",
                 ),
             )
-            self._run(
-                run.run_id,
-                "publish-delivery",
-                (
-                    "analysis/normalized-bom.json",
-                    "analysis/input-manifest.json",
-                    f"plans/locked-render-plan-{run.plan_revision:04d}.json",
-                    f"results/validation-{run.plan_revision:04d}.json",
-                    f"results/candidate-set-{run.plan_revision:04d}.json",
-                    prior_publication_ref,
-                    invalidation_ref,
-                ),
-            )
-        generated = self._generation_result(run)
-        affected = set(
-            self._runtime().artifacts.read_json(run.workspace, invalidation_ref)["steps"]
+
+        publication_refs = [
+            "analysis/normalized-bom.json",
+            "analysis/input-manifest.json",
+            f"plans/locked-render-plan-{run.plan_revision:04d}.json",
+            f"results/validation-{run.plan_revision:04d}.json",
+            f"results/candidate-set-{run.plan_revision:04d}.json",
+            prior_publication_ref,
+            *revision_refs,
+            *invalidation_refs,
+            *review_decision_refs,
+        ]
+        self._run(
+            run.run_id,
+            "publish-delivery",
+            tuple(publication_refs),
         )
+        generated = self._generation_result(run)
         for step in generated.steps:
             if step.step_id not in affected and prior_hashes.get(step.step_id) != step.output_hash:
                 raise ValueError(f"局部再生成修改了无关步骤：{step.step_id}")

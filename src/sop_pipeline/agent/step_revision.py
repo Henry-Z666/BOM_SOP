@@ -82,6 +82,7 @@ _ALLOWED_CHANGES = {
         "candidate_id",
         "camera_resolution_option",
         "rerender_option",
+        "excluded_future_occurrences",
         "affected_steps",
     },
     RevisionKind.INSTALLATION_GEOMETRY: {
@@ -123,4 +124,10 @@ def validate_revision(revision: StepRevision) -> StepRevision:
             or sum(value * value for value in direction_values) <= 1.0e-18
         ):
             raise ValueError("direction must be a non-zero finite vector")
+    exclusions = revision.changes.get("excluded_future_occurrences")
+    if exclusions is not None and (
+        not isinstance(exclusions, (list, tuple))
+        or any(not isinstance(value, str) or not value for value in exclusions)
+    ):
+        raise ValueError("excluded_future_occurrences must be occurrence paths")
     return revision

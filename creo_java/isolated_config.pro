@@ -7,3 +7,4 @@ display_point_tags no
 display_coord_sys no
 display_coord_sys_tags no
 display_annotations no
+open_window_maximized yes

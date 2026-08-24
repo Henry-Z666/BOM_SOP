@@ -288,7 +288,58 @@ class ProgressViewTests(unittest.TestCase):
         self.assertEqual(packet["items"][0]["kind"], "failed_image")
         self.assertEqual(packet["items"][0]["category"], "hard_block")
         self.assertTrue(packet["items"][0]["override_allowed"])
-        self.assertIsNone(packet["items"][0]["guided_form"])
+        self.assertEqual(
+            packet["items"][0]["guided_form"]["schema_version"],
+            "manual-rerender-form/v1",
+        )
+
+    def test_review_packet_lists_passed_steps_for_optional_regeneration(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            run_workspace = workspace / "runs" / "run-1"
+            results = run_workspace / "results"
+            rendered = run_workspace / "rendered"
+            plans = run_workspace / "plans"
+            results.mkdir(parents=True)
+            rendered.mkdir()
+            plans.mkdir()
+            image = rendered / "step-1.jpg"
+            image.write_bytes(b"qualified")
+            (results / "validation-0001.json").write_text(
+                json.dumps(
+                    {
+                        "steps": [
+                            {
+                                "step_id": "step-1",
+                                "status": "PASSED",
+                                "category": "qualified",
+                                "image_path": "rendered/step-1.jpg",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (plans / "locked-render-plan-0001.json").write_text(
+                json.dumps(
+                    {
+                        "steps": [
+                            {
+                                "step_id": "step-1",
+                                "title": "安装通过件",
+                                "source_bom_rows": [7],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            packet = review_packet(workspace, "run-1")
+
+        self.assertEqual(len(packet["items"]), 1)
+        self.assertEqual(packet["items"][0]["kind"], "passed")
+        self.assertIn("已通过（可再次生成）", packet["items"][0]["label"])
 
     def test_review_packet_explains_when_no_candidates_passed(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -421,8 +472,9 @@ class ProgressViewTests(unittest.TestCase):
 
         self.assertEqual(
             [item["step_id"] for item in packet["items"]],
-            ["step-2"],
+            ["step-1", "step-2"],
         )
+        self.assertEqual(packet["items"][0]["kind"], "passed")
 
     def test_review_packet_does_not_override_validation_with_raw_render_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
@@ -504,8 +556,10 @@ class ProgressViewTests(unittest.TestCase):
 
             packet = review_packet(workspace, "run-1")
 
-        self.assertEqual(packet["items"], [])
-        self.assertEqual(packet["message"], "没有待处理步骤。")
+        self.assertEqual(len(packet["items"]), 1)
+        self.assertEqual(packet["items"][0]["kind"], "passed")
+        self.assertEqual(packet["items"][0]["error_code"], "")
+        self.assertIn("真实 Creo 图片", packet["message"])
 
 
 

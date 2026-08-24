@@ -10,6 +10,9 @@ class AgentBackend(Protocol):
     def confirm(self, run_id: str, answers: dict[str, str]) -> dict[str, Any]: ...
     def generate(self, run_id: str) -> dict[str, Any]: ...
     def resolve(self, run_id: str, resolution: dict[str, Any]) -> dict[str, Any]: ...
+    def resolve_batch(
+        self, run_id: str, resolutions: list[dict[str, Any]]
+    ) -> dict[str, Any]: ...
     def resume(self, run_id: str) -> dict[str, Any]: ...
     def pause(self) -> bool: ...
     def progress_snapshot(self, run_id: str | None = None) -> dict[str, Any]: ...
@@ -95,6 +98,21 @@ class DesktopAgentService:
                     "reason": str(reason).strip(),
                 },
             },
+        )
+
+    def resolve_batch(
+        self,
+        run_id: str,
+        resolutions: list[dict[str, Any]],
+    ) -> Future:
+        """Resolve a user-selected batch in one durable publication transaction."""
+
+        normalized = [dict(item) for item in resolutions]
+        if not normalized:
+            raise ValueError("批量处理至少需要选择一个步骤")
+
+        return self._executor.submit(
+            self.backend.resolve_batch, run_id, normalized
         )
 
     def resume(self, run_id: str) -> Future:

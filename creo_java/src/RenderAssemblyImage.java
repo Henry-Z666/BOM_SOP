@@ -14,12 +14,20 @@ import com.ptc.pfc.pfcSimpRep.*;
 import com.ptc.pfc.pfcWindow.*;
 
 import java.io.File;
+import java.awt.Dimension;
+import java.awt.Graphics2D;
+import java.awt.Toolkit;
 import java.awt.image.BufferedImage;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
+import java.util.Iterator;
 import java.util.Map;
+import javax.imageio.IIOImage;
 import javax.imageio.ImageIO;
+import javax.imageio.ImageWriteParam;
+import javax.imageio.ImageWriter;
+import javax.imageio.stream.FileImageOutputStream;
 
 /** Creates a native Creo JPEG from an isolated model copy through J-Link async. */
 public final class RenderAssemblyImage {
@@ -318,6 +326,29 @@ public final class RenderAssemblyImage {
     return result;
   }
 
+  /** Parses one pure root translation for every moving occurrence. */
+  private static java.util.Map<String,double[]> parseOccurrenceTranslations(String encoded) {
+    java.util.Map<String,double[]> result = new java.util.LinkedHashMap<String,double[]>();
+    if (encoded == null || encoded.trim().isEmpty()) return result;
+    for (String raw : encoded.split(";")) {
+      int separator = raw.indexOf('=');
+      if (separator <= 0 || separator == raw.length() - 1)
+        throw new IllegalArgumentException("Malformed occurrence translation");
+      String occurrence = raw.substring(0, separator).trim();
+      String[] coordinates = raw.substring(separator + 1).split(":", -1);
+      if (coordinates.length != 3 || result.containsKey(occurrence))
+        throw new IllegalArgumentException("Invalid occurrence translation=" + occurrence);
+      double[] vector = new double[3];
+      for (int index = 0; index < 3; index++) {
+        vector[index] = Double.parseDouble(coordinates[index]);
+        if (!Double.isFinite(vector[index]))
+          throw new IllegalArgumentException("Non-finite occurrence translation=" + occurrence);
+      }
+      result.put(occurrence, vector);
+    }
+    return result;
+  }
+
   private static double[][] identityMatrix() { double[][] value = new double[4][4]; for (int i = 0; i < 4; i++) value[i][i] = 1.0; return value; }
   private static double[][] matrix(Transform3D value) throws jxthrowable {
     Matrix3D source = value.GetMatrix(); double[][] result = new double[4][4];
@@ -500,6 +531,92 @@ public final class RenderAssemblyImage {
       throw new IllegalStateException("Creo did not export visibility bitmap: " + output);
   }
 
+  private static JPEGImageExportInstructions squareCropSourceExportInstructions(
+      Window window) throws jxthrowable {
+    double graphicsWidth = window.GetGraphicsAreaWidth();
+    double graphicsHeight = window.GetGraphicsAreaHeight();
+    if (!(graphicsWidth > 0.0) || !(graphicsHeight > 0.0))
+      throw new IllegalStateException("Creo graphics viewport dimensions are unavailable");
+    // J-Link normalizes width by the screen width and height by the screen
+    // height.  Their raw ratio is therefore not the viewport's pixel aspect
+    // ratio.  Restore both axes to the same pixel coordinate system first.
+    Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
+    double graphicsPixelWidth = graphicsWidth * screenSize.getWidth();
+    double graphicsPixelHeight = graphicsHeight * screenSize.getHeight();
+    // Keep the native viewport geometry undistorted, but overscan until the
+    // short edge is 1600 px.  A deterministic centre crop can then produce a
+    // 1600x1600 publication frame without padding, stretching or upscaling.
+    double widthInches;
+    double heightInches;
+    if (graphicsPixelWidth >= graphicsPixelHeight) {
+      heightInches = 8.0;
+      widthInches = 8.0 * graphicsPixelWidth / graphicsPixelHeight;
+    } else {
+      widthInches = 8.0;
+      heightInches = 8.0 * graphicsPixelHeight / graphicsPixelWidth;
+    }
+    JPEGImageExportInstructions instructions =
+        pfcWindow.JPEGImageExportInstructions_Create(widthInches, heightInches);
+    System.err.println("[PERSISTENT] square_crop_source viewport_normalized=" + graphicsWidth + "x" + graphicsHeight
+        + " screen=" + screenSize.width + "x" + screenSize.height
+        + " viewport_pixels=" + graphicsPixelWidth + "x" + graphicsPixelHeight
+        + " export_inches=" + widthInches + "x" + heightInches);
+    return instructions;
+  }
+
+  private static double squareCropSafeFitLevel(Window window, double requested)
+      throws jxthrowable {
+    double graphicsWidth = window.GetGraphicsAreaWidth();
+    double graphicsHeight = window.GetGraphicsAreaHeight();
+    if (!(graphicsWidth > 0.0) || !(graphicsHeight > 0.0))
+      throw new IllegalStateException("Creo graphics viewport dimensions are unavailable");
+    Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
+    double pixelWidth = graphicsWidth * screenSize.getWidth();
+    double pixelHeight = graphicsHeight * screenSize.getHeight();
+    double aspect = Math.max(pixelWidth, pixelHeight) / Math.min(pixelWidth, pixelHeight);
+    double effective = Math.max(0.1, Math.min(2.0, requested / aspect));
+    System.err.println("[PERSISTENT] square_crop_fit requested=" + requested
+        + " aspect=" + aspect + " effective=" + effective);
+    return effective;
+  }
+
+  private static void cropCenterSquare(Path source, Path output) throws Exception {
+    BufferedImage image = ImageIO.read(source.toFile());
+    if (image == null) throw new IllegalStateException("Creo JPEG cannot be decoded: " + source);
+    int side = Math.min(image.getWidth(), image.getHeight());
+    if (side != 1600)
+      throw new IllegalStateException("Square crop source short edge must be 1600 px: "
+          + image.getWidth() + "x" + image.getHeight());
+    int x = (image.getWidth() - side) / 2;
+    int y = (image.getHeight() - side) / 2;
+    BufferedImage square = new BufferedImage(side, side, BufferedImage.TYPE_INT_RGB);
+    Graphics2D graphics = square.createGraphics();
+    try {
+      graphics.drawImage(image, 0, 0, side, side, x, y, x + side, y + side, null);
+    } finally {
+      graphics.dispose();
+    }
+    Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName("jpg");
+    if (!writers.hasNext())
+      throw new IllegalStateException("No JPEG writer available for square publication frame");
+    ImageWriter writer = writers.next();
+    try (FileImageOutputStream stream = new FileImageOutputStream(output.toFile())) {
+      ImageWriteParam parameters = writer.getDefaultWriteParam();
+      if (parameters.canWriteCompressed()) {
+        parameters.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
+        parameters.setCompressionQuality(0.95f);
+      }
+      writer.setOutput(stream);
+      writer.write(null, new IIOImage(square, null, null), parameters);
+    } finally {
+      writer.dispose();
+    }
+    Files.deleteIfExists(source);
+    System.err.println("[PERSISTENT] square_crop source=" + image.getWidth() + "x"
+        + image.getHeight() + " crop_origin=" + x + "," + y
+        + " output=" + side + "x" + side);
+  }
+
   private static int visibilityPixelDelta(int left, int right) {
     int red = Math.abs(((left >> 16) & 255) - ((right >> 16) & 255));
     int green = Math.abs(((left >> 8) & 255) - ((right >> 8) & 255));
@@ -594,7 +711,7 @@ public final class RenderAssemblyImage {
   }
 
   private static void renderVisibilityScene(Session session, String assemblyFile, Path outputPng,
-      String movingPaths, String receiverPaths, double dx, double dy, double dz, String desiredPaths,
+      String movingPaths, String receiverPaths, String encodedTranslations, String desiredPaths,
       String cameraSpec, String focusPaths, LinkedHashMap<String,Integer> labels,
       boolean requireVisibleTarget) throws Throwable {
     Window window = null; boolean completed = false;
@@ -618,7 +735,13 @@ public final class RenderAssemblyImage {
       activateVisibilityRep(session, assembly, desired, "", "AI_SOP_VIS_BASE");
       if (!assembly.GetDynamicPositioning()) assembly.SetDynamicPositioning(true);
       java.util.List<intseq> movingOccurrencePaths = parseOccurrencePaths(movingPaths);
-      for (intseq ids : movingOccurrencePaths) translateResolved(session, assembly, ids, dx, dy, dz);
+      java.util.Map<String,double[]> translations = parseOccurrenceTranslations(encodedTranslations);
+      for (intseq ids : movingOccurrencePaths) {
+        String occurrenceId = occurrencePathId(ids);
+        double[] vector = translations.get(occurrenceId);
+        if (vector == null) throw new IllegalArgumentException("Missing visibility translation=" + occurrenceId);
+        translateResolved(session, assembly, ids, vector[0], vector[1], vector[2]);
+      }
       java.util.List<DynamicPose> movingPoses = captureDynamicPoses(session, assembly, movingOccurrencePaths);
       applyCamera(assembly, cameraSpec);
       Double fit = nativeSelectedFitLevel(cameraSpec);
@@ -656,13 +779,14 @@ public final class RenderAssemblyImage {
   static void renderVisibilityEvidenceInSession(Session session, String assemblyFile,
       String outputDirectory, String taskId, String movingPaths, String receiverPaths,
       double dx, double dy, double dz, String visiblePaths, String fixed123Camera,
-      String fixed456Camera, String focusPaths, String encodedLabels) throws Throwable {
+      String fixed456Camera, String focusPaths, String encodedLabels,
+      String encodedTranslations) throws Throwable {
     LinkedHashMap<String,Integer> labels = parseVisibilityLabels(encodedLabels);
     String isolatedPaths = movingPaths + ";" + receiverPaths;
     for (String cameraId : new String[] { "fixed_123", "fixed_456" }) {
       String camera = cameraId.equals("fixed_123") ? fixed123Camera : fixed456Camera;
-      renderVisibilityScene(session, assemblyFile, Path.of(outputDirectory, taskId + "." + cameraId + ".isolated.png"), movingPaths, receiverPaths, dx, dy, dz, isolatedPaths, camera, focusPaths, labels, true);
-      renderVisibilityScene(session, assemblyFile, Path.of(outputDirectory, taskId + "." + cameraId + ".staged.png"), movingPaths, receiverPaths, dx, dy, dz, visiblePaths, camera, focusPaths, labels, false);
+      renderVisibilityScene(session, assemblyFile, Path.of(outputDirectory, taskId + "." + cameraId + ".isolated.png"), movingPaths, receiverPaths, encodedTranslations, isolatedPaths, camera, focusPaths, labels, true);
+      renderVisibilityScene(session, assemblyFile, Path.of(outputDirectory, taskId + "." + cameraId + ".staged.png"), movingPaths, receiverPaths, encodedTranslations, visiblePaths, camera, focusPaths, labels, false);
     }
   }
 
@@ -676,7 +800,7 @@ public final class RenderAssemblyImage {
   static void renderInSession(Session session, String assemblyFile, String outputJpeg,
       String occurrencePaths, double dx, double dy, double dz, String visiblePaths,
       String cameraSpec, String arrowAuditJson, String focusPaths,
-      String plannedAnchors, String receiverSelections,
+      String plannedAnchors, String receiverSelections, String encodedTranslations,
       boolean drawNativeArrow) throws Throwable {
     Window window = null;
     DisplayList3D arrowDisplay = null;
@@ -727,9 +851,16 @@ public final class RenderAssemblyImage {
         double[] preferred = preferredAnchors.get(occurrenceId);
         arrowMoving.add(ArrowProjection.prepare(session, assembly, ids, preferred));
       }
-      for (intseq ids : requestedOccurrences) translateResolved(session, assembly, ids, dx, dy, dz);
-      double[] arrowTranslation = new double[] { dx, dy, dz };
-      System.err.println("[PERSISTENT] translated occurrences=" + occurrencePaths + " vector=" + java.util.Arrays.toString(arrowTranslation));
+      java.util.Map<String,double[]> occurrenceTranslations =
+          parseOccurrenceTranslations(encodedTranslations);
+      for (intseq ids : requestedOccurrences) {
+        String occurrenceId = occurrencePathId(ids);
+        double[] vector = occurrenceTranslations.get(occurrenceId);
+        if (vector == null) throw new IllegalArgumentException("Missing occurrence translation=" + occurrenceId);
+        translateResolved(session, assembly, ids, vector[0], vector[1], vector[2]);
+      }
+      System.err.println("[PERSISTENT] translated occurrences=" + occurrencePaths
+          + " vectors=" + encodedTranslations);
 
       applyCamera(assembly, cameraSpec);
       Double selectedFitLevel = nativeSelectedFitLevel(cameraSpec);
@@ -739,20 +870,21 @@ public final class RenderAssemblyImage {
           parseReceiverInterfaceSelections(receiverSelections);
       if (receiverInterfaces.isEmpty())
         throw new IllegalArgumentException("Formal render requires receiver surface selections");
+      double squareSafeFitLevel = squareCropSafeFitLevel(window, selectedFitLevel);
       applyNativeSelectedFit(session, window, assembly, requestedOccurrences,
-          receiverInterfaces, selectedFitLevel);
-      ArrowProjection.Result arrowResult = ArrowProjection.layout(assembly, arrowMoving, arrowTranslation);
+          receiverInterfaces, squareSafeFitLevel);
+      ArrowProjection.Result arrowResult = ArrowProjection.layout(
+          assembly, arrowMoving, occurrenceTranslations);
       ArrowProjection.writeAudit(arrowResult, arrowAuditJson);
       if (drawNativeArrow) arrowDisplay = ArrowProjection.display(session, arrowResult);
       session.UIClearMessage(); window.Repaint(); session.FlushCurrentWindow();
-      // Export the delivery frame directly.  The former 9x12 raster was
-      // centre-cropped from 1800x2400 to 1600x1600 after rendering, which could
-      // remove a moving occurrence or receiver point that Creo had correctly
-      // kept inside the original portrait frame.
-      JPEGImageExportInstructions instructions = pfcWindow.JPEGImageExportInstructions_Create(8.0, 8.0);
+      JPEGImageExportInstructions instructions = squareCropSourceExportInstructions(window);
       instructions.SetDotsPerInch(DotsPerInch.RASTERDPI_200);
       instructions.SetImageDepth(RasterDepth.RASTERDEPTH_24);
-      window.ExportRasterImage(outputJpeg, instructions);
+      Path squareCropSource = Path.of(outputJpeg + ".native-source.jpg");
+      Files.deleteIfExists(squareCropSource);
+      window.ExportRasterImage(squareCropSource.toString(), instructions);
+      cropCenterSquare(squareCropSource, Path.of(outputJpeg));
       System.err.println("[PERSISTENT] wrote=" + outputJpeg + " audit=" + arrowAuditJson);
     }
     finally {

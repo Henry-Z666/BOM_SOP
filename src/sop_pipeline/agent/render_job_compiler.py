@@ -62,6 +62,11 @@ def compile_locked_render_jobs(plan: FormalRenderPlan) -> RenderPlan:
             "receiver_point_root": step.receiver_point_root,
             "receiver_normal_root": step.receiver_normal_root,
             "translation_vector_root": step.translation_vector_root,
+            "occurrence_translation_vectors_root": {
+                occurrence: list(vector)
+                for occurrence, vector in
+                step.occurrence_translation_vectors_root.items()
+            },
             "camera_id": step.camera_id,
             "allowed_camera_ids": list(step.allowed_camera_ids),
             "camera": _compile_camera(plan, step),
@@ -142,6 +147,13 @@ def _validate_step_contract(step: FormalRenderStep, mode: str) -> None:
         or not step.constraint_ids
     ):
         raise ValueError(f"render step {step.step_id} lacks required geometry")
+    translations = step.occurrence_translation_vectors_root
+    if set(translations) != set(step.moving_occurrences) or any(
+        len(vector) != 3 for vector in translations.values()
+    ):
+        raise ValueError(
+            f"render step {step.step_id} lacks per-occurrence translations"
+        )
     anchored = {item.occurrence_id for item in step.arrow_anchors}
     if anchored != set(step.moving_occurrences) or len(step.arrow_anchors) != len(
         step.moving_occurrences
@@ -159,14 +171,19 @@ def _validate_step_contract(step: FormalRenderStep, mode: str) -> None:
 def _compile_arrow_anchors(step: FormalRenderStep) -> list[dict[str, Any]]:
     if step.translation_vector_root is None:
         return []
-    translation = step.translation_vector_root
     return [
         {
             "occurrence_id": anchor.occurrence_id,
             "constraint_id": anchor.constraint_id,
             "complete_point_root": list(anchor.complete_point_root),
             "expected_exploded_point_root": [
-                round(anchor.complete_point_root[index] + translation[index], 6)
+                round(
+                    anchor.complete_point_root[index]
+                    + step.occurrence_translation_vectors_root[
+                        anchor.occurrence_id
+                    ][index],
+                    6,
+                )
                 for index in range(3)
             ],
         }
@@ -214,7 +231,7 @@ def _compile_camera(plan: FormalRenderPlan, step: FormalRenderStep) -> dict[str,
         "up_reference_root": up,
         "zoom": 1.0,
         "pan": [0.0, 0.0],
-        "frame": "square",
+        "frame": "native_graphics_area",
     }
 
 
@@ -311,7 +328,7 @@ def _compile_presentation(
     framing_profile = _framing_profile_contract()
     if step.camera_id is None:
         return {
-            "schema_version": "fixed-frame-presentation/v1",
+            "schema_version": "square-crop-presentation/v1",
             "focus_context": "installation_activity_bbox/v1",
             "framing_priority": "installation_activity/v1",
             "zoom_anchor": "installation_activity_center/v1",
@@ -320,9 +337,14 @@ def _compile_presentation(
             "center_gate": _center_gate(),
             "variants": [],
             "frame_gate": _frame_gate(),
+            "final_frame": [1600, 1600],
+            "source_policy": "native_viewport_overscan/v1",
+            "crop_policy": "fixed_center_square/v1",
+            "padding_forbidden": True,
+            "stretching_forbidden": True,
         }
     return {
-        "schema_version": "fixed-frame-presentation/v1",
+        "schema_version": "square-crop-presentation/v1",
         "focus_context": "installation_activity_bbox/v1",
         "framing_priority": "installation_activity/v1",
         "zoom_anchor": "installation_activity_center/v1",
@@ -338,6 +360,11 @@ def _compile_presentation(
             },
         ],
         "frame_gate": _frame_gate(),
+        "final_frame": [1600, 1600],
+        "source_policy": "native_viewport_overscan/v1",
+        "crop_policy": "fixed_center_square/v1",
+        "padding_forbidden": True,
+        "stretching_forbidden": True,
     }
 
 
@@ -361,7 +388,7 @@ def _frame_gate() -> dict[str, Any]:
 def _center_gate() -> dict[str, Any]:
     return {
         "schema_version": "native-composition-center-gate/v1",
-        "target_pixel": [800, 800],
+        "target_policy": "native_frame_center/v1",
         # Large receiver bodies may be intentionally clipped.  Keep the
         # installation activity reasonably central without rejecting a frame
         # whose moving geometry and receiver interface are both safely visible.
@@ -385,7 +412,7 @@ def _native_selected_fit_contract() -> dict[str, Any]:
         "command": "ProCmdZoomIntoOutline",
         "selection_scope": "moving_occurrences_and_receiver_surfaces/v1",
         "coordinate_adjustment": "none_native_surface_fit/v1",
-        "zoom_to_selected_level": 0.95,
+        "zoom_to_selected_level": 0.70,
         "level_policy": "fixed_native_selection_margin/v1",
         "max_commands_per_render": 1,
         "manual_pan_zoom_forbidden": True,

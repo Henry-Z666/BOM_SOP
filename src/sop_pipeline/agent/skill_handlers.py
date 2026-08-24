@@ -43,7 +43,10 @@ from .models import (
 from .review import (
     ACCEPT_WITH_OVERRIDE,
     HUMAN_OVERRIDE_IMAGE_ID,
+    SKIP_FROM_PUBLICATION,
+    SKIP_PUBLICATION_CANDIDATE_ID,
     create_human_override_decision,
+    create_skip_publication_decision,
 )
 from .render_job_compiler import compile_locked_render_jobs
 from .render_scheduler import (
@@ -381,8 +384,7 @@ def compile_render_jobs(
             context.read_json(_require_ref(invocation, "locked-render-plan"))
         )
         jobs = compile_locked_render_jobs(plan)
-        revision_ref = _optional_ref(invocation, "step-revision")
-        if revision_ref is not None:
+        for revision_ref in _refs(invocation, "step-revision"):
             jobs = _apply_step_revision(jobs, context.read_json(revision_ref))
     except (KeyError, TypeError, ValueError) as error:
         return _blocked("RENDER_JOB_COMPILATION_FAILED", str(error))
@@ -504,7 +506,7 @@ def render_batch(
                 runtime_config=runtime_config,
             )
         if formal_tasks:
-            scheduled = RenderScheduler(max_attempts=3, tasks_per_session=20).execute(
+            scheduled = RenderScheduler(max_attempts=3).execute(
                 formal_plan,
                 worker,
                 context.run.workspace,
@@ -1093,12 +1095,21 @@ def publish_delivery(
         groups = {
             str(item["step_id"]): item for item in candidates.get("groups", [])
         }
-        selected_step = None
-        selected_candidate = None
-        decision_ref = _optional_ref(invocation, "human-review-decision")
-        human_decision = (
-            context.read_json(decision_ref) if decision_ref is not None else None
-        )
+        selected_candidates: dict[str, str] = {}
+        for revision_ref in _refs(invocation, "step-revision"):
+            revision = context.read_json(revision_ref)
+            candidate = str(
+                revision.get("changes", {}).get("candidate_id", "")
+            )
+            if candidate:
+                selected_candidates[str(revision.get("step_id", ""))] = candidate
+        review_decisions: dict[str, tuple[str, dict[str, Any]]] = {}
+        for decision_ref in _refs(invocation, "human-review-decision"):
+            decision = context.read_json(decision_ref)
+            review_decisions[str(decision.get("step_id", ""))] = (
+                decision_ref,
+                decision,
+            )
         prior_publication_ref = _optional_ref(
             invocation, "results/publication-"
         )
@@ -1116,21 +1127,14 @@ def publish_delivery(
             step.step_id: step
             for step in context.run_store.list_steps(context.run.run_id)
         }
-        invalidation_ref = _optional_ref(invocation, "invalidation-set")
-        invalidated = (
-            {
+        invalidation_refs = _refs(invocation, "invalidation-set")
+        invalidated: set[str] = set()
+        for invalidation_ref in invalidation_refs:
+            invalidated.update(
                 str(step_id)
-                for step_id in context.read_json(invalidation_ref).get("steps", [])
-            }
-            if invalidation_ref is not None
-            else set()
-        )
-        revision_ref = _optional_ref(invocation, "step-revision")
-        if revision_ref is not None:
-            revision = context.read_json(revision_ref)
-            selected_step = str(revision.get("step_id", ""))
-            selected_candidate = str(
-                revision.get("changes", {}).get("candidate_id", "")
+                for step_id in context.read_json(invalidation_ref).get(
+                    "steps", []
+                )
             )
         formal_by_step = {step.step_id: step for step in formal.steps}
         bom_by_row = {row.row: row for row in bom.rows}
@@ -1149,6 +1153,7 @@ def publish_delivery(
                 status = StepStatus.QUESTIONED
             human_disposition: str | None = None
             applied_review_decision_ref: str | None = None
+            included_in_sop = True
             image_path = context.run.workspace / str(item["image_path"])
             candidate_images = tuple(
                 SopImage(
@@ -1161,44 +1166,51 @@ def publish_delivery(
             )
             prior = prior_steps.get(step_id)
             committed = committed_steps.get(step_id)
+            selected_candidate = selected_candidates.get(step_id, "")
+            decision_entry = review_decisions.get(step_id)
+            decision_ref = decision_entry[0] if decision_entry is not None else None
+            human_decision = decision_entry[1] if decision_entry is not None else None
             result_depends_on = tuple(item.get("depends_on", step.depends_on))
             result_complete_state_hash = str(
                 item.get("complete_state_hash") or step.complete_state_hash
             )
-            if (
-                committed is not None
-                and committed.status is StepStatus.PASSED
-                and step_id not in invalidated
-                and str((prior or {}).get("human_disposition") or "")
-                in {
-                    "accept_current_image",
-                    "accept_candidate",
-                    ACCEPT_WITH_OVERRIDE,
-                }
-            ):
+            if prior is not None and step_id not in invalidated:
                 prior_evidence = dict(prior or {})
-                prior_evidence["output_hash"] = committed.output_hash
+                if committed is not None and committed.output_hash:
+                    prior_evidence["output_hash"] = committed.output_hash
                 image_path = _historical_publication_image(
                     context.run.workspace,
                     prior_evidence,
                     image_path,
                     candidate_images,
                 )
-                status = StepStatus.PASSED
-                result_depends_on = committed.depends_on
-                result_complete_state_hash = committed.complete_state_hash
+                status = (
+                    committed.status
+                    if committed is not None
+                    else StepStatus(str(prior.get("status") or status.value))
+                )
+                if committed is not None:
+                    result_depends_on = committed.depends_on
+                    result_complete_state_hash = committed.complete_state_hash
+                else:
+                    result_depends_on = tuple(
+                        prior.get("depends_on", result_depends_on)
+                    )
+                    result_complete_state_hash = str(
+                        prior.get("complete_state_hash")
+                        or result_complete_state_hash
+                    )
                 machine_status = str(prior.get("machine_status") or machine_status)
                 human_disposition = prior.get("human_disposition")
                 applied_review_decision_ref = prior.get("review_decision_ref")
+                included_in_sop = bool(prior.get("included_in_sop", True))
             if (
-                step_id == selected_step
-                and selected_candidate == CURRENT_IMAGE_CANDIDATE_ID
+                selected_candidate == CURRENT_IMAGE_CANDIDATE_ID
             ):
                 status = StepStatus.PASSED
                 human_disposition = "accept_current_image"
             elif (
-                step_id == selected_step
-                and selected_candidate == HUMAN_OVERRIDE_IMAGE_ID
+                selected_candidate == HUMAN_OVERRIDE_IMAGE_ID
             ):
                 if not isinstance(human_decision, Mapping):
                     raise ValueError("人工特批缺少独立审核决定记录")
@@ -1229,7 +1241,20 @@ def publish_delivery(
                 status = StepStatus.PASSED
                 human_disposition = ACCEPT_WITH_OVERRIDE
                 applied_review_decision_ref = decision_ref
-            elif step_id == selected_step and selected_candidate:
+            elif selected_candidate == SKIP_PUBLICATION_CANDIDATE_ID:
+                if not isinstance(human_decision, Mapping):
+                    raise ValueError("跳过步骤缺少独立审核决定记录")
+                if (
+                    str(human_decision.get("decision")) != SKIP_FROM_PUBLICATION
+                    or str(human_decision.get("step_id")) != step_id
+                    or human_decision.get("publication_transform") != "omitted"
+                ):
+                    raise ValueError("跳过步骤的审核决定与当前步骤不一致")
+                status = StepStatus.PASSED
+                human_disposition = SKIP_FROM_PUBLICATION
+                applied_review_decision_ref = decision_ref
+                included_in_sop = False
+            elif selected_candidate:
                 chosen = next(
                     (
                         candidate
@@ -1262,8 +1287,8 @@ def publish_delivery(
                 for row in material_rows
             )
             source = bom_by_row.get(step.source_bom_rows[0]) if step.source_bom_rows else None
-            sop_steps.append(
-                SopStep(
+            if included_in_sop:
+                sop_steps.append(SopStep(
                     step_id=step_id,
                     main_process_id=step.main_process_id,
                     main_process_name=(source.name if source and source.name else step.main_process_id),
@@ -1294,8 +1319,7 @@ def publish_delivery(
                     ),
                     questioned=status is not StepStatus.PASSED,
                     candidates=candidate_images,
-                )
-            )
+                ))
             result_steps.append(
                 {
                     "step_id": step_id,
@@ -1309,9 +1333,14 @@ def publish_delivery(
                     ),
                     "machine_status": machine_status,
                     "human_disposition": human_disposition,
+                    "included_in_sop": included_in_sop,
                     "review_decision_ref": applied_review_decision_ref,
                     "publication_transform": (
-                        "none" if human_disposition == ACCEPT_WITH_OVERRIDE else None
+                        "omitted"
+                        if human_disposition == SKIP_FROM_PUBLICATION
+                        else "none"
+                        if human_disposition == ACCEPT_WITH_OVERRIDE
+                        else None
                     ),
                 }
             )
@@ -1368,7 +1397,7 @@ def resolve_step(
     review_decision: dict[str, Any] | None = None
     try:
         if action:
-            if action != ACCEPT_WITH_OVERRIDE:
+            if action not in {ACCEPT_WITH_OVERRIDE, SKIP_FROM_PUBLICATION}:
                 raise ValueError(f"不支持的人工决定：{action}")
             metadata = invocation.parameters.get("metadata", {})
             if not isinstance(metadata, Mapping) or not bool(
@@ -1388,7 +1417,12 @@ def resolve_step(
             )
             if not isinstance(selected_step, Mapping):
                 raise ValueError("当前校验结果中找不到待审核步骤")
-            review_decision = create_human_override_decision(
+            decision_factory = (
+                create_human_override_decision
+                if action == ACCEPT_WITH_OVERRIDE
+                else create_skip_publication_decision
+            )
+            review_decision = decision_factory(
                 context.run.workspace,
                 selected_step,
                 step_id=step_id,
@@ -1399,7 +1433,13 @@ def resolve_step(
                 revision_number,
                 step_id,
                 RevisionKind.PRESENTATION,
-                {"candidate_id": HUMAN_OVERRIDE_IMAGE_ID},
+                {
+                    "candidate_id": (
+                        HUMAN_OVERRIDE_IMAGE_ID
+                        if action == ACCEPT_WITH_OVERRIDE
+                        else SKIP_PUBLICATION_CANDIDATE_ID
+                    )
+                },
             )
         elif candidate_id:
             if candidate_id == CURRENT_IMAGE_CANDIDATE_ID:
@@ -1542,6 +1582,35 @@ def resolve_step(
                     else {}
                 ),
             )
+            if revision.changes.get("rerender_option") == "rebuild_exact_visibility":
+                mapping_ref = _optional_ref(invocation, "bom-cad-map")
+                source_rows = [
+                    int(value) for value in current_step.get("source_bom_rows", [])
+                ]
+                if mapping_ref is not None and source_rows:
+                    mapping_payload = context.read_json(mapping_ref)
+                    future_occurrences = {
+                        str(occurrence)
+                        for row in mapping_payload.get("rows", [])
+                        if int(row.get("bom_row", -1)) > max(source_rows)
+                        for occurrence in row.get("occurrence_ids", [])
+                    }
+                    protected = {
+                        str(value)
+                        for value in (
+                            *current_step.get("moving_occurrences", []),
+                            *current_step.get("receiver_occurrences", []),
+                        )
+                    }
+                    revision = replace(
+                        revision,
+                        changes={
+                            **revision.changes,
+                            "excluded_future_occurrences": sorted(
+                                future_occurrences - protected
+                            ),
+                        },
+                    )
             unresolved_code = str(current_step.get("error_code") or "")
             if (
                 revision.kind is RevisionKind.PRESENTATION
@@ -1692,6 +1761,14 @@ def _optional_ref(invocation: SkillInvocation, marker: str) -> str | None:
     )
 
 
+def _refs(invocation: SkillInvocation, marker: str) -> tuple[str, ...]:
+    return tuple(
+        reference
+        for reference in invocation.input_refs
+        if marker in reference
+    )
+
+
 def _apply_step_revision(plan: RenderPlan, payload: dict[str, Any]) -> RenderPlan:
     revision = StepRevision(
         revision=int(payload["revision"]),
@@ -1761,11 +1838,17 @@ def _apply_step_revision(plan: RenderPlan, payload: dict[str, Any]) -> RenderPla
                 contract["translation_vector_root"] = [
                     round(value * distance, 6) for value in normal
                 ]
+                _set_uniform_occurrence_translations(
+                    contract, contract["translation_vector_root"]
+                )
                 _refresh_arrow_endpoints(contract)
             elif rerender_option == "reverse_explosion":
                 contract["translation_vector_root"] = [
                     round(-value, 6) for value in current_translation
                 ]
+                _scale_occurrence_translations(
+                    contract, -1.0, fallback_vector=current_translation
+                )
                 _refresh_arrow_endpoints(contract)
             elif rerender_option == "switch_fixed_camera":
                 current_camera = str(contract.get("camera_id") or "")
@@ -1794,11 +1877,15 @@ def _apply_step_revision(plan: RenderPlan, payload: dict[str, Any]) -> RenderPla
                 contract["camera"] = deepcopy(catalog[next_camera])
                 contract.pop("camera_selection", None)
             elif rerender_option == "rebuild_exact_visibility":
+                excluded = {
+                    str(value)
+                    for value in changes.get("excluded_future_occurrences", [])
+                }
                 exact_visible = sorted(
                     {
                         str(value)
                         for value in contract.get("visible_occurrences", ())
-                        if str(value)
+                        if str(value) and str(value) not in excluded
                     }
                 )
                 required_visible = {
@@ -1829,6 +1916,9 @@ def _apply_step_revision(plan: RenderPlan, payload: dict[str, Any]) -> RenderPla
                 contract["translation_vector_root"] = [
                     round(value * scale, 6) for value in current_translation
                 ]
+                _scale_occurrence_translations(
+                    contract, scale, fallback_vector=current_translation
+                )
                 _refresh_arrow_endpoints(contract)
             elif rerender_option == "focus_installation_region":
                 selected_fit = presentation.get("native_selected_fit")
@@ -1870,6 +1960,9 @@ def _apply_step_revision(plan: RenderPlan, payload: dict[str, Any]) -> RenderPla
                 contract["translation_vector_root"] = [
                     round(value * next_scale, 6) for value in current_translation
                 ]
+                _scale_occurrence_translations(
+                    contract, next_scale, fallback_vector=current_translation
+                )
                 contract["camera_resolution"] = {
                     "schema_version": "camera-resolution-application/v1",
                     "option_id": camera_resolution_option,
@@ -1885,7 +1978,10 @@ def _apply_step_revision(plan: RenderPlan, payload: dict[str, Any]) -> RenderPla
                 current_level = float(
                     selected_fit.get("zoom_to_selected_level", 0.0)
                 )
-                if not math.isclose(current_level, 0.85, abs_tol=1.0e-9):
+                if not any(
+                    math.isclose(current_level, allowed, abs_tol=1.0e-9)
+                    for allowed in (0.70, 0.80, 0.85)
+                ):
                     raise ValueError("本步骤已使用唯一允许的接口聚焦修订")
                 selected_fit["zoom_to_selected_level"] = 0.95
                 presentation["native_selected_fit"] = selected_fit
@@ -1934,6 +2030,9 @@ def _apply_step_revision(plan: RenderPlan, payload: dict[str, Any]) -> RenderPla
             )
             contract["translation_vector_root"] = list(
                 display_selection["translation_vector_root"]
+            )
+            _set_uniform_occurrence_translations(
+                contract, contract["translation_vector_root"]
             )
             contract["display_translation_audit"] = display_selection
             contract["diagnostics"] = [
@@ -2130,16 +2229,85 @@ def _vector_length(value: Any) -> float:
 
 
 def _refresh_arrow_endpoints(contract: dict[str, Any]) -> None:
-    translation = [float(value) for value in contract["translation_vector_root"]]
+    translations = _occurrence_translations(contract)
     anchors = []
     for item in contract.get("arrow_anchors", []):
         anchor = dict(item)
+        occurrence_id = anchor.get("occurrence_id")
+        translation = (
+            translations.get(str(occurrence_id))
+            if occurrence_id is not None
+            else [
+                float(value)
+                for value in contract.get("translation_vector_root", ())
+            ]
+        )
+        if translation is None:
+            raise ValueError(f"缺少 occurrence {occurrence_id} 的爆炸向量")
         complete = [float(value) for value in anchor["complete_point_root"]]
         anchor["expected_exploded_point_root"] = [
             round(complete[index] + translation[index], 6) for index in range(3)
         ]
         anchors.append(anchor)
     contract["arrow_anchors"] = anchors
+
+
+def _occurrence_translations(
+    contract: Mapping[str, Any],
+) -> dict[str, list[float]]:
+    moving = [str(value) for value in contract.get("moving_occurrences", ())]
+    raw = contract.get("occurrence_translation_vectors_root")
+    if not isinstance(raw, Mapping):
+        uniform = [
+            float(value) for value in contract.get("translation_vector_root", ())
+        ]
+        raw = {occurrence: uniform for occurrence in moving}
+    result = {
+        str(occurrence): [float(value) for value in vector]
+        for occurrence, vector in raw.items()
+    }
+    if set(result) != set(moving) or any(len(vector) != 3 for vector in result.values()):
+        raise ValueError("锁定渲染任务缺少逐 occurrence 三维爆炸向量")
+    return result
+
+
+def _set_uniform_occurrence_translations(
+    contract: dict[str, Any], vector: Any
+) -> None:
+    value = [round(float(item), 6) for item in vector]
+    if len(value) != 3:
+        raise ValueError("爆炸向量必须是三维向量")
+    contract["occurrence_translation_vectors_root"] = {
+        str(occurrence): list(value)
+        for occurrence in contract.get("moving_occurrences", ())
+    }
+
+
+def _scale_occurrence_translations(
+    contract: dict[str, Any],
+    scale: float,
+    *,
+    fallback_vector: Any | None = None,
+) -> None:
+    if not isinstance(contract.get("occurrence_translation_vectors_root"), Mapping):
+        uniform = (
+            [float(value) for value in fallback_vector]
+            if fallback_vector is not None
+            else [
+                float(value)
+                for value in contract.get("translation_vector_root", ())
+            ]
+        )
+        translations = {
+            str(occurrence): uniform
+            for occurrence in contract.get("moving_occurrences", ())
+        }
+    else:
+        translations = _occurrence_translations(contract)
+    contract["occurrence_translation_vectors_root"] = {
+        occurrence: [round(value * scale, 6) for value in vector]
+        for occurrence, vector in translations.items()
+    }
 
 
 def _revised_execution_mode(contract: Mapping[str, Any]) -> str:

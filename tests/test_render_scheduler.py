@@ -78,11 +78,11 @@ class RenderSchedulerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             workspace = Path(folder)
             checkpoints = FileCheckpointStore(workspace / "checkpoint.json")
-            first = RenderScheduler(tasks_per_session=3).execute(
+            first = RenderScheduler().execute(
                 plan, worker, workspace, checkpoints
             )
             resumed_worker = PassingWorker()
-            resumed = RenderScheduler(tasks_per_session=3).execute(
+            resumed = RenderScheduler().execute(
                 plan, resumed_worker, workspace, checkpoints
             )
 
@@ -117,12 +117,12 @@ class RenderSchedulerTests(unittest.TestCase):
         self.assertEqual(recovered.metrics.restored_steps, 0)
         self.assertEqual(recovered_worker.calls, [("task-001", 1)])
 
-    def test_500_tasks_use_linear_checkpoints_and_25_bounded_sessions(self) -> None:
+    def test_500_tasks_keep_one_scheduler_session_and_linear_checkpoints(self) -> None:
         plan = RenderPlan("render-plan/v1", tuple(_task(index) for index in range(1, 501)))
         worker = PassingWorker()
         checkpoints = MemoryCheckpointStore()
         with tempfile.TemporaryDirectory() as folder:
-            result = RenderScheduler(max_attempts=3, tasks_per_session=20).execute(
+            result = RenderScheduler(max_attempts=3).execute(
                 plan,
                 worker,
                 Path(folder),
@@ -130,7 +130,7 @@ class RenderSchedulerTests(unittest.TestCase):
             )
 
         self.assertEqual(result.metrics.total_tasks, 500)
-        self.assertEqual(result.metrics.worker_sessions, 25)
+        self.assertEqual(result.metrics.worker_sessions, 1)
         self.assertEqual(result.metrics.render_attempts, 500)
         self.assertEqual(checkpoints.save_count, 500)
         self.assertTrue(all(step.status is StepStatus.PASSED for step in result.steps))
@@ -146,7 +146,7 @@ class RenderSchedulerTests(unittest.TestCase):
         )
         worker = OneBrokenWorker()
         with tempfile.TemporaryDirectory() as folder:
-            result = RenderScheduler(max_attempts=3, tasks_per_session=20).execute(
+            result = RenderScheduler(max_attempts=3).execute(
                 plan,
                 worker,
                 Path(folder),
@@ -174,7 +174,7 @@ class RenderSchedulerTests(unittest.TestCase):
         )
         worker = OneBrokenWorker()
         with tempfile.TemporaryDirectory() as folder:
-            result = RenderScheduler(max_attempts=2, tasks_per_session=20).execute(
+            result = RenderScheduler(max_attempts=2).execute(
                 plan,
                 worker,
                 Path(folder),
