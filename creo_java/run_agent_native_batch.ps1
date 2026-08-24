@@ -166,7 +166,7 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   }
   $encodedTranslations = $translationRows -join ';'
   $presentation = $payload.presentation
-  if ([string]$presentation.schema_version -notin @('fixed-frame-presentation/v1', 'native-viewport-presentation/v1')) { throw "Task $taskId has no supported presentation contract." }
+  if ([string]$presentation.schema_version -notin @('fixed-frame-presentation/v1', 'native-viewport-presentation/v1', 'square-crop-presentation/v1')) { throw "Task $taskId has no supported presentation contract." }
   $nativeSelectedFit = $presentation.native_selected_fit
   if ([string]$nativeSelectedFit.schema_version -ne 'native-selected-fit/v2' -or
       [string]$nativeSelectedFit.command -ne 'ProCmdZoomIntoOutline' -or

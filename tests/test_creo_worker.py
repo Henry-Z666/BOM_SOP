@@ -161,6 +161,28 @@ def native_task() -> RenderTask:
 
 
 class AgentNativeCreoWorkerTests(unittest.TestCase):
+    def test_compiled_presentation_contract_is_accepted_by_native_runner(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        compiler = (root / "src/sop_pipeline/agent/render_job_compiler.py").read_text(
+            encoding="utf-8"
+        )
+        batch = (root / "creo_java/run_agent_native_batch.ps1").read_text(
+            encoding="utf-8"
+        )
+        schemas = {
+            token
+            for token in (
+                "fixed-frame-presentation/v1",
+                "native-viewport-presentation/v1",
+                "square-crop-presentation/v1",
+            )
+            if f'"schema_version": "{token}"' in compiler
+        }
+
+        self.assertTrue(schemas)
+        for schema in schemas:
+            self.assertIn(f"'{schema}'", batch)
+
     def test_optional_visibility_revision_is_safe_for_initial_render_jobs(self) -> None:
         root = Path(__file__).resolve().parents[1]
         batch = (root / "creo_java/run_agent_native_batch.ps1").read_text(
