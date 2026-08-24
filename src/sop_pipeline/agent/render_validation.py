@@ -121,12 +121,17 @@ class DeterministicNativeRenderValidator:
         variant_index: int = 0,
     ) -> NativeRenderGateReport:
         failures: list[str] = []
+        expected_arrow_components = self._validate_arrow_audit(
+            audit_file, task_payload, failures
+        )
         composition, arrow_raster = self._validate_image(
-            image_file, task_payload, failures
+            image_file,
+            task_payload,
+            failures,
+            expected_arrow_components=expected_arrow_components,
         )
         self._validate_camera(task_payload, variant_index, failures)
         self._validate_camera_visibility(task_payload, variant_index, failures)
-        self._validate_arrow_audit(audit_file, task_payload, failures)
         unique = tuple(dict.fromkeys(failures))
         return NativeRenderGateReport(
             schema_version="native-render-gate-report/v1",
@@ -141,6 +146,8 @@ class DeterministicNativeRenderValidator:
         image_file: Path,
         payload: dict[str, Any],
         failures: list[str],
+        *,
+        expected_arrow_components: int | None,
     ) -> tuple[RasterCompositionMetrics | None, ArrowRasterMetrics | None]:
         if not image_file.is_file() or image_file.stat().st_size == 0:
             failures.append("RENDER_OUTPUT_MISSING")
@@ -160,7 +167,7 @@ class DeterministicNativeRenderValidator:
         if (
             not isinstance(presentation, dict)
             or presentation.get("schema_version") != "fixed-frame-presentation/v1"
-            or presentation.get("focus_context") != "stage_visible_bbox/v1"
+            or presentation.get("focus_context") != "installation_activity_bbox/v1"
             or presentation.get("framing_priority") != "installation_activity/v1"
             or presentation.get("zoom_anchor")
             != "installation_activity_center/v1"
@@ -168,29 +175,37 @@ class DeterministicNativeRenderValidator:
             failures.append("PRESENTATION_CONTRACT_INVALID")
             return None, None
         framing_profile = presentation.get("framing_profile", {})
-        if isinstance(framing_profile, dict) and framing_profile.get("policy") == "native_zoom_to_selected/v1":
-            selected_fit = presentation.get("native_selected_fit")
-            try:
-                selected_fit_level = float(selected_fit.get("zoom_to_selected_level", 0.0))
-            except (AttributeError, TypeError, ValueError, OverflowError):
-                selected_fit_level = 0.0
-            if (
-                not isinstance(selected_fit, dict)
-                or selected_fit.get("schema_version") != "native-selected-fit/v1"
-                or selected_fit.get("command") != "ProCmdZoomIntoOutline"
-                or selected_fit.get("selection_scope")
-                != "moving_and_receiver_occurrences/v1"
-                or selected_fit.get("level_policy")
-                != "fixed_native_selection_margin/v1"
-                or selected_fit.get("max_commands_per_render") != 1
-                or selected_fit.get("absolute_pan_zoom_forbidden") is not True
-                or not any(
-                    math.isclose(selected_fit_level, allowed, abs_tol=1.0e-9)
-                    for allowed in (0.85, 0.95)
-                )
-            ):
-                failures.append("PRESENTATION_CONTRACT_INVALID")
-                return None, None
+        selected_fit = presentation.get("native_selected_fit")
+        try:
+            selected_fit_level = float(selected_fit.get("zoom_to_selected_level", 0.0))
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            selected_fit_level = 0.0
+        if (
+            not isinstance(framing_profile, dict)
+            or framing_profile.get("schema_version")
+            != "native-selected-framing-policy/v1"
+            or framing_profile.get("policy")
+            != "native_receiver_surface_fit/v1"
+            or framing_profile.get("selection_scope")
+            != "moving_occurrences_and_receiver_surfaces/v1"
+            or not isinstance(selected_fit, dict)
+            or selected_fit.get("schema_version") != "native-selected-fit/v2"
+            or selected_fit.get("command") != "ProCmdZoomIntoOutline"
+            or selected_fit.get("selection_scope")
+            != "moving_occurrences_and_receiver_surfaces/v1"
+            or selected_fit.get("coordinate_adjustment")
+            != "none_native_surface_fit/v1"
+            or selected_fit.get("level_policy")
+            != "fixed_native_selection_margin/v1"
+            or selected_fit.get("max_commands_per_render") != 1
+            or selected_fit.get("manual_pan_zoom_forbidden") is not True
+            or not any(
+                math.isclose(selected_fit_level, allowed, abs_tol=1.0e-9)
+                for allowed in (0.85, 0.95)
+            )
+        ):
+            failures.append("PRESENTATION_CONTRACT_INVALID")
+            return None, None
         centering = presentation.get("center_gate")
         if (
             not isinstance(centering, dict)
@@ -213,8 +228,8 @@ class DeterministicNativeRenderValidator:
             return None, None
         if (
             len(target_pixel) != 2
-            or not 1.0 <= max_activity_center_offset <= 200.0
-            or not 1.0 <= max_arrow_center_offset <= 200.0
+            or not 1.0 <= max_activity_center_offset <= 400.0
+            or not 1.0 <= max_arrow_center_offset <= 400.0
         ):
             failures.append("PRESENTATION_CONTRACT_INVALID")
             return None, None
@@ -294,6 +309,17 @@ class DeterministicNativeRenderValidator:
                 and arrow_metrics.border_margin_pixels < min_arrow_margin
             ):
                 failures.append("ARROW_CLIPPED")
+            # One Creo display-list arrow is a connected raster component.
+            # Extra components can be harmless anti-alias/head fragments, but
+            # fewer components than the validated arrow audit means at least
+            # one moving instance or receiver endpoint disappeared from the
+            # delivered frame.
+            if (
+                expected_arrow_components is not None
+                and arrow_metrics.significant_components
+                < expected_arrow_components
+            ):
+                failures.append("ARROW_RASTER_COUNT_MISMATCH")
         # The compiled contract defines the installation focus as the midpoint
         # of the staged subject and the native arrow.  Applying both limits to
         # the two centres independently makes the gate mathematically

@@ -91,6 +91,25 @@ class FakeDiscoveryRunner:
 
 
 class CreoDiscoveryTests(unittest.TestCase):
+    def test_java_discovery_has_auditable_physical_anchor_fallbacks(self) -> None:
+        source = (
+            Path(__file__).parents[1]
+            / "creo_java"
+            / "src"
+            / "AutoCadDiscovery.java"
+        ).read_text(encoding="utf-8")
+        physical_anchor = source.split(
+            "private static PhysicalAnchor physicalAnchor", 1
+        )[1].split("private static String constraintType", 1)[0]
+
+        self.assertIn("private static Point3D surfaceAnchorFromUv", source)
+        self.assertIn("validatedSurfaceAnchor", physical_anchor)
+        self.assertIn("private static LocalAnchor edgeSurfaceAnchor", source)
+        self.assertIn("edgeSurfaceAnchor", physical_anchor)
+        self.assertIn("[DISCOVERY-ANCHOR] unavailable", physical_anchor)
+        self.assertIn("physical_anchor_source", source)
+        self.assertNotIn("catch (Throwable ignored) {}", physical_anchor)
+
     def test_runtime_config_reuses_persisted_run_config_after_restart(self) -> None:
         with tempfile.TemporaryDirectory() as folder, patch.dict(
             os.environ,

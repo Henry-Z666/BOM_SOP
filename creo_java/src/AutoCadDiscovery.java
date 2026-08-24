@@ -16,6 +16,14 @@ import java.util.*;
 
 /** Fact-only, asynchronous Creo Java Free OTK assembly extractor. */
 public final class AutoCadDiscovery {
+  private static final class LocalAnchor {
+    final Point3D point; final String source;
+    LocalAnchor(Point3D point, String source) { this.point = point; this.source = source; }
+  }
+  private static final class PhysicalAnchor {
+    final double[] point; final String source;
+    PhysicalAnchor(double[] point, String source) { this.point = point; this.source = source; }
+  }
   private static String esc(String value) {
     if (value == null) return "";
     return value.replace("\\", "\\\\").replace("\"", "\\\"")
@@ -141,7 +149,61 @@ public final class AutoCadDiscovery {
     for (int i = 0; i < 3; i++) sample.set(i, (low.get(i) + high.get(i)) / 2.0);
     return surface.EvalClosestPointOnSurface(sample);
   }
-  private static double[] physicalAnchor(Session session, Model model, double[][] toRoot) throws jxthrowable {
+  private static Point3D surfaceAnchorFromUv(Surface surface) throws jxthrowable {
+    UVOutline extent = surface.GetUVExtents(); UVParams low = extent.get(0), high = extent.get(1); UVParams sample = UVParams.create();
+    for (int i = 0; i < 2; i++) sample.set(i, (low.get(i) + high.get(i)) / 2.0);
+    Point3D evaluated = surface.Eval3DData(sample).GetPoint();
+    return surface.EvalClosestPointOnSurface(evaluated);
+  }
+  private static Point3D surfaceAnchorFromExtrema(Surface surface, int axis, double sign) throws jxthrowable {
+    Vector3D direction = Vector3D.create();
+    for (int i = 0; i < 3; i++) direction.set(i, i == axis ? sign : 0.0);
+    return surface.EvalMinimum(direction);
+  }
+  private static Point3D edgeAnchor(Edge edge) throws jxthrowable {
+    double length = edge.EvalLength();
+    if (!Double.isFinite(length) || length <= 1.0e-9) throw new IllegalStateException("edge has no finite length");
+    try { return edge.EvalFromLength(0.0, length / 2.0).GetPoint(); }
+    catch (jxthrowable fromLengthFailure) { return edge.Eval3DData(0.5).GetPoint(); }
+  }
+  private static LocalAnchor edgeSurfaceAnchor(Edge edge) throws jxthrowable {
+    Surface surface = edge.GetSurface1();
+    if (surface == null) surface = edge.GetSurface2();
+    if (surface == null) throw new IllegalStateException("edge has no owning surface");
+    Point3D anchor = surface.EvalClosestPointOnSurface(edgeAnchor(edge));
+    return new LocalAnchor(anchor, "surface." + surface.GetId() + ".edge." + edge.GetId() + ".midpoint");
+  }
+  private static void recordAnchorFailure(List<String> failures, String stage, Throwable failure) {
+    if (failures.size() >= 8) return;
+    failures.add(stage + "=" + failure.getClass().getSimpleName()
+      + (failure.getMessage() == null ? "" : ":" + failure.getMessage()));
+  }
+  private static String modelLabel(Model model) {
+    try { return model == null ? "null" : model.GetFullName(); }
+    catch (Throwable failure) { return model == null ? "null" : model.getClass().getSimpleName(); }
+  }
+  private static LocalAnchor validatedSurfaceAnchor(Solid solid, Surface surface, List<String> failures, String prefix) {
+    try {
+      Point3D anchor = surfaceAnchor(surface);
+      if (pointWithinLocalOutline(solid, anchor)) return new LocalAnchor(anchor, prefix + ".xyz");
+      recordAnchorFailure(failures, prefix + ".xyz", new IllegalStateException("outside solid outline"));
+    } catch (Throwable failure) { recordAnchorFailure(failures, prefix + ".xyz", failure); }
+    try {
+      Point3D anchor = surfaceAnchorFromUv(surface);
+      if (pointWithinLocalOutline(solid, anchor)) return new LocalAnchor(anchor, prefix + ".uv");
+      recordAnchorFailure(failures, prefix + ".uv", new IllegalStateException("outside solid outline"));
+    } catch (Throwable failure) { recordAnchorFailure(failures, prefix + ".uv", failure); }
+    for (int axis = 0; axis < 3; axis++) for (double sign : new double[]{-1.0, 1.0}) {
+      try {
+        Point3D anchor = surfaceAnchorFromExtrema(surface, axis, sign);
+        if (pointWithinLocalOutline(solid, anchor))
+          return new LocalAnchor(anchor, prefix + ".extrema." + axis + "." + (sign < 0.0 ? "min" : "max"));
+        recordAnchorFailure(failures, prefix + ".extrema", new IllegalStateException("outside solid outline"));
+      } catch (Throwable failure) { recordAnchorFailure(failures, prefix + ".extrema", failure); }
+    }
+    return null;
+  }
+  private static PhysicalAnchor physicalAnchor(Session session, Model model, double[][] toRoot) throws jxthrowable {
     if (model instanceof Assembly) {
       Features components = ((Assembly)model).ListFeaturesByType(Boolean.FALSE, FeatureType.FEATTYPE_COMPONENT);
       List<ComponentFeat> ordered = new ArrayList<>();
@@ -153,14 +215,17 @@ public final class AutoCadDiscovery {
       for (ComponentFeat component : ordered) {
         try {
           Model child = session.RetrieveModel(component.GetModelDescr());
-          double[] anchor = physicalAnchor(session, child, multiply(matrix(component.GetPosition()), toRoot));
+          PhysicalAnchor anchor = physicalAnchor(session, child, multiply(matrix(component.GetPosition()), toRoot));
           if (anchor != null) return anchor;
-        } catch (Throwable ignored) {}
+        } catch (Throwable failure) {
+          System.err.println("[DISCOVERY-ANCHOR] child_unavailable model=" + modelLabel(model)
+            + " component=" + component.GetId() + " error=" + error(failure));
+        }
       }
       return null;
     }
     if (!(model instanceof Solid)) return null;
-    Solid solid = (Solid)model;
+    Solid solid = (Solid)model; List<String> failures = new ArrayList<>();
     try {
       SolidBody body = solid.GetDefaultBody(); Surfaces surfaces = body == null ? null : body.ListSurfaces();
       List<Surface> ordered = new ArrayList<>();
@@ -170,10 +235,10 @@ public final class AutoCadDiscovery {
         catch (jxthrowable error) { throw new RuntimeException(error); }
       }));
       for (Surface surface : ordered) {
-        try { return transformPoint(toRoot, surfaceAnchor(surface)); }
-        catch (Throwable ignored) {}
+        LocalAnchor anchor = validatedSurfaceAnchor(solid, surface, failures, "body.surface." + surface.GetId());
+        if (anchor != null) return new PhysicalAnchor(transformPoint(toRoot, anchor.point), anchor.source);
       }
-    } catch (Throwable ignored) {}
+    } catch (Throwable failure) { recordAnchorFailure(failures, "default_body", failure); }
     try {
       ModelItems surfaces = solid.ListItems(ModelItemType.ITEM_SURFACE);
       List<Surface> ordered = new ArrayList<>();
@@ -183,12 +248,28 @@ public final class AutoCadDiscovery {
         catch (jxthrowable error) { throw new RuntimeException(error); }
       }));
       for (Surface surface : ordered) {
-        try {
-          Point3D anchor = surfaceAnchor(surface);
-          if (pointWithinLocalOutline(solid, anchor)) return transformPoint(toRoot, anchor);
-        } catch (Throwable ignored) {}
+        LocalAnchor anchor = validatedSurfaceAnchor(solid, surface, failures, "model.surface." + surface.GetId());
+        if (anchor != null) return new PhysicalAnchor(transformPoint(toRoot, anchor.point), anchor.source);
       }
-    } catch (Throwable ignored) {}
+    } catch (Throwable failure) { recordAnchorFailure(failures, "model_surfaces", failure); }
+    try {
+      ModelItems edges = solid.ListItems(ModelItemType.ITEM_EDGE); List<Edge> ordered = new ArrayList<>();
+      for (int i = 0; edges != null && i < edges.getarraysize(); i++) ordered.add((Edge)edges.get(i));
+      ordered.sort(Comparator.comparingInt(edge -> {
+        try { return edge.GetId(); }
+        catch (jxthrowable error) { throw new RuntimeException(error); }
+      }));
+      for (Edge edge : ordered) {
+        try {
+          LocalAnchor anchor = edgeSurfaceAnchor(edge);
+          if (pointWithinLocalOutline(solid, anchor.point))
+            return new PhysicalAnchor(transformPoint(toRoot, anchor.point), anchor.source);
+          recordAnchorFailure(failures, "edge." + edge.GetId(), new IllegalStateException("outside solid outline"));
+        } catch (Throwable failure) { recordAnchorFailure(failures, "edge", failure); }
+      }
+    } catch (Throwable failure) { recordAnchorFailure(failures, "model_edges", failure); }
+    System.err.println("[DISCOVERY-ANCHOR] unavailable model=" + modelLabel(model)
+      + " attempts=" + String.join(" | ", failures));
     return null;
   }
   private static String constraintType(ComponentConstraintType type) {
@@ -291,14 +372,15 @@ public final class AutoCadDiscovery {
       } catch (Throwable unavailableChild) {
         System.err.println("[DISCOVERY-TRACE] child_scan_skipped=" + path);
       }
-      double[] physicalAnchorRoot = null;
+      PhysicalAnchor physicalAnchorRoot = null;
       try { physicalAnchorRoot = physicalAnchor(session, child, componentToRoot); } catch (Throwable ignored) {}
       append(nodes, "{\"id\":\"" + esc(path) + "\",\"occurrence_id\":\"" + esc(path)
         + "\",\"component_path\":" + intArray(componentPath) + ",\"parent_occurrence\":\"" + esc(pathId(parentPath))
         + "\",\"feature_id\":" + component.GetId() + ",\"part_no\":\"" + esc(model.GetFileName())
         + "\",\"model_name\":\"" + esc(model.GetFullName()) + "\",\"transform\":" + transform(componentToRoot)
         + ",\"bounds_root\":" + rootBounds(outline, componentToRoot)
-        + ",\"physical_anchor_root\":" + (physicalAnchorRoot == null ? "null" : array(physicalAnchorRoot)) + "}");
+        + ",\"physical_anchor_root\":" + (physicalAnchorRoot == null ? "null" : array(physicalAnchorRoot.point))
+        + ",\"physical_anchor_source\":" + (physicalAnchorRoot == null ? "null" : "\"" + esc(physicalAnchorRoot.source) + "\"") + "}");
       ComponentConstraints constraints = component.GetConstraints();
       for (int j = 0; constraints != null && j < constraints.getarraysize(); j++) {
         ComponentConstraint c = constraints.get(j);

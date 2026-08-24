@@ -186,6 +186,8 @@ def _fixture(root: Path):
                 "type": "MATE",
                 "assembly_reference": {
                     "occurrence_id": "10",
+                    "item_id": 101,
+                    "item_type": "SURFACE",
                     "geometry": {
                         "status": "available",
                         "direction_root": [0.0, 0.0, 1.0],

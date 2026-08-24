@@ -176,13 +176,13 @@ class DesktopResolutionFlowTests(unittest.TestCase):
         finally:
             window.close()
 
-    def test_default_quick_prompts_show_human_only_review_policy(self) -> None:
+    def test_default_quick_prompts_are_hidden_without_home_page_status_banners(self) -> None:
         window = MainWindow(_PendingResolutionService())  # type: ignore[arg-type]
 
         try:
             self.assertEqual(window.quick_prompt_buttons, {})
             self.assertTrue(window.quick_prompt_container.isHidden())
-            self.assertIn("图片自动审查：已停用", window.audit_mode_status.text())
+            self.assertFalse(hasattr(window, "audit_mode_status"))
         finally:
             window.close()
 
@@ -417,10 +417,11 @@ class DesktopResolutionFlowTests(unittest.TestCase):
         finally:
             window.close()
 
-    def test_actionable_diagnostics_include_values_actions_and_rollback(self) -> None:
+    def test_actionable_diagnostics_hide_internal_values_and_keep_recovery(self) -> None:
         details = _actionable_review_details(
             {
                 "category": "system_retry",
+                "error_code": "SUBJECT_TOO_SMALL",
                 "expected": {"subject_span": [0.2, 0.8]},
                 "actual": {"foreground_pixels": 0},
                 "attempted_actions": ["已重渲染修订视角"],
@@ -431,11 +432,41 @@ class DesktopResolutionFlowTests(unittest.TestCase):
 
         joined = "；".join(details)
         self.assertIn("系统回退重试", joined)
-        self.assertIn("期望值", joined)
-        self.assertIn("foreground_pixels", joined)
-        self.assertIn("已重渲染修订视角", joined)
-        self.assertIn("回退相机参数", joined)
+        self.assertIn("调整取景", joined)
+        self.assertNotIn("期望值", joined)
+        self.assertNotIn("foreground_pixels", joined)
+        self.assertNotIn("已重渲染修订视角", joined)
+        self.assertNotIn("回退相机参数", joined)
         self.assertIn("已保留上一张有效图片", joined)
+
+    def test_review_page_does_not_show_raw_diagnostics(self) -> None:
+        window = MainWindow(_PendingResolutionService())  # type: ignore[arg-type]
+        item = QListWidgetItem("待人工确认")
+        item.setData(
+            Qt.UserRole,
+            {
+                "step_id": "step-1",
+                "step_number": 1,
+                "error_code": "MANUAL_IMAGE_REVIEW_REQUIRED",
+                "error_message": "expected={'camera_receiver_dot_min': 0.35}",
+                "issues": ["bbox=[389, 932, 772, 1154]"],
+                "expected": {"camera_receiver_dot_min": 0.35},
+                "actual": {"subject_span": [0.54, 1.0]},
+                "image_path": "",
+            },
+        )
+
+        window._candidate_clicked(item)
+
+        try:
+            summary = window.review_reason.text()
+            self.assertIn("图片需要人工确认", summary)
+            self.assertIn("预览图片", summary)
+            self.assertNotIn("MANUAL_IMAGE_REVIEW_REQUIRED", summary)
+            self.assertNotIn("camera_receiver_dot_min", summary)
+            self.assertNotIn("bbox", summary)
+        finally:
+            window.close()
 
 if __name__ == "__main__":
     unittest.main()

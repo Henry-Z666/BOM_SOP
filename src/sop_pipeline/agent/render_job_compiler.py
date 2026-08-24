@@ -70,6 +70,7 @@ def compile_locked_render_jobs(plan: FormalRenderPlan) -> RenderPlan:
             "stage_geometry_root": _compile_stage_geometry(plan, step),
             "presentation": _compile_presentation(plan, step),
             "arrow_anchors": _compile_arrow_anchors(step),
+            "receiver_interface_selections": _compile_receiver_interface_selections(step),
             "arrow_renderer": "creo_display_list/v1",
             "diagnostics": list(step.diagnostics),
             "repair_space": {
@@ -77,7 +78,7 @@ def compile_locked_render_jobs(plan: FormalRenderPlan) -> RenderPlan:
                 "explosion_scales": [0.85, 1.0, 1.15],
                 "pan_offsets": [[0, 0]],
                 "zoom_scales": [1.0],
-                "framing_repairs": "native_selected_fit_only/v1",
+                "framing_repairs": "activity_coordinate_fit_only/v1",
             },
         }
         tasks.append(
@@ -146,6 +147,13 @@ def _validate_step_contract(step: FormalRenderStep, mode: str) -> None:
         step.moving_occurrences
     ):
         raise ValueError(f"render step {step.step_id} lacks same-CAD-point arrow anchors")
+    if any(
+        anchor.receiver_occurrence_id is None
+        or anchor.receiver_item_id is None
+        or anchor.receiver_item_type != "SURFACE"
+        for anchor in step.arrow_anchors
+    ):
+        raise ValueError(f"render step {step.step_id} lacks receiver surface selections")
 
 
 def _compile_arrow_anchors(step: FormalRenderStep) -> list[dict[str, Any]]:
@@ -163,6 +171,30 @@ def _compile_arrow_anchors(step: FormalRenderStep) -> list[dict[str, Any]]:
             ],
         }
         for anchor in step.arrow_anchors
+    ]
+
+
+def _compile_receiver_interface_selections(
+    step: FormalRenderStep,
+) -> list[dict[str, Any]]:
+    selections = {
+        (
+            str(anchor.receiver_occurrence_id),
+            int(anchor.receiver_item_id),
+            str(anchor.receiver_item_type),
+        )
+        for anchor in step.arrow_anchors
+        if anchor.receiver_occurrence_id is not None
+        and anchor.receiver_item_id is not None
+        and anchor.receiver_item_type is not None
+    }
+    return [
+        {
+            "occurrence_id": occurrence_id,
+            "item_id": item_id,
+            "item_type": item_type,
+        }
+        for occurrence_id, item_id, item_type in sorted(selections)
     ]
 
 
@@ -280,7 +312,7 @@ def _compile_presentation(
     if step.camera_id is None:
         return {
             "schema_version": "fixed-frame-presentation/v1",
-            "focus_context": "stage_visible_bbox/v1",
+            "focus_context": "installation_activity_bbox/v1",
             "framing_priority": "installation_activity/v1",
             "zoom_anchor": "installation_activity_center/v1",
             "native_selected_fit": _native_selected_fit_contract(),
@@ -291,7 +323,7 @@ def _compile_presentation(
         }
     return {
         "schema_version": "fixed-frame-presentation/v1",
-        "focus_context": "stage_visible_bbox/v1",
+        "focus_context": "installation_activity_bbox/v1",
         "framing_priority": "installation_activity/v1",
         "zoom_anchor": "installation_activity_center/v1",
         "native_selected_fit": _native_selected_fit_contract(),
@@ -330,27 +362,31 @@ def _center_gate() -> dict[str, Any]:
     return {
         "schema_version": "native-composition-center-gate/v1",
         "target_pixel": [800, 800],
-        "max_activity_center_offset_pixels": 120,
-        "max_arrow_center_offset_pixels": 120,
+        # Large receiver bodies may be intentionally clipped.  Keep the
+        # installation activity reasonably central without rejecting a frame
+        # whose moving geometry and receiver interface are both safely visible.
+        "max_activity_center_offset_pixels": 400,
+        "max_arrow_center_offset_pixels": 400,
     }
 
 
 def _framing_profile_contract() -> dict[str, Any]:
     return {
         "schema_version": "native-selected-framing-policy/v1",
-        "policy": "native_zoom_to_selected/v1",
-        "selection_scope": "moving_and_receiver_occurrences/v1",
+        "policy": "native_receiver_surface_fit/v1",
+        "selection_scope": "moving_occurrences_and_receiver_surfaces/v1",
         "on_failure": "question_single_frame/v1",
     }
 
 
 def _native_selected_fit_contract() -> dict[str, Any]:
     return {
-        "schema_version": "native-selected-fit/v1",
+        "schema_version": "native-selected-fit/v2",
         "command": "ProCmdZoomIntoOutline",
-        "selection_scope": "moving_and_receiver_occurrences/v1",
-        "zoom_to_selected_level": 0.85,
+        "selection_scope": "moving_occurrences_and_receiver_surfaces/v1",
+        "coordinate_adjustment": "none_native_surface_fit/v1",
+        "zoom_to_selected_level": 0.95,
         "level_policy": "fixed_native_selection_margin/v1",
         "max_commands_per_render": 1,
-        "absolute_pan_zoom_forbidden": True,
+        "manual_pan_zoom_forbidden": True,
     }

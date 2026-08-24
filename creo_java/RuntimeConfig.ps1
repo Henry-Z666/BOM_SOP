@@ -80,7 +80,10 @@ function Start-CreoNameService {
 function Set-CreoRuntimeEnvironment {
   param([Parameter(Mandatory = $true)]$Runtime)
   $env:PATH = $Runtime.NativeLibrary + ';' + (Join-Path $Runtime.ParametricDirectory 'bin') + ';' + $env:PATH
-  $env:PRO_DIRECTORY = $Runtime.ParametricDirectory
+  # PTC's parametric.psf resolves x86e_win64\obj\pro_comm_msg.exe and the
+  # native RPC libraries below PRO_DIRECTORY.  That root is Common Files,
+  # not the Creo application-specific Parametric directory.
+  $env:PRO_DIRECTORY = $Runtime.CommonFiles
   $env:CREO_COMMON_FILES = $Runtime.CommonFiles
   $env:PRO_COMM_MSG_EXE = $Runtime.ProCommMessage
   $env:PTC_D_LICENSE_FILE = $Runtime.LicenseFile

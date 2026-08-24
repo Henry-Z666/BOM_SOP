@@ -64,14 +64,6 @@ _CATEGORY_LABELS = {
 }
 
 
-_DETERMINISTIC_POLICY = (
-    "纯本地确定性流程：BOM 决定层级与顺序，最终 Creo 总装决定 occurrence、"
-    "接收面和坐标。图片质量不再由机器自动通过或驳回，每张真实图片都由人工"
-    "预览后采用或选择问题进行二次生成。二次生成只使用固定选项重写渲染任务；"
-    "备注不会被解析为脚本。"
-)
-
-
 _ALL_CAMERA_VISIBILITY_CODES = {
     "MOVING_SET_OCCLUDED",
     "MOVING_OCCURRENCE_OCCLUDED",
@@ -82,6 +74,35 @@ _ALL_CAMERA_VISIBILITY_CODES = {
 _CAMERA_VISIBILITY_CODES = (
     _ALL_CAMERA_VISIBILITY_CODES if CAMERA_VISIBILITY_AUDIT_ENABLED else set()
 )
+
+_DIRECTION_REVIEW_CODES = {
+    "DIRECTION_SIGN_WEAK",
+    "RECEIVER_NORMAL_NOT_AXIS_ALIGNED",
+    "CAMERA_RECEIVER_WRONG_HALF_SPACE",
+    "CAMERA_RECEIVER_SILHOUETTE",
+    "EXPLOSION_NOT_VISIBLE_IN_CAMERA",
+}
+
+_FRAMING_REVIEW_CODES = {
+    "SUBJECT_NOT_DETECTED",
+    "SUBJECT_TOO_SMALL",
+    "SUBJECT_TOO_LARGE",
+    "SUBJECT_CLIPPED",
+    "EXCESSIVE_CONTEXT_CLIPPING",
+    "ACTIVITY_NOT_CENTERED",
+    "ARROW_NOT_CENTERED",
+}
+
+_ARROW_REVIEW_CODES = {
+    "ARROW_NOT_VISIBLE",
+    "ARROW_TOO_SMALL",
+    "ARROW_CLIPPED",
+    "ARROW_OVERLAP",
+    "ARROW_OUT_OF_FRAME",
+    "ARROW_ANCHOR_MISSING",
+    "ARROW_SURFACE_ANCHOR_UNAVAILABLE",
+    "MOVING_ARROW_ANCHOR_UNAVAILABLE",
+}
 
 
 def _actionable_error_message(message: str) -> tuple[str, bool]:
@@ -124,39 +145,51 @@ def _diagnostic_log_path(message: str) -> Path | None:
 
 
 def _actionable_review_details(entry: dict[str, object]) -> list[str]:
+    """Return short recovery guidance suitable for an end user.
+
+    Full expected/actual values, gate codes and raster metrics remain available
+    in the run's validation diagnostics.  They are deliberately not repeated in
+    the review page.
+    """
+
     details: list[str] = []
     category = str(entry.get("category") or "").strip()
     if category:
         details.append(f"处理类别：{_CATEGORY_LABELS.get(category, category)}")
-    expected = entry.get("expected")
-    if expected:
-        details.append(
-            "期望值：" + json.dumps(expected, ensure_ascii=False, sort_keys=True)
-        )
-    actual = entry.get("actual")
-    if actual:
-        details.append(
-            "实际值：" + json.dumps(actual, ensure_ascii=False, sort_keys=True)
-        )
-    attempted_value = entry.get("attempted_actions", [])
-    attempted = (
-        [str(value) for value in attempted_value if str(value).strip()]
-        if isinstance(attempted_value, (list, tuple))
-        else []
-    )
-    if attempted:
-        details.append("系统已尝试：" + "、".join(attempted))
-    suggested_value = entry.get("suggested_actions", [])
-    suggested = (
-        [str(value) for value in suggested_value if str(value).strip()]
-        if isinstance(suggested_value, (list, tuple))
-        else []
-    )
-    if suggested:
-        details.append("下一步建议：" + "、".join(dict.fromkeys(suggested)))
+    error_code = str(entry.get("error_code") or "").strip()
+    if error_code == "MANUAL_IMAGE_REVIEW_REQUIRED":
+        details.append("请预览图片，可直接采用或选择问题后重新生成")
+    elif error_code == "MOVING_ARROW_ANCHOR_UNAVAILABLE":
+        details.append("请检查该零件的 Creo 实体几何与装配约束后重新生成")
+    elif error_code in _CAMERA_VISIBILITY_CODES:
+        details.append("请在下方选择另一种固定取景方式重新生成")
+    elif error_code in _DIRECTION_REVIEW_CODES:
+        details.append("请确认安装方向后重新生成")
+    elif error_code in _FRAMING_REVIEW_CODES:
+        details.append("请调整取景后重新生成")
+    elif error_code in _ARROW_REVIEW_CODES:
+        details.append("请调整安装箭头后重新生成")
+    else:
+        details.append("请检查图片并选择采用或重新生成")
     if entry.get("retained_image"):
         details.append("已保留上一张有效图片，未被本次失败覆盖")
     return details
+
+
+def _review_issue_summary(error_code: str) -> str:
+    if error_code == "MANUAL_IMAGE_REVIEW_REQUIRED":
+        return "图片需要人工确认。"
+    if error_code == "MOVING_ARROW_ANCHOR_UNAVAILABLE":
+        return "移动件缺少可用于绘制安装箭头的有效几何锚点。"
+    if error_code in _CAMERA_VISIBILITY_CODES:
+        return "当前固定视角下，移动件或安装位置显示不清楚。"
+    if error_code in _DIRECTION_REVIEW_CODES:
+        return "安装方向需要确认。"
+    if error_code in _FRAMING_REVIEW_CODES:
+        return "图片构图需要调整。"
+    if error_code in _ARROW_REVIEW_CODES:
+        return "安装箭头需要调整。"
+    return "该步骤需要处理后才能采用。"
 
 
 class MainWindow(QMainWindow):
@@ -211,22 +244,6 @@ class MainWindow(QMainWindow):
         )
         subtitle.setWordWrap(True)
         layout.addWidget(subtitle)
-        policy = QLabel(_DETERMINISTIC_POLICY)
-        policy.setWordWrap(True)
-        policy.setStyleSheet(
-            "padding: 10px; border: 1px solid #356859; border-radius: 4px;"
-            "background: #173a33; color: #d7f5e8;"
-        )
-        layout.addWidget(policy)
-        self.audit_mode_status = QLabel(
-            "图片自动审查：已停用 · 全部真实图片由人工采用或选择问题二次生成"
-        )
-        self.audit_mode_status.setWordWrap(True)
-        self.audit_mode_status.setStyleSheet(
-            "padding: 8px; border-radius: 4px; background: #244a3f; "
-            "color: #ecfff8; font-weight: 600;"
-        )
-        layout.addWidget(self.audit_mode_status)
 
         setup = QGroupBox("首次配置")
         self.setup_group = setup
@@ -699,25 +716,13 @@ class MainWindow(QMainWindow):
             )
         image_path = str(entry.get("image_path", ""))
         self.review_image_path.setText(image_path)
-        issues = entry.get("issues", [])
-        error_message = str(entry.get("error_message", "")).strip()
         reason_parts: list[str] = []
         if step_number:
             reason_parts.append(f"第 {step_number} 步")
-        if error_code:
-            reason_parts.append(f"错误代码：{error_code}")
-        if error_message:
-            reason_parts.append(error_message)
-        if error_code in _CAMERA_VISIBILITY_CODES:
-            reason_parts.append(
-                "无 AI 图片审核结论：fixed_123 与 fixed_456 的移动件/安装接口"
-                "可见比例未满足硬门；请选择下方有界方式重新生成。"
-            )
-        reason_parts.extend(str(issue) for issue in issues)
+        reason_parts.append(_review_issue_summary(error_code))
         reason_parts.extend(_actionable_review_details(entry))
         self.review_reason.setText(
-            "检查说明："
-            + ("；".join(reason_parts) if reason_parts else "需要人工确认图片表现。")
+            "检查说明：" + "；".join(reason_parts)
         )
         facts = [
             str(value).strip()

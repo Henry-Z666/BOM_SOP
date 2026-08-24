@@ -168,13 +168,13 @@ class AgentNativeCreoWorker:
             profile_contract = task.payload["presentation"].get(
                 "framing_profile", {}
             )
-            if profile_contract.get("policy") != "native_zoom_to_selected/v1":
-                raise ValueError("only native selected framing is supported")
+            if profile_contract.get("policy") != "native_receiver_surface_fit/v1":
+                raise ValueError("only native receiver-surface framing is supported")
             if (
                 not math.isclose(float(variant["zoom"]), 1.0)
                 or tuple(float(value) for value in variant["pan"]) != (0.0, 0.0)
             ):
-                raise ValueError("native selected framing requires Zoom=1 and PAN=0")
+                raise ValueError("receiver-surface framing requires manual Zoom=1 and PAN=0")
         except (KeyError, IndexError, TypeError, ValueError):
             return RenderAttempt.failed("FRAMING_PROFILE_CONTRACT_INVALID")
         execution_error = self._run_batch(

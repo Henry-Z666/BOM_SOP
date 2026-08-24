@@ -23,8 +23,8 @@ public final class NativeArrowBatch {
       String row = rows.get(line);
       if (row.trim().isEmpty() || row.startsWith("#")) continue;
       String[] fields = row.split("\\t", -1);
-      if (fields.length != 10)
-        throw new IllegalArgumentException("Expected 10 TSV fields on line " + (line + 1));
+      if (fields.length != 11)
+        throw new IllegalArgumentException("Expected 11 TSV fields on line " + (line + 1));
       String output = required(fields, 0, line + 1);
       String moving = required(fields, 1, line + 1);
       String visible = required(fields, 5, line + 1);
@@ -32,6 +32,7 @@ public final class NativeArrowBatch {
       String audit = required(fields, 7, line + 1);
       String focus = required(fields, 8, line + 1);
       String plannedAnchors = required(fields, 9, line + 1);
+      String receiverSelections = required(fields, 10, line + 1);
       System.err.println("[NATIVE_ARROW] start=" + (completed + 1) + " output=" + output);
       RenderAssemblyImage.renderInSession(
           session,
@@ -46,6 +47,7 @@ public final class NativeArrowBatch {
           audit,
           focus,
           plannedAnchors,
+          receiverSelections,
           true);
       completed++;
       System.err.println("[NATIVE_ARROW] completed=" + completed);

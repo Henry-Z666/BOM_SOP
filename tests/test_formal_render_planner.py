@@ -82,7 +82,12 @@ def constraint(
         "id": edge_id,
         "type": kind,
         "occurrences": [moving, receiver],
-        "assembly_reference": {"occurrence_id": receiver, "geometry": geometry},
+        "assembly_reference": {
+            "occurrence_id": receiver,
+            "item_id": 101,
+            "item_type": "SURFACE",
+            "geometry": geometry,
+        },
         "component_reference": {"occurrence_id": moving, "geometry": geometry},
     }
 
@@ -152,14 +157,19 @@ def fixture() -> tuple[NormalizedBom, DraftPlan, BomCadMap, dict]:
 
 
 class FormalRenderPlannerTests(unittest.TestCase):
-    def test_native_selected_fit_uses_one_fixed_relative_margin(self) -> None:
+    def test_native_fit_selects_receiver_surfaces_not_complete_receiver_occurrence(self) -> None:
         contract = _native_selected_fit_contract()
 
-        self.assertEqual(contract["zoom_to_selected_level"], 0.85)
+        self.assertEqual(contract["zoom_to_selected_level"], 0.95)
         self.assertEqual(
             contract["selection_scope"],
-            "moving_and_receiver_occurrences/v1",
+            "moving_occurrences_and_receiver_surfaces/v1",
         )
+        self.assertEqual(
+            contract["coordinate_adjustment"],
+            "none_native_surface_fit/v1",
+        )
+        self.assertTrue(contract["manual_pan_zoom_forbidden"])
         self.assertEqual(
             contract["level_policy"],
             "fixed_native_selection_margin/v1",
@@ -679,6 +689,10 @@ class FormalRenderPlannerTests(unittest.TestCase):
         self.assertEqual(len(render_plan.tasks), 2)
         task = next(item for item in render_plan.tasks if item.payload["execution_mode"] == "formal")
         anchor = task.payload["arrow_anchors"][0]
+        self.assertEqual(
+            task.payload["receiver_interface_selections"],
+            [{"occurrence_id": "10/1", "item_id": 101, "item_type": "SURFACE"}],
+        )
         translation = task.payload["translation_vector_root"]
         self.assertEqual(
             anchor["expected_exploded_point_root"],
@@ -706,18 +720,19 @@ class FormalRenderPlannerTests(unittest.TestCase):
         self.assertIn("context_bounds", task.payload["stage_geometry_root"])
         self.assertEqual(
             task.payload["presentation"]["framing_profile"]["policy"],
-            "native_zoom_to_selected/v1",
+            "native_receiver_surface_fit/v1",
         )
         self.assertEqual(
             task.payload["presentation"]["native_selected_fit"],
             {
-                "schema_version": "native-selected-fit/v1",
+                "schema_version": "native-selected-fit/v2",
                 "command": "ProCmdZoomIntoOutline",
-                "selection_scope": "moving_and_receiver_occurrences/v1",
-                "zoom_to_selected_level": 0.85,
+                "selection_scope": "moving_occurrences_and_receiver_surfaces/v1",
+                "coordinate_adjustment": "none_native_surface_fit/v1",
+                "zoom_to_selected_level": 0.95,
                 "level_policy": "fixed_native_selection_margin/v1",
                 "max_commands_per_render": 1,
-                "absolute_pan_zoom_forbidden": True,
+                "manual_pan_zoom_forbidden": True,
             },
         )
         self.assertEqual(
@@ -739,7 +754,7 @@ class FormalRenderPlannerTests(unittest.TestCase):
         )
         self.assertEqual(
             task.payload["presentation"]["focus_context"],
-            "stage_visible_bbox/v1",
+            "installation_activity_bbox/v1",
         )
         self.assertEqual(
             task.payload["presentation"]["framing_priority"],
@@ -789,16 +804,33 @@ class FormalRenderPlannerTests(unittest.TestCase):
         )
         profile = task.payload["presentation"]["framing_profile"]
 
-        self.assertEqual(profile["policy"], "native_zoom_to_selected/v1")
+        self.assertEqual(profile["policy"], "native_receiver_surface_fit/v1")
         self.assertEqual(profile["schema_version"], "native-selected-framing-policy/v1")
         self.assertEqual(
             profile["selection_scope"],
-            "moving_and_receiver_occurrences/v1",
+            "moving_occurrences_and_receiver_surfaces/v1",
         )
         self.assertNotIn("scale_evidence", profile)
         self.assertEqual(profile["on_failure"], "question_single_frame/v1")
+        self.assertEqual(
+            task.payload["presentation"]["center_gate"],
+            {
+                "schema_version": "native-composition-center-gate/v1",
+                "target_pixel": [800, 800],
+                "max_activity_center_offset_pixels": 400,
+                "max_arrow_center_offset_pixels": 400,
+            },
+        )
         self.assertNotIn("centering", task.payload["presentation"])
         self.assertNotIn("output_path", str(task.payload))
+
+        selected_fit = task.payload["presentation"]["native_selected_fit"]
+        self.assertEqual(
+            selected_fit["coordinate_adjustment"],
+            "none_native_surface_fit/v1",
+        )
+        self.assertNotIn("receiver_context_margin_policy", selected_fit)
+        self.assertNotIn("center_policy", selected_fit)
 
     def test_unconfirmed_plan_cannot_compile_worker_tasks(self) -> None:
         bom, draft, mapping, graph = fixture()

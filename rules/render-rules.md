@@ -31,10 +31,11 @@ Use full root occurrence paths. Completed subassemblies remain rigid. Geometry m
 
 ## Native adaptive framing
 
-- Formal framing is `native_zoom_to_selected/v1` only.
-- Add the complete moving and receiver occurrence paths to Creo's Selection Buffer, then execute `ProCmdZoomIntoOutline` once.
-- Set `zoom_to_selected_level = 0.85`. Creo's fit to the selected moving-plus-receiver bounding box provides the size adaptation; this fixed relative margin must not be multiplied by a second CAD-size ratio.
-- External absolute PAN/ZOOM, screen-coordinate automation, probe renders, response caches, dynamic geometry crops, and post-crop upscaling are forbidden.
+- Formal framing is `native_receiver_surface_fit/v1` only.
+- Add every complete moving occurrence path and each constraint-backed receiver `SURFACE` selection to Creo's Selection Buffer, then execute `ProCmdZoomIntoOutline` once.
+- Select the receiver interface by stable occurrence path plus Creo surface ID. Never select the complete receiver occurrence; a large main body therefore cannot make the installation activity unreadably small.
+- Set `zoom_to_selected_level = 0.95`. It supplies one fixed relative margin around the moving geometry and every concrete receiver interface.
+- Operator-supplied or free absolute PAN/ZOOM, screen-coordinate automation, probe renders, response caches, dynamic geometry crops, and post-crop upscaling are forbidden. No post-command PAN/ZOOM correction is applied.
 - One render attempt may export one formal raster. Scheduler-level retries remain bounded and receive one new raster budget per attempt.
 - Camera label rasters are currently frozen and are not produced. The retained implementation must remain internal and dormant.
 - Persist `native-framing-audit/v1` with Creo version/datecode, command verification, selection scope, and level.
@@ -51,9 +52,9 @@ Use full root occurrence paths. Completed subassemblies remain rigid. Geometry m
 ## Appearance and hard framing checks
 
 - Render solid part geometry only; hide datums, curves, quilts, annotations, weld cosmetics, and UI/session text in Creo.
-- Export one native 1800×2400 raster, then apply only the fixed center 1600×1600 publication crop. The crop must not detect geometry or rescale pixels.
+- Export the formal delivery raster directly from Creo at 1600×1600. A portrait intermediate and any post-render center crop are forbidden because they can remove activity that was valid in the original viewport.
 - The final 1600×1600 raster must keep the moving item, receiver, installation boundary, and arrow readable and centered within the compiled gate.
-- Non-critical completed background may cross at most two frame edges; moving items, required receivers, and arrows may not be lost.
+- Non-critical completed background may cross at most two frame edges; moving items, required receivers, and arrows may not be lost. The number of significant green arrow components may not be lower than the validated arrow-audit count.
 - Raster validation remains a hard gate even though Creo performs the native centering.
 
 ## Async J-Link boundary
@@ -68,5 +69,5 @@ Use full root occurrence paths. Completed subassemblies remain rigid. Geometry m
 - No computer-use or screen-coordinate automation.
 - No AI-generated geometry or guessed occurrence.
 - No intermediate ASM as a formal image source.
-- No relative X/Y/Z camera rotations, pixel arrows, probe framing, or silent fallback from native selected fit.
+- No relative X/Y/Z camera rotations, pixel arrows, probe framing, or silent fallback from activity-coordinate fit.
 - No future parts added merely to make a picture easier to understand.

@@ -16,9 +16,10 @@ Use `render-plan/v2` with `creo-render-task/v1`. Every formal task contains:
 - intake BOM and full ASM/PRT tree hashes, revalidated before/after rendering and before publication;
 - receiver-backed root translation and unchanged rotations;
 - camera ID restricted to `fixed_123` or `fixed_456`;
-- `fixed-frame-presentation/v1` with `native-selected-fit/v1`;
-- `selection_scope=moving_and_receiver_occurrences/v1`;
-- `level_policy=fixed_native_selection_margin/v1` with initial `zoom_to_selected_level=0.85` or the registered human focus revision `0.95`, one command per render, and absolute PAN/ZOOM forbidden;
+- `fixed-frame-presentation/v1` with `native-selected-fit/v2`;
+- constraint-backed `receiver_interface_selections`, each containing a stable receiver occurrence path, positive Creo item ID, and `item_type=SURFACE`;
+- `selection_scope=moving_occurrences_and_receiver_surfaces/v1` and `coordinate_adjustment=none_native_surface_fit/v1`;
+- `level_policy=fixed_native_selection_margin/v1` with initial `zoom_to_selected_level=0.95`, one native command per render, and free/manual PAN/ZOOM forbidden;
 - native arrow anchors, output audit references, process text, and status.
 
 The validated task contract—not the publication workbook—is execution truth.
@@ -26,7 +27,7 @@ The validated task contract—not the publication workbook—is execution truth.
 ## Required audits
 
 - `arrow-projection/v1` records covered occurrence paths, anchor source, complete/exploded root points, direction, merge coverage, and status. Endpoint difference equals the audited translation.
-- `native-framing-audit/v1` records task/image identity, Creo version/datecode, verified `ProCmdZoomIntoOutline`, selection scope, level, one-command limit, and absolute PAN/ZOOM prohibition.
+- `native-framing-audit/v1` records task/image identity, Creo version/datecode, verified `ProCmdZoomIntoOutline`, moving-plus-receiver-surface scope, no coordinate adjustment, level, one-command limit, and free/manual PAN/ZOOM prohibition.
 - Automatic image-quality audits are not part of approval. Existing visibility-audit code may remain dormant, but it cannot accept, reject, or rewrite a step.
 
 ## Hard render gates
@@ -41,6 +42,8 @@ A formal image passes only when all apply:
 - explosion is pure translation with unchanged rotations;
 - camera is one of the two locked fixed matrices;
 - arrow count/merge coverage and same-CAD-point direction pass;
+- the final raster contains at least one significant connected arrow component for every non-merged audited arrow;
+- the formal image is exported directly by Creo at 1600×1600, without an intermediate portrait raster or publication crop;
 - no datum, annotation, weld cosmetic, UI, or unrelated geometry appears;
 - output file exists and has the contracted dimensions.
 

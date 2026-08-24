@@ -38,6 +38,9 @@ class ArrowAnchorEvidence:
     occurrence_id: str
     constraint_id: str
     complete_point_root: tuple[float, float, float]
+    receiver_occurrence_id: str | None = None
+    receiver_item_id: int | None = None
+    receiver_item_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -92,6 +95,8 @@ class _OccurrenceEvidence:
     outward_normal: tuple[float, float, float]
     alignment: float
     constraint_rank: int
+    receiver_item_id: int | None
+    receiver_item_type: str | None
 
 
 def compile_formal_render_plan(
@@ -453,6 +458,21 @@ def formal_render_plan_from_dict(payload: dict[str, Any]) -> FormalRenderPlan:
                             occurrence_id=str(anchor["occurrence_id"]),
                             constraint_id=str(anchor["constraint_id"]),
                             complete_point_root=tuple(anchor["complete_point_root"]),
+                            receiver_occurrence_id=(
+                                str(anchor["receiver_occurrence_id"])
+                                if anchor.get("receiver_occurrence_id") is not None
+                                else None
+                            ),
+                            receiver_item_id=(
+                                int(anchor["receiver_item_id"])
+                                if anchor.get("receiver_item_id") is not None
+                                else None
+                            ),
+                            receiver_item_type=(
+                                str(anchor["receiver_item_type"])
+                                if anchor.get("receiver_item_type") is not None
+                                else None
+                            ),
                         )
                         for anchor in item.get("arrow_anchors", ())
                     ),
@@ -675,6 +695,12 @@ def _select_evidence(
                 outward,
                 alignment,
                 _constraint_rank(str(edge.get("type", ""))),
+                int(reference["item_id"])
+                if isinstance(reference.get("item_id"), int)
+                else None,
+                str(reference.get("item_type"))
+                if reference.get("item_type") is not None
+                else None,
             )
         )
     if not candidates:
@@ -739,6 +765,10 @@ def _proven_step(
     low_alignment = min(item.alignment for item in members) < 0.10
     low_face_confidence = face["confidence"] != "high"
     missing_arrow_anchor = any(item.moving_anchor_point is None for item in members)
+    missing_receiver_surface = any(
+        item.receiver_item_id is None or item.receiver_item_type != "SURFACE"
+        for item in members
+    )
     camera_gate = camera.get("hard_gate", {})
     step_diagnostics = tuple(
         code
@@ -746,6 +776,7 @@ def _proven_step(
             ("DIRECTION_SIGN_WEAK", low_alignment),
             ("RECEIVER_NORMAL_NOT_AXIS_ALIGNED", low_face_confidence),
             ("MOVING_ARROW_ANCHOR_UNAVAILABLE", missing_arrow_anchor),
+            ("RECEIVER_SURFACE_SELECTION_UNAVAILABLE", missing_receiver_surface),
             (
                 "CAMERA_RECEIVER_WRONG_HALF_SPACE",
                 not bool(camera_gate.get("receiver_outside_half_space")),
@@ -779,6 +810,9 @@ def _proven_step(
                 occurrence_id=item.occurrence_id,
                 constraint_id=item.constraint_id,
                 complete_point_root=item.moving_anchor_point,
+                receiver_occurrence_id=item.receiver_id,
+                receiver_item_id=item.receiver_item_id,
+                receiver_item_type=item.receiver_item_type,
             )
             for item in members
             if item.moving_anchor_point is not None

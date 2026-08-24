@@ -151,12 +151,13 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   $presentation = $payload.presentation
   if ([string]$presentation.schema_version -ne 'fixed-frame-presentation/v1') { throw "Task $taskId has no supported presentation contract." }
   $nativeSelectedFit = $presentation.native_selected_fit
-  if ([string]$nativeSelectedFit.schema_version -ne 'native-selected-fit/v1' -or
+  if ([string]$nativeSelectedFit.schema_version -ne 'native-selected-fit/v2' -or
       [string]$nativeSelectedFit.command -ne 'ProCmdZoomIntoOutline' -or
-      [string]$nativeSelectedFit.selection_scope -ne 'moving_and_receiver_occurrences/v1' -or
+      [string]$nativeSelectedFit.selection_scope -ne 'moving_occurrences_and_receiver_surfaces/v1' -or
+      [string]$nativeSelectedFit.coordinate_adjustment -ne 'none_native_surface_fit/v1' -or
       [string]$nativeSelectedFit.level_policy -ne 'fixed_native_selection_margin/v1' -or
       [int]$nativeSelectedFit.max_commands_per_render -ne 1 -or
-      [bool]$nativeSelectedFit.absolute_pan_zoom_forbidden -ne $true) {
+      [bool]$nativeSelectedFit.manual_pan_zoom_forbidden -ne $true) {
     throw "Task $taskId has no supported native selected-fit contract."
   }
   $selectedFitLevel = [double]$nativeSelectedFit.zoom_to_selected_level
@@ -218,7 +219,7 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
     Write-Output ("[AGENT_RENDER] task {0} visibility fixed_123 fixed_456" -f $taskId)
     continue
   }
-  if ([string]$presentation.focus_context -ne 'stage_visible_bbox/v1') { throw "Task $taskId has an invalid presentation focus context." }
+  if ([string]$presentation.focus_context -ne 'installation_activity_bbox/v1') { throw "Task $taskId has an invalid presentation focus context." }
   if ([string]$presentation.framing_priority -ne 'installation_activity/v1') { throw "Task $taskId does not prioritize the installation activity." }
   if ([string]$presentation.zoom_anchor -ne 'installation_activity_center/v1') { throw "Task $taskId has an invalid zoom anchor." }
   $variants = @($presentation.variants)
@@ -248,7 +249,7 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
       [double]::IsNaN($panY) -or [double]::IsInfinity($panY) -or $panY -ne 0.0) {
     throw "Task $taskId must use the native selected-fit center."
   }
-  $focusOccurrences = @($moving + $receivers | Sort-Object -Unique)
+  $focusOccurrences = @($moving | Sort-Object -Unique)
   $anchorRows = New-Object Collections.Generic.List[string]
   foreach ($anchor in @($payload.arrow_anchors)) {
     $anchorOccurrence = [string]$anchor.occurrence_id
@@ -260,6 +261,24 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   }
   if ($anchorRows.Count -ne $moving.Count) {
     throw "Task $taskId does not have one planned arrow anchor per moving occurrence."
+  }
+  $receiverSelectionRows = New-Object Collections.Generic.List[string]
+  $seenReceiverSelections = New-Object Collections.Generic.HashSet[string]
+  foreach ($selection in @($payload.receiver_interface_selections)) {
+    $receiverOccurrence = [string]$selection.occurrence_id
+    $receiverItemId = [int]$selection.item_id
+    if ($receivers -notcontains $receiverOccurrence -or
+        [string]$selection.item_type -ne 'SURFACE' -or $receiverItemId -le 0) {
+      throw "Task $taskId has an invalid receiver interface surface selection."
+    }
+    $encodedSelection = $receiverOccurrence + '#' + $receiverItemId.ToString($culture)
+    if (-not $seenReceiverSelections.Add($encodedSelection)) {
+      throw "Task $taskId has a duplicate receiver interface surface selection."
+    }
+    $receiverSelectionRows.Add($encodedSelection)
+  }
+  if ($receiverSelectionRows.Count -lt 1) {
+    throw "Task $taskId has no receiver interface surface selection."
   }
   $image = Join-Path $output ($taskId + '.jpg')
   $audit = Join-Path $output ($taskId + '.arrow.json')
@@ -274,7 +293,8 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
     $cameraSpec,
     $audit,
     ($focusOccurrences -join ';'),
-    ($anchorRows -join ';')
+    ($anchorRows -join ';'),
+    ($receiverSelectionRows -join ';')
   ) -join "`t"))
   $renderedFiles.Add($image)
   $auditFiles.Add($audit)
@@ -283,6 +303,7 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
     image_file = [IO.Path]::GetFileName($image)
     zoom_to_selected_level = $selectedFitLevel
     selection_scope = [string]$nativeSelectedFit.selection_scope
+    coordinate_adjustment = [string]$nativeSelectedFit.coordinate_adjustment
   })
   Write-Output ("[AGENT_RENDER] task {0} presentation_variant {1} camera {2} zoom {3}" -f $taskId,$VariantIndex,$cameraId,$zoom)
 }
@@ -481,12 +502,11 @@ else {
 
 foreach ($image in $renderedFiles) {
   if (-not (Test-Path -LiteralPath $image -PathType Leaf)) { throw "Creo did not produce $image" }
-  & (Join-Path $projectRoot 'scripts\fit_creo_image.ps1') -Path $image -Frame square
   Add-Type -AssemblyName System.Drawing
   $bitmap = [System.Drawing.Bitmap]::new($image)
   try {
     if ($bitmap.Width -ne 1600 -or $bitmap.Height -ne 1600) {
-      throw "Fixed-frame processing failed for $image"
+      throw "Creo fixed-frame export is not 1600x1600: $image"
     }
   }
   finally { $bitmap.Dispose() }
@@ -504,7 +524,8 @@ foreach ($item in $framingAudits) {
     selection_scope = [string]$item.selection_scope
     zoom_to_selected_level = [double]$item.zoom_to_selected_level
     max_commands_per_render = 1
-    absolute_pan_zoom_forbidden = $true
+    manual_pan_zoom_forbidden = $true
+    coordinate_adjustment = [string]$item.coordinate_adjustment
   }
   [IO.File]::WriteAllText(
     $temporaryAudit,

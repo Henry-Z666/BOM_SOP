@@ -108,22 +108,23 @@ def native_task() -> RenderTask:
             },
             "presentation": {
                 "schema_version": "fixed-frame-presentation/v1",
-                "focus_context": "stage_visible_bbox/v1",
+                "focus_context": "installation_activity_bbox/v1",
                 "framing_priority": "installation_activity/v1",
                 "zoom_anchor": "installation_activity_center/v1",
                 "native_selected_fit": {
-                    "schema_version": "native-selected-fit/v1",
+                    "schema_version": "native-selected-fit/v2",
                     "command": "ProCmdZoomIntoOutline",
-                    "selection_scope": "moving_and_receiver_occurrences/v1",
+                    "selection_scope": "moving_occurrences_and_receiver_surfaces/v1",
+                    "coordinate_adjustment": "none_native_surface_fit/v1",
                     "zoom_to_selected_level": 0.85,
                     "level_policy": "fixed_native_selection_margin/v1",
                     "max_commands_per_render": 1,
-                    "absolute_pan_zoom_forbidden": True,
+                    "manual_pan_zoom_forbidden": True,
                 },
                 "framing_profile": {
                     "schema_version": "native-selected-framing-policy/v1",
-                    "policy": "native_zoom_to_selected/v1",
-                    "selection_scope": "moving_and_receiver_occurrences/v1",
+                    "policy": "native_receiver_surface_fit/v1",
+                    "selection_scope": "moving_occurrences_and_receiver_surfaces/v1",
                     "on_failure": "question_single_frame/v1",
                 },
                 "center_gate": {
@@ -176,7 +177,7 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
             batch,
         )
 
-    def test_native_selected_fit_is_the_only_framing_path(self) -> None:
+    def test_native_fit_selects_receiver_surfaces_not_complete_receiver_geometry(self) -> None:
         root = Path(__file__).resolve().parents[1]
         worker = (root / "src/sop_pipeline/agent/creo_worker.py").read_text(
             encoding="utf-8"
@@ -189,9 +190,41 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         )
 
         self.assertIn('UIGetCommand("ProCmdZoomIntoOutline")', renderer)
+        self.assertIn("parseReceiverInterfaceSelections", renderer)
+        self.assertIn("CreateModelItemSelection", renderer)
+        self.assertIn("ModelItemType.ITEM_SURFACE", renderer)
+        self.assertNotIn("applyNativeActivityFit", renderer)
+        self.assertNotIn("projectedActivityBounds", renderer)
+        self.assertIn(
+            "$focusOccurrences = @($moving | Sort-Object -Unique)", batch
+        )
+        self.assertIn("$payload.receiver_interface_selections", batch)
         self.assertIn("MAX_RENDER_RASTERS_PER_ATTEMPT = 1", worker)
         self.assertIn("native-framing-audit/v1", batch)
         self.assertIn("$zoom -ne 1.0", batch)
+
+    def test_formal_export_is_square_without_post_render_center_crop(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        batch = (root / "creo_java/run_agent_native_batch.ps1").read_text(
+            encoding="utf-8"
+        )
+        renderer = (root / "creo_java/src/RenderAssemblyImage.java").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "JPEGImageExportInstructions_Create(8.0, 8.0)", renderer
+        )
+        self.assertNotIn("fit_creo_image.ps1", batch)
+
+    def test_async_runtime_uses_ptc_common_files_as_pro_directory(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        runtime = (root / "creo_java/RuntimeConfig.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("$env:PRO_DIRECTORY = $Runtime.CommonFiles", runtime)
+        self.assertNotIn("$env:PRO_DIRECTORY = $Runtime.ParametricDirectory", runtime)
 
     def test_visibility_masks_use_geometry_exclusion_not_ui_highlight(self) -> None:
         root = Path(__file__).resolve().parents[1]

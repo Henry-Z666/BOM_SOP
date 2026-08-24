@@ -40,6 +40,7 @@
 ### 推导步骤
 
 1. 为每个移动 occurrence 选择一个真实实体表面的稳定局部锚点 `p_local`；禁止使用包围盒中心。
+   发现器按确定顺序尝试曲面 XYZ 中点投影、UV 参数域中点、曲面极值，最后才使用带所属曲面标识的实体边中点；图谱必须记录 `physical_anchor_source`，所有策略失败时必须写出 `[DISCOVERY-ANCHOR]` 内部诊断，不得静默忽略。
 2. 读取同一 occurrence 在安装态与爆炸态的实际变换 `T_complete`、`T_exploded`。
 3. 计算根坐标端点：
 

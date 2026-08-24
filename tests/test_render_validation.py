@@ -28,9 +28,25 @@ def _native_payload(**changes) -> dict:
         },
         "presentation": {
             "schema_version": "fixed-frame-presentation/v1",
-            "focus_context": "stage_visible_bbox/v1",
+            "focus_context": "installation_activity_bbox/v1",
             "framing_priority": "installation_activity/v1",
             "zoom_anchor": "installation_activity_center/v1",
+            "native_selected_fit": {
+                "schema_version": "native-selected-fit/v2",
+                "command": "ProCmdZoomIntoOutline",
+                "selection_scope": "moving_occurrences_and_receiver_surfaces/v1",
+                "coordinate_adjustment": "none_native_surface_fit/v1",
+                "zoom_to_selected_level": 0.95,
+                "level_policy": "fixed_native_selection_margin/v1",
+                "max_commands_per_render": 1,
+                "manual_pan_zoom_forbidden": True,
+            },
+            "framing_profile": {
+                "schema_version": "native-selected-framing-policy/v1",
+                "policy": "native_receiver_surface_fit/v1",
+                "selection_scope": "moving_occurrences_and_receiver_surfaces/v1",
+                "on_failure": "question_single_frame/v1",
+            },
             "center_gate": {
                 "schema_version": "native-composition-center-gate/v1",
                 "target_pixel": [800, 800],
@@ -180,6 +196,37 @@ class RenderValidationTests(unittest.TestCase):
         self.assertGreater(report.composition.max_span_fraction, 0.54)
         self.assertGreater(report.arrow_raster.pixels, 120)
 
+    def test_native_gate_rejects_missing_raster_arrow_for_one_moving_instance(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            image, audit = _write_native_files(root, (250, 300, 1200, 1150))
+            audit.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "arrow-projection/v1",
+                        "policy": "same_cad_point/v1",
+                        "status": "passed",
+                        "arrows": [
+                            {
+                                "covered_occurrences": [occurrence],
+                                "anchor_source": "model_surface",
+                                "complete_root": [0.0, 0.0, 0.0],
+                                "exploded_root": [0.0, 0.0, 10.0],
+                            }
+                            for occurrence in ("1/2", "1/3")
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            payload = _native_payload(moving_occurrences=["1/2", "1/3"])
+            report = DeterministicNativeRenderValidator().validate(
+                image, audit, payload
+            )
+
+        self.assertFalse(report.passed)
+        self.assertIn("ARROW_RASTER_COUNT_MISMATCH", report.failures)
+
     def test_ready_visibility_contract_requires_a_matching_hashed_decision(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             image, audit = _write_native_files(Path(folder), (250, 300, 1200, 1150))
@@ -296,7 +343,7 @@ class RenderValidationTests(unittest.TestCase):
         self.assertIn("ACTIVITY_NOT_CENTERED", report.failures)
         self.assertIn("ARROW_NOT_CENTERED", report.failures)
 
-    def test_native_selected_fit_still_enforces_final_raster_center(self) -> None:
+    def test_receiver_surface_fit_still_enforces_final_raster_center(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             image, audit = _write_native_files(root, None)
@@ -306,18 +353,6 @@ class RenderValidationTests(unittest.TestCase):
             draw.line((1200, 800, 1500, 800), fill=(0, 150, 0), width=8)
             frame.save(image)
             payload = _native_payload()
-            payload["presentation"]["framing_profile"] = {
-                "policy": "native_zoom_to_selected/v1"
-            }
-            payload["presentation"]["native_selected_fit"] = {
-                "schema_version": "native-selected-fit/v1",
-                "command": "ProCmdZoomIntoOutline",
-                "selection_scope": "moving_and_receiver_occurrences/v1",
-                "zoom_to_selected_level": 0.85,
-                "level_policy": "fixed_native_selection_margin/v1",
-                "max_commands_per_render": 1,
-                "absolute_pan_zoom_forbidden": True,
-            }
             report = DeterministicNativeRenderValidator().validate(
                 image, audit, payload
             )
@@ -325,6 +360,32 @@ class RenderValidationTests(unittest.TestCase):
         self.assertFalse(report.passed)
         self.assertIn("ACTIVITY_NOT_CENTERED", report.failures)
         self.assertIn("ARROW_NOT_CENTERED", report.failures)
+
+    def test_offset_activity_passes_when_receiver_interface_has_safe_margin(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            image, audit = _write_native_files(root, None)
+            frame = Image.new("RGB", (1600, 1600), "white")
+            draw = ImageDraw.Draw(frame)
+            # The complete receiver is intentionally clipped on the right;
+            # the moving-to-receiver arrow and its endpoint remain well inside.
+            draw.rectangle((680, 220, 1599, 1379), fill=(80, 100, 120))
+            draw.line((794, 788, 1130, 1371), fill=(0, 150, 0), width=8)
+            frame.save(image)
+            payload = _native_payload()
+            payload["presentation"]["center_gate"].update(
+                {
+                    "max_activity_center_offset_pixels": 400,
+                    "max_arrow_center_offset_pixels": 400,
+                }
+            )
+            report = DeterministicNativeRenderValidator().validate(
+                image, audit, payload
+            )
+
+        self.assertTrue(report.passed, report.failures)
+        self.assertGreaterEqual(report.arrow_raster.border_margin_pixels, 40)
+        self.assertEqual(report.composition.clipped_edges, ("right",))
 
     def test_balanced_subject_arrow_midpoint_is_the_centering_hard_gate(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

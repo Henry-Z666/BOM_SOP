@@ -203,9 +203,51 @@ public final class RenderAssemblyImage {
     return null;
   }
 
+  private static final class ReceiverInterfaceSelection {
+    final intseq occurrencePath;
+    final int surfaceId;
+
+    ReceiverInterfaceSelection(intseq occurrencePath, int surfaceId) {
+      this.occurrencePath = occurrencePath;
+      this.surfaceId = surfaceId;
+    }
+  }
+
+  /** Parses stable occurrence-path/surface-ID pairs: "5025/47#8027;5025/47#8056". */
+  private static java.util.List<ReceiverInterfaceSelection> parseReceiverInterfaceSelections(
+      String encoded) throws jxthrowable {
+    java.util.List<ReceiverInterfaceSelection> result =
+        new java.util.ArrayList<ReceiverInterfaceSelection>();
+    if (encoded == null || encoded.trim().isEmpty()) return result;
+    java.util.Set<String> seen = new java.util.HashSet<String>();
+    for (String raw : encoded.split(";")) {
+      int separator = raw.lastIndexOf('#');
+      if (separator <= 0 || separator == raw.length() - 1)
+        throw new IllegalArgumentException("Malformed receiver interface selection");
+      String pathText = raw.substring(0, separator).trim();
+      int surfaceId = Integer.parseInt(raw.substring(separator + 1).trim());
+      if (surfaceId <= 0 || !seen.add(pathText + "#" + surfaceId))
+        throw new IllegalArgumentException("Invalid receiver surface selection=" + raw);
+      java.util.List<intseq> paths = parseOccurrencePaths(pathText);
+      if (paths.size() != 1)
+        throw new IllegalArgumentException("Receiver selection must contain one occurrence path");
+      result.add(new ReceiverInterfaceSelection(paths.get(0), surfaceId));
+    }
+    return result;
+  }
+
   /** Uses Creo's selected-object bounding-box fit; no absolute PAN/ZOOM. */
   private static void applyNativeSelectedFit(Session session, Window window, Assembly assembly,
       java.util.List<intseq> occurrencePaths, double level) throws jxthrowable {
+    applyNativeSelectedFit(session, window, assembly, occurrencePaths,
+        java.util.Collections.<ReceiverInterfaceSelection>emptyList(), level);
+  }
+
+  /** Uses Creo's native fit for moving components and exact constraint receiver surfaces. */
+  private static void applyNativeSelectedFit(Session session, Window window, Assembly assembly,
+      java.util.List<intseq> occurrencePaths,
+      java.util.List<ReceiverInterfaceSelection> receiverInterfaces,
+      double level) throws jxthrowable {
     if (session.UIGetCommand("ProCmdZoomIntoOutline") == null)
       throw new IllegalStateException("Creo command is unavailable: ProCmdZoomIntoOutline");
     SelectionBuffer buffer = session.GetCurrentSelectionBuffer();
@@ -217,10 +259,21 @@ public final class RenderAssemblyImage {
         ComponentPath path = pfcAssembly.CreateComponentPath(assembly, ids);
         buffer.AddSelection(pfcSelect.CreateComponentSelection(path));
       }
+      for (ReceiverInterfaceSelection receiver : receiverInterfaces) {
+        ComponentPath path = pfcAssembly.CreateComponentPath(
+            assembly, receiver.occurrencePath);
+        ModelItem surface = path.GetLeaf().GetItemById(
+            ModelItemType.ITEM_SURFACE, receiver.surfaceId);
+        if (surface == null)
+          throw new IllegalStateException("Receiver surface unavailable: occurrence="
+              + occurrencePathId(receiver.occurrencePath) + " surface=" + receiver.surfaceId);
+        buffer.AddSelection(pfcSelect.CreateModelItemSelection(surface, path));
+      }
       Selections selected = buffer.GetContents();
       int count = selected == null ? 0 : selected.getarraysize();
-      if (count != occurrencePaths.size())
-        throw new IllegalStateException("Selection buffer mismatch: expected=" + occurrencePaths.size() + " actual=" + count);
+      int expected = occurrencePaths.size() + receiverInterfaces.size();
+      if (count != expected)
+        throw new IllegalStateException("Selection buffer mismatch: expected=" + expected + " actual=" + count);
       window.Repaint();
       session.FlushCurrentWindow();
       session.RunMacro("~ Command `ProCmdZoomIntoOutline`");
@@ -228,6 +281,7 @@ public final class RenderAssemblyImage {
       session.FlushCurrentWindow();
       ScreenTransform screen = window.GetScreenTransform();
       System.err.println("[PERSISTENT] native_selected_fit=ProCmdZoomIntoOutline selected=" + count
+          + " moving=" + occurrencePaths.size() + " receiver_surfaces=" + receiverInterfaces.size()
           + " level=" + level + " zoom=" + screen.GetZoom()
           + " pan=[" + screen.GetPanX() + "," + screen.GetPanY() + "]");
     } finally {
@@ -622,7 +676,8 @@ public final class RenderAssemblyImage {
   static void renderInSession(Session session, String assemblyFile, String outputJpeg,
       String occurrencePaths, double dx, double dy, double dz, String visiblePaths,
       String cameraSpec, String arrowAuditJson, String focusPaths,
-      String plannedAnchors, boolean drawNativeArrow) throws Throwable {
+      String plannedAnchors, String receiverSelections,
+      boolean drawNativeArrow) throws Throwable {
     Window window = null;
     DisplayList3D arrowDisplay = null;
     try {
@@ -648,8 +703,8 @@ public final class RenderAssemblyImage {
       for (String rawPath : visiblePaths.split(";")) if (!rawPath.trim().startsWith("!")) desired.add(rawPath.trim());
       java.util.List<intseq> visibleOccurrencePaths = parseOccurrencePaths(String.join(";", desired));
       if (visibleOccurrencePaths.isEmpty()) throw new IllegalArgumentException("No visible occurrence paths supplied");
-      java.util.List<intseq> focusOccurrencePaths = parseOccurrencePaths(focusPaths);
-      if (focusOccurrencePaths.isEmpty()) throw new IllegalArgumentException("No installation focus occurrence paths supplied");
+      if (parseOccurrencePaths(focusPaths).isEmpty())
+        throw new IllegalArgumentException("No installation focus occurrence paths supplied");
       Assembly assembly = (Assembly)model;
       CreateNewSimpRepInstructions stage = pfcSimpRep.CreateNewSimpRepInstructions_Create("AI_SOP_STAGE");
       stage.SetIsTemporary(true); stage.SetDefaultAction(SimpRepActionType.SIMPREP_INCLUDE);
@@ -680,12 +735,21 @@ public final class RenderAssemblyImage {
       Double selectedFitLevel = nativeSelectedFitLevel(cameraSpec);
       if (selectedFitLevel == null)
         throw new IllegalArgumentException("Formal render requires native selected fit");
-      applyNativeSelectedFit(session, window, assembly, focusOccurrencePaths, selectedFitLevel);
+      java.util.List<ReceiverInterfaceSelection> receiverInterfaces =
+          parseReceiverInterfaceSelections(receiverSelections);
+      if (receiverInterfaces.isEmpty())
+        throw new IllegalArgumentException("Formal render requires receiver surface selections");
+      applyNativeSelectedFit(session, window, assembly, requestedOccurrences,
+          receiverInterfaces, selectedFitLevel);
       ArrowProjection.Result arrowResult = ArrowProjection.layout(assembly, arrowMoving, arrowTranslation);
       ArrowProjection.writeAudit(arrowResult, arrowAuditJson);
       if (drawNativeArrow) arrowDisplay = ArrowProjection.display(session, arrowResult);
       session.UIClearMessage(); window.Repaint(); session.FlushCurrentWindow();
-      JPEGImageExportInstructions instructions = pfcWindow.JPEGImageExportInstructions_Create(9.0, 12.0);
+      // Export the delivery frame directly.  The former 9x12 raster was
+      // centre-cropped from 1800x2400 to 1600x1600 after rendering, which could
+      // remove a moving occurrence or receiver point that Creo had correctly
+      // kept inside the original portrait frame.
+      JPEGImageExportInstructions instructions = pfcWindow.JPEGImageExportInstructions_Create(8.0, 8.0);
       instructions.SetDotsPerInch(DotsPerInch.RASTERDPI_200);
       instructions.SetImageDepth(RasterDepth.RASTERDEPTH_24);
       window.ExportRasterImage(outputJpeg, instructions);

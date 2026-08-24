@@ -2,17 +2,18 @@
 
 ## 当前正式方案
 
-正式流水线只使用 Creo 原生 **Zoom to Selected**。它根据所选对象的三维包围范围自动缩放并居中，不依赖屏幕坐标、绝对 PAN/ZOOM 或探针图片。
+正式流水线使用 Creo 原生 **Zoom to Selected** 同时框选活动件与约束所指向的接收曲面。它不依赖屏幕识别、人工 PAN/ZOOM、坐标换算或探针图片。
 
 每个安装步骤按固定顺序执行：
 
 1. 应用 `fixed_123` 或 `fixed_456` 固定方向；
 2. 激活精确的阶段可见集并完成纯平移爆炸；
-3. 将全部 moving occurrence 与 receiver occurrence 的完整 ComponentPath 加入 Selection Buffer；
+3. 将全部 moving occurrence 的完整 ComponentPath，以及每条安装约束对应的接收 `SURFACE`（接收 occurrence path + Creo surface ID）加入 Selection Buffer；
 4. 用 `UIGetCommand("ProCmdZoomIntoOutline")` 验证命令存在；
-5. 设置本步 `zoom_to_selected_level`，通过 `RunMacro` 执行一次 `ProCmdZoomIntoOutline`；
-6. 清空 Selection Buffer，导出一张正式原始图；
-7. 执行固定中心 1600×1600 裁切和最终栅格硬门。
+5. 设置本步 `zoom_to_selected_level`，通过 `RunMacro` 执行一次 `ProCmdZoomIntoOutline`；Creo 直接以活动件和具体接收曲面共同确定中心与范围；
+6. 不执行任何后续 PAN/ZOOM 坐标修正；
+7. 清空 Selection Buffer，导出一张正式原始图；
+8. 由 Creo 直接输出 1600×1600，并执行逐审计箭头数量、边距和最终栅格硬门；不再生成竖版中间图或执行后裁切。
 
 PTC 官方说明：
 
@@ -24,14 +25,14 @@ PTC 官方说明：
 
 ## 自适应留白
 
-Creo 先按“爆炸态移动件＋接收件”的实际选择包围盒完成自适应取景，再应用一个固定的相对留白：
+Creo 对“爆炸态活动件几何＋完整态接收曲面”一次性完成原生取景，并应用固定相对留白：
 
 ```text
-zoom_to_selected_level = 0.85
+zoom_to_selected_level = 0.95
 level_policy = fixed_native_selection_margin/v1
 ```
 
-尺寸自适应由 Creo 对联合选择包围盒的原生 fit 完成；`0.85` 只控制 fit 之后的统一相对留白。相对原 `0.75` 基准，主体预期跨度由约 `0.55` 提高到约 `0.62`。不再根据 moving/receiver 比例二次缩放，避免接收件尺寸或爆炸距离被重复计入。接收件仍直接参与原生选择和中心计算。
+`0.95` 控制统一相对留白。完整接收 occurrence 继续显示，但不作为选择对象；只有约束明确指向的接收曲面进入原生框选。因此，当安装点位于大主体表面时，主体尺寸不会压低活动区的放大倍数，多个活动件与各自接收部位也会共同进入画面。该规则按约束引用生效，不按零件名称、BOM 行或接收件尺寸套用经验比例。
 
 ## 时长与重试边界
 
@@ -42,16 +43,17 @@ level_policy = fixed_native_selection_margin/v1
 
 ## 验收与审计
 
-Creo 的原生居中不能替代最终图片验证。1600×1600 成图仍必须通过主体/安装活动中心、接收件可见、箭头边距、裁边、尺寸和权威装配硬门。
+Creo 的原生居中不能替代最终图片验证。1600×1600 成图仍必须通过主体/安装活动中心、接收件可见、逐审计箭头栅格数量、箭头边距、裁边、尺寸和权威装配硬门。
 
 每张成功导出的正式图写入 `native-framing-audit/v1`，至少记录：
 
 - Creo 版本/datecode；
 - `ProCmdZoomIntoOutline` 已在当前会话验证并成功执行；
-- `moving_and_receiver_occurrences/v1` 选择范围；
+- `moving_occurrences_and_receiver_surfaces/v1` 选择范围；
+- `none_native_surface_fit/v1`，表示原生框选后不再做坐标调整；
 - 实际 `zoom_to_selected_level`；
-- 单命令限制与绝对 PAN/ZOOM 禁止标记。
+- 单命令限制与自由/人工 PAN/ZOOM 禁止标记。
 
 ## 已移除方案
 
-屏幕响应探针、多帧构图搜索、PAN/ZOOM 恢复缓存、临时隐藏非焦点部件后 Refit、像素箭头和几何检测动态裁切均已从正式代码与合同删除，不能作为回退入口。
+屏幕响应探针、多帧构图搜索、PAN/ZOOM 恢复缓存、完整接收主体参与 fit、临时隐藏非焦点部件后 Refit、像素箭头和几何检测动态裁切均已从正式代码与合同删除，不能作为回退入口。

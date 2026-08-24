@@ -29,8 +29,9 @@ Classify every deterministic failure through the shared four-class gate policy:
 - `human_review`: keep a real image with presentation-only warnings as `QUESTIONED`.
 - `system_retry`: roll back a failed local attempt and retain the previous valid image as history.
 
-The production framing contract is `native_zoom_to_selected/v1`: one locked fixed camera, one
-Creo selected-object fit command, `Zoom=1`, `PAN=(0,0)`, and one formal raster. Camera
+The production framing contract is `native_receiver_surface_fit/v1`: one locked fixed camera,
+one Creo selected-object fit over moving occurrences plus exact constraint-backed receiver
+surfaces, no post-command PAN/ZOOM correction, and one formal raster. Camera
 compatibility or weak-direction findings return to planning/clarification instead of being
 converted into extra render candidates.
 
