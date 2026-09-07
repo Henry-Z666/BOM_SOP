@@ -1,0 +1,10 @@
+{
+  "schema_version": "ai-image-review/v1",
+  "provider": "dashscope",
+  "api_key_env": "DASHSCOPE_API_KEY",
+  "vision_model_env": "CREO_SOP_AI_REVIEW_MODEL",
+  "default_vision_model": "qwen3-vl-plus",
+  "cad_upload_allowed": false,
+  "review_scope": "rendered_sop_image_only",
+  "fallback": "human_review"
+}

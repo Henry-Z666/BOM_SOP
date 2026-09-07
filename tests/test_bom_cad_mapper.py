@@ -8,14 +8,20 @@ from sop_pipeline.agent.model_inventory import ModelFile, ModelInventory
 from sop_pipeline.agent.draft_planner import DraftInstallationStep, DraftPlan
 
 
-def row(number: int, level: str, drawing: str, quantity: int = 1) -> NormalizedBomRow:
+def row(
+    number: int,
+    level: str,
+    drawing: str,
+    quantity: int = 1,
+    model: str = "",
+) -> NormalizedBomRow:
     return NormalizedBomRow(
         row=number,
         level=level,
         material_code="",
         drawing_no=drawing,
         name=drawing,
-        model="",
+        model=model,
         quantity=quantity,
         unit="件",
         assembly_text="",
@@ -27,6 +33,77 @@ def row(number: int, level: str, drawing: str, quantity: int = 1) -> NormalizedB
 
 
 class BomCadMapperTests(unittest.TestCase):
+    def test_drawing_number_wins_over_a_conflicting_model_number(self) -> None:
+        bom = NormalizedBom(
+            "normalized-bom/v1",
+            "BOM",
+            1,
+            {},
+            (
+                row(2, "1", "ROOT"),
+                row(3, "1.1", "DRAW-A", model="MODEL-B"),
+            ),
+            ("BOM",),
+        )
+        inventory = ModelInventory(
+            "model-inventory/v1",
+            (ModelFile("root.asm.1", "ROOT", "asm", 1),),
+            "root.asm.1",
+            ("root.asm.1",),
+            (),
+            (),
+            (),
+        )
+        graph = {
+            "schema_version": "creo-cad-graph/v3",
+            "assembly_file": "root.asm.1",
+            "occurrences": [
+                {"occurrence_id": "1", "parent_occurrence": "ROOT", "model_name": "DRAW-A"},
+                {"occurrence_id": "2", "parent_occurrence": "ROOT", "model_name": "MODEL-B"},
+            ],
+        }
+
+        result = map_bom_to_occurrences(bom, inventory, graph)
+
+        self.assertEqual(result.rows[1].occurrence_ids, ("1",))
+        self.assertEqual(result.rows[1].status, "matched")
+        self.assertIn("图号优先", result.rows[1].evidence)
+
+    def test_model_number_is_scanned_after_drawing_number_misses(self) -> None:
+        bom = NormalizedBom(
+            "normalized-bom/v1",
+            "BOM",
+            1,
+            {},
+            (
+                row(2, "1", "ROOT"),
+                row(3, "1.1", "UNKNOWN-DRAWING", model="MODEL-B"),
+            ),
+            ("BOM",),
+        )
+        inventory = ModelInventory(
+            "model-inventory/v1",
+            (ModelFile("root.asm.1", "ROOT", "asm", 1),),
+            "root.asm.1",
+            ("root.asm.1",),
+            (),
+            (),
+            (),
+        )
+        graph = {
+            "schema_version": "creo-cad-graph/v3",
+            "assembly_file": "root.asm.1",
+            "occurrences": [
+                {"occurrence_id": "1", "parent_occurrence": "ROOT", "model_name": "MODEL-B"},
+            ],
+        }
+
+        result = map_bom_to_occurrences(bom, inventory, graph)
+
+        self.assertEqual(result.rows[1].occurrence_ids, ("1",))
+        self.assertEqual(result.rows[1].status, "matched")
+        self.assertIn("型号回退", result.rows[1].evidence)
+
     def test_parent_hierarchy_disambiguates_repeated_fasteners(self) -> None:
         bom = NormalizedBom(
             "normalized-bom/v1",

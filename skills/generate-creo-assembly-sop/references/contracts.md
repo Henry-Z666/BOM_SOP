@@ -1,6 +1,6 @@
 # Contracts and hard gates
 
-`rules/contracts.md` is the repository's single contract authority. Current formal tasks use `render-plan/v2` / `creo-render-task/v1`, full root occurrence paths, locked final-ASM identity/hash, fixed cameras, `native-selected-fit/v2`, native same-CAD-point arrows, and `square-crop-presentation/v1` output at `1600×1600`.
+`rules/contracts.md` is the repository's single contract authority. Parallel BOM roots use `assembly-lock/v2`, `creo-cad-forest/v1`, `bom-cad-forest/v1`, and `formal-render-forest/v1`; every nested batch retains one authoritative ASM identity/hash, root occurrence paths and fixed cameras. Current formal tasks use `render-plan/v2` / `creo-render-task/v1`, `native-selected-fit/v2`, native same-CAD-point arrows, and `square-crop-presentation/v1` output at `1600×1600`.
 
 The selected-fit contract must declare:
 

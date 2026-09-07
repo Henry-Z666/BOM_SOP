@@ -1,4 +1,9 @@
 from .core import AgentCore
+from .ai_image_review import (
+    AIImageReviewer,
+    DashScopeVisionTransport,
+    ImageReviewDecision,
+)
 from .creo_worker import AgentNativeCreoWorker
 from .desktop_workflow import DesktopWorkflow
 from .deterministic_resolution import structured_step_revision
@@ -77,6 +82,7 @@ from .sop_publisher import (
 from .store import RunNotFoundError
 
 __all__ = [
+    "AIImageReviewer",
     "AgentCore",
     "AgentNativeCreoWorker",
     "AnalysisResult",
@@ -93,11 +99,13 @@ __all__ = [
     "DeterministicRenderValidator",
     "DeterministicNativeRenderValidator",
     "DesktopWorkflow",
+    "DashScopeVisionTransport",
     "FileCheckpointStore",
     "ExcelComVerifier",
     "FormalRenderPlan",
     "FormalRenderStep",
     "GenerationResult",
+    "ImageReviewDecision",
     "MemoryCheckpointStore",
     "OpenpyxlWorkbookVerifier",
     "PlanRevision",

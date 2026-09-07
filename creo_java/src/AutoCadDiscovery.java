@@ -327,6 +327,15 @@ public final class AutoCadDiscovery {
     if (selection == null) return "null";
     try {
       intseq selected = selection.GetPath() == null ? intseq.create() : selection.GetPath().GetComponentIds();
+      // Creo can report a nested component's own constraint reference as a
+      // one-element local path containing that component feature id.  Prefixing
+      // it again would turn 992/134 into 992/134/134; falling back to the same
+      // id at the root can silently attach geometry to an unrelated occurrence.
+      // Treat this exact redundant form as the already-known base occurrence.
+      if (selected.getarraysize() == 1 && basePath.getarraysize() > 0
+          && selected.get(0) == basePath.get(basePath.getarraysize() - 1)) {
+        selected = intseq.create();
+      }
       intseq fullPath = appendPaths(basePath, selected); ModelItem item = selection.GetSelItem();
       double[][] referenceToRoot = baseToRoot;
       if (selected.getarraysize() > 0) {

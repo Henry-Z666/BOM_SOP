@@ -19,6 +19,7 @@ class DesktopWorkflow:
     def __init__(
         self,
         discovery: CreoDiscoveryPort | None = None,
+        image_reviewer=None,
     ) -> None:
         # Import lazily because skill handlers reuse the clarification helpers
         # in this module. DesktopWorkflow is now only a compatibility facade;
@@ -28,6 +29,8 @@ class DesktopWorkflow:
         adapters = {}
         if discovery is not None:
             adapters["creo_discovery"] = discovery
+        if image_reviewer is not None:
+            adapters["image_reviewer"] = image_reviewer
         self._delegate = PipelineOrchestrator(adapters=adapters)
 
     def bind(self, workspace, store, artifacts) -> None:
@@ -56,10 +59,13 @@ def _mapping_questions(mapping) -> tuple[ClarificationItem, ...]:
             ClarificationItem(
                 item_id="ambiguous-creo-occurrences",
                 category="CONFIRMATION",
-                question=f"BOM 第 {rows} 行在同一父装配下仍有多组 occurrence 候选，是否生成候选方案供后续选图？",
-                options=("保留候选并继续", "返回检查 BOM/CAD"),
-                recommended_option="保留候选并继续",
-                evidence=("Agent 未按文件顺序截取 occurrence，也未猜测重复件身份。",),
+                question=(
+                    f"共有 {len(mapping.ambiguous_rows)} 行 BOM 在同一父装配下仍有多组 occurrence 候选；"
+                    f"本次不会生成这些行（前20行：{rows}）。是否只生成已唯一映射部分？"
+                ),
+                options=("仅生成已映射项并保留完整未解决名单", "返回检查 BOM/CAD"),
+                recommended_option="仅生成已映射项并保留完整未解决名单",
+                evidence=("Agent 未按文件顺序截取 occurrence，也未猜测重复件身份；所有候选保留在映射产物中。",),
             )
         )
     unresolved = tuple(sorted(set(mapping.missing_rows + mapping.quantity_mismatch_rows)))
@@ -69,10 +75,13 @@ def _mapping_questions(mapping) -> tuple[ClarificationItem, ...]:
             ClarificationItem(
                 item_id="creo-quantity-mismatch",
                 category="CONFIRMATION",
-                question=f"BOM 第 {rows} 行的 Creo occurrence 数量不足或缺失，是否保留为待确认步骤并继续？",
-                options=("保留待确认步骤并继续", "返回检查 BOM/CAD"),
-                recommended_option="保留待确认步骤并继续",
-                evidence=("缺失实体不会由脚本虚构。",),
+                question=(
+                    f"共有 {len(unresolved)} 行 BOM 的 Creo occurrence 数量不足或缺失；"
+                    f"本次不会生成这些行（前20行：{rows}）。是否只生成已唯一映射部分？"
+                ),
+                options=("仅生成已映射项并保留完整未解决名单", "返回检查 BOM/CAD"),
+                recommended_option="仅生成已映射项并保留完整未解决名单",
+                evidence=("缺失实体不会由脚本虚构；未解决行会完整保留，不再从规划统计中消失。",),
             )
         )
     return tuple(result)

@@ -3,6 +3,7 @@ node_modules/
 creo_java/build/
 build/
 dist/
+dist-*/
 *.egg-info/
 *.class
 __pycache__/

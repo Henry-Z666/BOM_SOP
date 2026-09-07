@@ -6,12 +6,14 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from PIL import Image
 
 from sop_pipeline.agent import (
     AgentCore,
     GenerationResult,
+    ImageReviewDecision,
     PipelineOrchestrator,
     RenderAttempt,
     RunStatus,
@@ -43,6 +45,23 @@ class ImageWorker:
 
     def close_session(self, session):
         del session
+
+
+class PassingImageReviewer:
+    def __init__(self) -> None:
+        self.calls: list[Path] = []
+
+    def review_render(self, image_file: Path, context: dict):
+        del context
+        self.calls.append(image_file)
+        return ImageReviewDecision(True, (), "test-vision")
+
+
+class RejectingImageReviewer(PassingImageReviewer):
+    def review_render(self, image_file: Path, context: dict):
+        del context
+        self.calls.append(image_file)
+        return ImageReviewDecision(False, ("接收位置被遮挡",), "test-vision")
 
 
 class CandidateWorker(ImageWorker):
@@ -227,6 +246,105 @@ def _weak_direction_fixture(root: Path):
 
 
 class PipelineOrchestratorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._reviewer_patch = patch(
+            "sop_pipeline.agent.skill_handlers.reviewer_from_env",
+            return_value=None,
+        )
+        self._reviewer_patch.start()
+
+    def tearDown(self) -> None:
+        self._reviewer_patch.stop()
+
+    def test_ai_approved_images_are_automatically_published(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            bom, cad, graph = _fixture(root)
+            worker = ImageWorker()
+            reviewer = PassingImageReviewer()
+            core = AgentCore(
+                root / "workspace",
+                PipelineOrchestrator(
+                    adapters={
+                        "creo_discovery": StaticCreoDiscovery(graph),
+                        "render_worker": worker,
+                        "image_reviewer": reviewer,
+                    }
+                ),
+            )
+            run_id = core.create_run(bom, cad)
+            packet = core.analyze(run_id)
+            core.confirm(
+                run_id,
+                {
+                    item.item_id: item.recommended_option
+                    for item in packet.items
+                    if item.category == "CONFIRMATION"
+                },
+            )
+
+            outcome = core.generate(run_id)
+            run = core.get_run(run_id)
+            publication = json.loads(
+                (run.workspace / "results" / "publication-0001.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertEqual(outcome.status, RunStatus.COMPLETED)
+        self.assertTrue(reviewer.calls)
+        self.assertTrue(all(step.status is StepStatus.PASSED for step in outcome.steps))
+        self.assertTrue(
+            all(item["approval_source"] == "ai_review" for item in publication["steps"])
+        )
+
+    def test_ai_rejected_images_fall_back_to_human_review(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            bom, cad, graph = _fixture(root)
+            reviewer = RejectingImageReviewer()
+            core = AgentCore(
+                root / "workspace",
+                PipelineOrchestrator(
+                    adapters={
+                        "creo_discovery": StaticCreoDiscovery(graph),
+                        "render_worker": ImageWorker(),
+                        "image_reviewer": reviewer,
+                    }
+                ),
+            )
+            run_id = core.create_run(bom, cad)
+            packet = core.analyze(run_id)
+            core.confirm(
+                run_id,
+                {
+                    item.item_id: item.recommended_option
+                    for item in packet.items
+                    if item.category == "CONFIRMATION"
+                },
+            )
+
+            outcome = core.generate(run_id)
+            validation = json.loads(
+                (
+                    core.get_run(run_id).workspace
+                    / "results"
+                    / "validation-0001.json"
+                ).read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(outcome.status, RunStatus.NEEDS_REVIEW)
+        self.assertTrue(reviewer.calls)
+        self.assertTrue(
+            all(
+                item["error_code"] == "AI_IMAGE_REVIEW_REJECTED"
+                for item in validation["steps"]
+            )
+        )
+        self.assertTrue(
+            all(item["manual_acceptance_allowed"] for item in validation["steps"])
+        )
+
     def test_batch_rerender_compiles_renders_validates_and_publishes_once(self) -> None:
         steps = (
             StepResult(

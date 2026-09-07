@@ -14,10 +14,11 @@ Run the skills in this order:
 3. `compile-render-jobs` → `render-batch` → `validate-repair` → `publish-delivery`.
 4. For a questioned step, run `resolve-step`, rerender only its invalidation set when required, then republish.
 
-Use the BOM as process truth and the locked final Creo assembly as geometry truth. Derive occurrence, visibility, transform, camera and arrow contracts only from those sources. Free text may confirm only an explicit ±X/±Y/±Z direction and cannot waive any hard gate.
+Use the BOM as process truth and each locked top-level Creo ASM as geometry truth for its own batch. A BOM may contain multiple parallel top-level ASM batches; scan and plan all of them independently, retain nested ASMs under their owning root, and publish their validated steps into one SOP. Product-title exclusion requires title position, no ASM match, no descendants and no steps; a row number is never a rule. Derive occurrence, visibility, transform, camera and arrow contracts only from those sources. Free text may confirm only an explicit ±X/±Y/±Z direction and cannot waive any hard gate.
 
-Machine gates control automatic acceptance. When a real image exists, always expose it with its
-machine result for human review. A user may explicitly accept a machine-failed original through a
+Machine gates control automatic acceptance. After structural gates pass, AI may approve the image
+for automatic SOP publication. AI rejection or unavailability falls back to human review. When a
+real image exists, preserve it with its machine and AI results. A user may explicitly accept a machine-failed original through a
 hashed `human-review-decision/v1`; retain the failure status separately and publish the original
 bytes with no watermark or transformation.
 

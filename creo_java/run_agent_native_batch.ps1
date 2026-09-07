@@ -3,6 +3,7 @@ param(
   [Parameter(Mandatory=$true)][string]$RenderPlanJson,
   [Parameter(Mandatory=$true)][string]$OutputFolder,
   [int]$StartIndex = 0,
+  [string]$ExpectedTaskId = '',
   [int]$Count = 1,
   [ValidateRange(0, 3)][int]$VariantIndex = 0,
   [ValidateSet('Render','Visibility')][string]$Operation = 'Render',
@@ -31,6 +32,9 @@ if ([string]$plan.schema_version -ne 'render-plan/v2') { throw 'Agent native bat
 $tasks = @($plan.tasks)
 if ($StartIndex -lt 0 -or $StartIndex -ge $tasks.Count) { throw 'StartIndex is outside the render plan.' }
 if ($Count -lt 1) { throw 'Count must be positive.' }
+if ($ExpectedTaskId -and ($Count -ne 1 -or [string]$tasks[$StartIndex].task_id -cne $ExpectedTaskId)) {
+  throw 'RENDER_TASK_IDENTITY_MISMATCH: selected plan index does not match requested task.'
+}
 $stop = [Math]::Min($StartIndex + $Count, $tasks.Count)
 
 $output = [IO.Path]::GetFullPath($OutputFolder)
@@ -329,13 +333,16 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
 }
 
 & (Join-Path $here 'test_license_binding.ps1') -LicenseFile $runtime.LicenseFile -CreoLoadpoint $runtime.CreoLoadpoint
-$nativeClass = Join-Path $here 'build\NativeArrowBatch.class'
-$nativeSource = Join-Path $here 'src\NativeArrowBatch.java'
-$workerClass = Join-Path $here 'build\NativeArrowWorker.class'
-$workerSource = Join-Path $here 'src\NativeArrowWorker.java'
-if (-not (Test-Path -LiteralPath $nativeClass) -or -not (Test-Path -LiteralPath $workerClass) -or
-    (Get-Item $nativeSource).LastWriteTimeUtc -gt (Get-Item $nativeClass).LastWriteTimeUtc -or
-    (Get-Item $workerSource).LastWriteTimeUtc -gt (Get-Item $workerClass).LastWriteTimeUtc) {
+$needsBuild = $false
+foreach ($className in @('AutoCadDiscovery', 'ArrowProjection', 'RenderAssemblyImage', 'NativeArrowBatch', 'NativeArrowWorker')) {
+  $classFile = Join-Path $here ('build\' + $className + '.class')
+  $sourceFile = Join-Path $here ('src\' + $className + '.java')
+  if (-not (Test-Path -LiteralPath $classFile) -or
+      (Get-Item -LiteralPath $sourceFile).LastWriteTimeUtc -gt (Get-Item -LiteralPath $classFile).LastWriteTimeUtc) {
+    $needsBuild = $true
+  }
+}
+if ($needsBuild) {
   & (Join-Path $here 'build.ps1') -RuntimeConfig $runtime.ConfigPath
   if ($LASTEXITCODE -ne 0) { throw 'J-Link build failed.' }
 }

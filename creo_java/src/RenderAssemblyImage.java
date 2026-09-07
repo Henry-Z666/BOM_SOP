@@ -124,8 +124,44 @@ public final class RenderAssemblyImage {
    * permitted in the SOP pipeline.
    */
   private static int hideAuxiliaryFeatures(Session session, Model model, java.util.Set<String> visited) throws jxthrowable {
+    return hideAuxiliaryFeatures(session, model, visited, "", null);
+  }
+
+  private static int hideAuxiliaryFeatures(Session session, Model model,
+      java.util.Set<String> visited, String prefix, java.util.Set<String> desired) throws jxthrowable {
+    if (desired != null) {
+      // Resolve the complete visible subtree before any expensive layer edits.
+      // A late missing child must fail early, not after minutes of cleanup.
+      long started = System.nanoTime();
+      java.util.Map<String, Model> required = new java.util.LinkedHashMap<String, Model>();
+      collectAuxiliaryModels(session, model, prefix, desired, required);
+      System.err.println("[PERSISTENT] auxiliary_preflight_seconds="
+          + ((System.nanoTime() - started) / 1.0e9) + " models=" + required.size());
+      int hidden = 0;
+      for (java.util.Map.Entry<String, Model> entry : required.entrySet()) {
+        if (visited.add(entry.getKey())) hidden += hideModelAuxiliaryFeatures(entry.getValue());
+      }
+      return hidden;
+    }
     String key = model.GetFileName();
     if (!visited.add(key)) return 0;
+    int hidden = hideModelAuxiliaryFeatures(model);
+    if (model instanceof Assembly) {
+      Features components = ((Assembly)model).ListFeaturesByType(Boolean.FALSE, FeatureType.FEATTYPE_COMPONENT);
+      for (int i = 0; i < components.getarraysize(); i++) {
+        ComponentFeat component = (ComponentFeat)components.get(i);
+        try {
+          Model child = session.RetrieveModel(component.GetModelDescr());
+          hidden += hideAuxiliaryFeatures(session, child, visited);
+        } catch (Throwable unavailableChild) {
+          System.err.println("[RENDER] auxiliary_scan_skipped_component=" + component.GetId());
+        }
+      }
+    }
+    return hidden;
+  }
+
+  private static int hideModelAuxiliaryFeatures(Model model) throws jxthrowable {
     int hidden = 0;
     if (model instanceof Solid) {
       Solid solid = (Solid)model;
@@ -140,22 +176,32 @@ public final class RenderAssemblyImage {
       }
       if (auxiliaryLayer != null) auxiliaryLayer.SetStatus(DisplayStatus.LAYER_BLANK);
     }
+    return hidden;
+  }
+
+  private static void collectAuxiliaryModels(Session session, Model model, String prefix,
+      java.util.Set<String> desired, java.util.Map<String, Model> required) throws jxthrowable {
+    required.putIfAbsent(model.GetFileName(), model);
     if (model instanceof Assembly) {
       Features components = ((Assembly)model).ListFeaturesByType(Boolean.FALSE, FeatureType.FEATTYPE_COMPONENT);
       for (int i = 0; i < components.getarraysize(); i++) {
         ComponentFeat component = (ComponentFeat)components.get(i);
+        String path = prefix.isEmpty() ? "" + component.GetId() : prefix + "/" + component.GetId();
+        if (!stageRelated(path, desired)) continue;
+        ModelDescriptor descriptor = component.GetModelDescr();
+        Model child;
         try {
-          Model child = session.RetrieveModel(component.GetModelDescr());
-          hidden += hideAuxiliaryFeatures(session, child, visited);
-        } catch (Throwable unavailableChild) {
-          // A suppressed/placeholder occurrence can have no retrievable child
-          // model in this representation.  It cannot contribute graphics, so
-          // retain the parent render and continue with the remaining parts.
-          System.err.println("[RENDER] auxiliary_scan_skipped_component=" + component.GetId());
+          child = session.RetrieveModel(descriptor);
+        } catch (com.ptc.pfc.pfcExceptions.XToolkitNotFound unavailable) {
+          throw new IllegalStateException("CREO_VISIBLE_MODEL_MISSING: occurrence=" + path
+              + " model=" + descriptor.GetFileName(), unavailable);
         }
+        if (child == null) throw new IllegalStateException("CREO_VISIBLE_MODEL_MISSING: occurrence="
+            + path + " model=" + descriptor.GetFileName());
+        // Deduplicate edits only: repeated ASM occurrences may select different children.
+        collectAuxiliaryModels(session, child, path, desired, required);
       }
     }
-    return hidden;
   }
 
   /**
@@ -805,10 +851,12 @@ public final class RenderAssemblyImage {
     Window window = null;
     DisplayList3D arrowDisplay = null;
     try {
+      long openStarted = System.nanoTime();
       ModelDescriptor descriptor = assemblyDescriptor(assemblyFile);
       window = session.OpenFile(descriptor);
       window.Activate();
       Model model = window.GetModel();
+      System.err.println("[PERSISTENT] model_open_seconds=" + ((System.nanoTime() - openStarted) / 1.0e9));
       String requestedBase = new File(assemblyFile).getName().replaceFirst("\\.[0-9]+$", "");
       if (!model.GetFileName().equalsIgnoreCase(requestedBase)) {
         throw new IllegalStateException("Opened unexpected assembly: requested=" + requestedBase + " actual=" + model.GetFileName());
@@ -818,8 +866,6 @@ public final class RenderAssemblyImage {
         throw new IllegalStateException("Opened unexpected assembly version: requested=" + requestedVersion + " actual=" + actualVersion);
       }
       System.err.println("[PERSISTENT] authoritative_assembly=" + model.GetFileName() + "." + actualVersion);
-      int hiddenAuxiliaryFeatures = hideAuxiliaryFeatures(session, model, new java.util.HashSet<String>());
-      System.err.println("[PERSISTENT] native_auxiliary_features_hidden=" + hiddenAuxiliaryFeatures);
 
       java.util.List<intseq> requestedOccurrences = parseOccurrencePaths(occurrencePaths);
       if (requestedOccurrences.isEmpty()) throw new IllegalArgumentException("No moving occurrence paths supplied");
@@ -830,6 +876,7 @@ public final class RenderAssemblyImage {
       if (parseOccurrencePaths(focusPaths).isEmpty())
         throw new IllegalArgumentException("No installation focus occurrence paths supplied");
       Assembly assembly = (Assembly)model;
+      long stageStarted = System.nanoTime();
       CreateNewSimpRepInstructions stage = pfcSimpRep.CreateNewSimpRepInstructions_Create("AI_SOP_STAGE");
       stage.SetIsTemporary(true); stage.SetDefaultAction(SimpRepActionType.SIMPREP_INCLUDE);
       SimpRepItems items = SimpRepItems.create(); addStageExclusions(session, assembly, "", desired, items);
@@ -839,7 +886,18 @@ public final class RenderAssemblyImage {
       // invalidates the forward-stage contract and the calibrated framing.
       stage.SetItems(items);
       assembly.ActivateSimpRep(assembly.CreateSimpRep(stage));
+      System.err.println("[PERSISTENT] stage_visibility_seconds=" + ((System.nanoTime() - stageStarted) / 1.0e9));
       System.err.println("[PERSISTENT] visible occurrences=" + visiblePaths + " stage_exclusions=" + items.getarraysize());
+
+      // Future branches are already excluded by this exact same stage predicate.
+      // Clean every displayed model plus its ancestors, not the entire root ASM.
+      // Keep per-job erasure below: no layer, pose, or visibility state is cached.
+      long auxiliaryStarted = System.nanoTime();
+      java.util.Set<String> auxiliaryModels = new java.util.HashSet<String>();
+      int hiddenAuxiliaryFeatures = hideAuxiliaryFeatures(session, model, auxiliaryModels, "", desired);
+      System.err.println("[PERSISTENT] native_auxiliary_features_hidden=" + hiddenAuxiliaryFeatures
+          + " models=" + auxiliaryModels.size()
+          + " seconds=" + ((System.nanoTime() - auxiliaryStarted) / 1.0e9));
 
       if (!assembly.GetDynamicPositioning()) assembly.SetDynamicPositioning(true);
       if (!assembly.GetDynamicPositioning()) throw new IllegalStateException("Creo DynamicPositioning was not enabled");

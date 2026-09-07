@@ -185,6 +185,7 @@ class AgentNativeCreoWorker:
             count=1,
             variant_index=variant_index,
             budget_task_id=f"{task.task_id}:attempt-{attempt}",
+            expected_task_id=task.task_id,
         )
         if execution_error is not None:
             return _batch_failure(execution_error)
@@ -397,6 +398,7 @@ class AgentNativeCreoWorker:
         count: int,
         variant_index: int,
         budget_task_id: str,
+        expected_task_id: str,
     ) -> str | None:
         used = session.render_frames_by_task.get(budget_task_id, 0)
         if used + count > MAX_RENDER_RASTERS_PER_ATTEMPT:
@@ -415,6 +417,8 @@ class AgentNativeCreoWorker:
             str(output_directory),
             "-StartIndex",
             str(start_index),
+            "-ExpectedTaskId",
+            expected_task_id,
             "-Count",
             str(count),
             "-VariantIndex",
@@ -452,15 +456,22 @@ class AgentNativeCreoWorker:
         if self._WORKER_PATTERN.search(result.stdout or "") is not None:
             session.native_worker_active = True
         if result.returncode != 0:
+            output = (result.stderr or "") + (result.stdout or "")
+            error_code = next(
+                (code for code in (
+                    "RENDER_TASK_IDENTITY_MISMATCH", "CREO_VISIBLE_MODEL_MISSING"
+                ) if code in output),
+                "CREO_RENDER_FAILED",
+            )
             self._record_batch_diagnostic(
                 session,
                 budget_task_id,
-                "CREO_RENDER_FAILED",
+                error_code,
                 returncode=result.returncode,
                 stdout=result.stdout or "",
                 stderr=result.stderr or "",
             )
-            return "CREO_RENDER_FAILED"
+            return error_code
         return None
 
     def _record_batch_diagnostic(
@@ -692,6 +703,9 @@ def _gate_attempt(path: Path, failures: tuple[str, ...]) -> RenderAttempt:
 
 
 def _batch_failure(error_code: str) -> RenderAttempt:
-    if error_code == "RENDER_FRAME_BUDGET_EXCEEDED":
+    if error_code in {
+        "RENDER_FRAME_BUDGET_EXCEEDED", "RENDER_TASK_IDENTITY_MISMATCH",
+        "CREO_VISIBLE_MODEL_MISSING",
+    }:
         return RenderAttempt.failed(error_code)
     return RenderAttempt.retryable(error_code)

@@ -4,7 +4,7 @@ This file is the single current contract authority for the Agent and executable 
 
 ## Authoritative assembly
 
-Record the exact final ASM filename/version, SHA-256, root coordinate system, actual opened model/version, and calibrated `fixed_123`/`fixed_456` camera basis. Abort when the locked file or hash changes.
+For each top-level ASM batch, record the exact authoritative ASM filename/version, SHA-256, BOM root row and source-row scope, root coordinate system, actual opened model/version, and calibrated `fixed_123`/`fixed_456` camera basis. Abort when any locked file or hash changes. `assembly-lock/v2`, `creo-cad-forest/v1`, `bom-cad-forest/v1`, and `formal-render-forest/v1` carry parallel roots; each nested single-assembly payload retains its existing contract.
 
 ## Formal render task
 
@@ -28,7 +28,7 @@ The validated task contract—not the publication workbook—is execution truth.
 
 - `arrow-projection/v1` records covered occurrence paths, anchor source, complete/exploded root points, direction, merge coverage, and status. Each endpoint difference equals the audited translation for its covered occurrence(s).
 - `native-framing-audit/v1` records task/image identity, Creo version/datecode, verified `ProCmdZoomIntoOutline`, moving-plus-receiver-surface scope, no coordinate adjustment, level, one-command limit, and free/manual PAN/ZOOM prohibition.
-- Automatic image-quality audits are not part of approval. Existing visibility-audit code may remain dormant, but it cannot accept, reject, or rewrite a step.
+- `ai-image-review/v1` 只接收最终渲染图片和最小步骤上下文，记录模型、调用状态、通过结论和问题。它不得修改或豁免任何 CAD、occurrence、可见集、变换、相机、箭头、哈希或状态机硬门。
 
 ## Hard render gates
 
@@ -47,13 +47,13 @@ A formal image passes only when all apply:
 - no datum, annotation, weld cosmetic, UI, or unrelated geometry appears;
 - output file exists and has the contracted dimensions.
 
-Readability, composition, centering, clipping, apparent occlusion, arrow presentation, and view preference are human-review concerns. They never approve or reject an image automatically.
+Readability, composition, centering, clipping, apparent occlusion and arrow presentation are AI 图片审核范围。结构硬门通过且 AI 返回 `passed=true` 时可自动批准；AI 返回不通过、未配置、超时或格式无效时转人工复查。
 
-Structural failure blocks publication. Image composition is not automatically accepted or rejected: every structurally valid real raster enters human review. A selected rerender option must produce a versioned step revision and an executable render-task field change.
+Structural failure blocks publication and cannot由AI放行。AI 未批准的真实图片保留人工采用、跳过或有界重渲染路径；重渲染选项仍必须产生版本化步骤修订和可执行任务字段变更。
 
 ## Publication gates
 
-- Only explicitly human-approved steps enter a formal workbook.
+- 只有结构硬门通过且经 AI 批准，或经明确人工决定批准的步骤进入正式工作簿。
 - An explicitly audited `skip_from_publication` decision may omit a step from the current workbook without removing its durable render/review record; the step remains available for a later rerender and insertion.
 - Apply a user-selected batch as one durable transaction: compile/render/validate at most once for the union of rerendered steps, preserve every non-invalidated prior result, and write/replace the XLSX once after all decisions have been applied in memory.
 - Preserve BOM order and the current dynamic page layout.

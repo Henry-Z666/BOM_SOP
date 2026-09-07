@@ -1,9 +1,10 @@
 [project]
 name = "creo-native-sop"
-version = "0.1.0"
+version = "0.2.0"
 description = "Auditable, review-gated Creo-native assembly SOP pipeline"
 requires-python = ">=3.11"
 dependencies = [
+  "dashscope>=1.24",
   "numpy>=1.26",
   "openpyxl>=3.1",
   "Pillow>=10",

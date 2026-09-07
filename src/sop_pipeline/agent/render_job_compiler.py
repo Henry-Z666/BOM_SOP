@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from hashlib import sha256
 from typing import Any
 
@@ -9,13 +10,33 @@ from sop_pipeline.camera_visibility import (
     visibility_contract,
 )
 
-from .formal_render_planner import FormalRenderPlan, FormalRenderStep
+from .formal_render_planner import FormalRenderForest, FormalRenderPlan, FormalRenderStep
 from .render_scheduler import RenderPlan, RenderTask
 
 
-def compile_locked_render_jobs(plan: FormalRenderPlan) -> RenderPlan:
+def compile_locked_render_jobs(
+    plan: FormalRenderPlan | FormalRenderForest,
+) -> RenderPlan:
     """Compile one immutable geometry plan into bounded worker tasks."""
 
+    if isinstance(plan, FormalRenderForest):
+        tasks = tuple(
+            task
+            for batch in plan.batches
+            if batch.plan.steps
+            for task in compile_locked_render_jobs(batch.plan).tasks
+        )
+        task_ids = [task.task_id for task in tasks]
+        if len(task_ids) != len(set(task_ids)):
+            raise ValueError("多总装渲染计划包含重复任务 ID")
+        if not tasks:
+            raise ValueError("locked render plan contains no steps")
+        # The native runner indexes the concatenated file, not each root's plan.
+        tasks = tuple(
+            replace(task, payload={**task.payload, "plan_index": index})
+            for index, task in enumerate(tasks)
+        )
+        return RenderPlan(schema_version="render-plan/v2", tasks=tasks)
     if plan.schema_version != "formal-render-plan/v2":
         raise ValueError("render job compilation requires formal-render-plan/v2")
     required_decisions = {

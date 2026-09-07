@@ -21,8 +21,20 @@ foreach ($className in $requiredClasses) {
   }
 }
 
-& $PythonCommand -m PyInstaller --noconfirm --clean `
-  --distpath ([System.IO.Path]::GetFullPath($DistPath)) `
-  --workpath ([System.IO.Path]::GetFullPath($WorkPath)) `
-  (Join-Path $PSScriptRoot 'CreoSopAgent.spec')
-exit $LASTEXITCODE
+# Do not collect unrelated ICU/UCRT DLLs from tools injected into the host PATH.
+# Qt uses the Windows ICU API; a third-party icuuc.dll with versioned exports
+# can build successfully but makes the frozen QtCore import fail at startup.
+$resolvedPython = (Get-Command $PythonCommand -ErrorAction Stop).Source
+$originalBuildPath = $env:PATH
+try {
+  $env:PATH = @((Split-Path -Parent $resolvedPython),
+    (Join-Path $env:SystemRoot 'System32'), $env:SystemRoot) -join ';'
+  & $resolvedPython -m PyInstaller --noconfirm --clean `
+    --distpath ([System.IO.Path]::GetFullPath($DistPath)) `
+    --workpath ([System.IO.Path]::GetFullPath($WorkPath)) `
+    (Join-Path $PSScriptRoot 'CreoSopAgent.spec')
+  $buildExitCode = $LASTEXITCODE
+} finally {
+  $env:PATH = $originalBuildPath
+}
+exit $buildExitCode

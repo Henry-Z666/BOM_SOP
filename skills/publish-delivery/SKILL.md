@@ -15,11 +15,12 @@ assembly-content area. The built-in layout accepts up to six images in a determi
 grid; only overflow creates a same-process continuation sheet. Do not create one sheet
 per image and do not assume a fixed number of processes.
 
-Publish only explicitly human-approved images; pending images may appear only in a review artifact,
-never as a final approved step. Verify workbook structure, retained
+Publish images that passed every structural gate and were approved by AI, or were explicitly
+approved by a person. Pending images may appear only in a review artifact, never as a final
+approved step. Verify workbook structure, retained
 template anchors, images and Excel print output.
-There is no automatic image-quality approval. A normal current-image/candidate selection or an
-explicit `human-review-decision/v1`
+An AI approval must retain `approval_source=ai_review` in validation and publication. A normal
+current-image/candidate selection or an explicit `human-review-decision/v1`
 may grant delivery eligibility to a real machine-failed image without changing its machine
 status. Verify its path and SHA-256, require `publication_transform=none` and `watermark=false`,
 then copy and embed the original bytes directly. Placeholders can never be manually approved.

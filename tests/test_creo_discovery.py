@@ -110,6 +110,21 @@ class CreoDiscoveryTests(unittest.TestCase):
         self.assertIn("physical_anchor_source", source)
         self.assertNotIn("catch (Throwable ignored) {}", physical_anchor)
 
+    def test_java_discovery_normalizes_redundant_nested_reference_paths(self) -> None:
+        source = (
+            Path(__file__).parents[1]
+            / "creo_java"
+            / "src"
+            / "AutoCadDiscovery.java"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("selected.getarraysize() == 1", source)
+        self.assertIn(
+            "selected.get(0) == basePath.get(basePath.getarraysize() - 1)",
+            source,
+        )
+        self.assertIn("selected = intseq.create();", source)
+
     def test_runtime_config_reuses_persisted_run_config_after_restart(self) -> None:
         with tempfile.TemporaryDirectory() as folder, patch.dict(
             os.environ,

@@ -22,6 +22,26 @@ class LocalAnalysisWorkflow:
         bom = normalize_bom(run.bom_file)
         inventory = inventory_models(run.cad_directory, bom)
         draft_plan = create_draft_plan(bom, inventory)
+        non_modeled = set(inventory.non_modeled_bom_rows)
+        root_row = min(
+            bom.rows,
+            key=lambda row: (len([part for part in row.level.split(".") if part]), row.row),
+        )
+        expected_rows = {
+            row.row
+            for row in bom.rows
+            if row.row != root_row.row
+            and not row.process_only
+            and row.row not in non_modeled
+        }
+        draft_rows = {
+            row_number
+            for step in draft_plan.steps
+            for row_number in step.source_bom_rows
+        }
+        draft_coverage = round(
+            100.0 * len(expected_rows & draft_rows) / len(expected_rows), 2
+        ) if expected_rows else 100.0
         questions: list[ClarificationItem] = []
         if len(bom.sheet_candidates) > 1:
             questions.append(
@@ -79,13 +99,17 @@ class LocalAnalysisWorkflow:
             "unmatched_bom_rows": len(inventory.missing_bom_rows),
             "non_modeled_bom_rows": len(inventory.non_modeled_bom_rows),
             "draft_installation_steps": len(draft_plan.steps),
+            "draft_bom_rows_covered": len(expected_rows & draft_rows),
+            "draft_planning_coverage_percent": draft_coverage,
         }
         packet = ClarificationPacket(
             schema_version="clarification-packet/v1",
             summary=(
                 f"已从 {bom.sheet_name} 识别 {len(bom.rows)} 行物料、"
                 f"{len(bom.main_process_numbers)} 个主工序，其中 "
-                f"{len(bom.renderable_process_numbers)} 个需要生成安装图；"
+                f"{len(bom.renderable_process_numbers)} 个来自显式步骤文字；"
+                f"草案按文字或 ASM 层级形成 {len(draft_plan.steps)} 个范围，"
+                f"覆盖 {len(expected_rows & draft_rows)}/{len(expected_rows)} 个可规划物料行；"
                 f"推荐最终总装为 {inventory.final_assembly}。"
             ),
             items=tuple(questions),

@@ -5,7 +5,7 @@ description: Inventory Creo ASM and PRT versions and extract occurrence or const
 
 # Discover CAD
 
-Invoke `discover-cad` through `SkillRuntime` with the locked assembly artifact. It emits `creo-cad-graph/v3`.
+Invoke `discover-cad` through `SkillRuntime` with the locked assembly artifact. It emits `creo-cad-graph/v3` for one root or `creo-cad-forest/v1` for parallel roots.
 
 Accept only `run_id` plus the locked CAD-directory and final-assembly artifact references. Run
 official asynchronous J-Link on a fresh disposable model copy. Return `creo-cad-graph/v3` with:
@@ -18,3 +18,5 @@ official asynchronous J-Link on a fresh disposable model copy. Return `creo-cad-
 Hash every source CAD file before and after access. Return `blocked` on any mutation, assembly
 version mismatch, unknown occurrence reference or invalid root vector. Mark unavailable geometry
 explicitly; never infer it from an occurrence centre. Keep local paths and raw CAD inside the local run workspace.
+
+For `assembly-lock/v2`, open and scan every listed top-level ASM independently. Preserve its batch ID and BOM row scope, and retain one complete `creo-cad-graph/v3` per batch. Never reuse one root's occurrence paths, coordinate system, or cameras in another batch.

@@ -39,35 +39,44 @@ _GENERATING = (RunStatus.GENERATING, RunStatus.NEEDS_REVIEW)
 AGENT_SKILL_DEFINITIONS: dict[str, SkillDefinition] = {
     "intake-preflight": _definition("intake-preflight", _ANALYZING, ("normalize-bom",)),
     "normalize-bom": _definition("normalize-bom", _ANALYZING, ("lock-assembly", "discover-cad")),
-    "lock-assembly": _definition("lock-assembly", _ANALYZING, ("discover-cad",)),
+    "lock-assembly": _definition(
+        "lock-assembly", _ANALYZING, ("discover-cad",), "agent-skill/v2"
+    ),
     "discover-cad": _definition(
-        "discover-cad", _ANALYZING, ("map-bom-cad",), "agent-skill/v2"
+        "discover-cad", _ANALYZING, ("map-bom-cad",), "agent-skill/v3"
     ),
-    "map-bom-cad": _definition("map-bom-cad", _ANALYZING, ("plan-assembly",)),
+    "map-bom-cad": _definition(
+        "map-bom-cad", _ANALYZING, ("plan-assembly",), "agent-skill/v2"
+    ),
     "plan-assembly": _definition(
-        "plan-assembly", _ANALYZING, ("clarify-plan",), "agent-skill/v2"
+        "plan-assembly", _ANALYZING, ("clarify-plan",), "agent-skill/v4"
     ),
-    "clarify-plan": _definition("clarify-plan", _ANALYZING, ("compile-render-jobs",)),
+    "clarify-plan": _definition(
+        "clarify-plan", _ANALYZING, ("compile-render-jobs",), "agent-skill/v2"
+    ),
     "compile-render-jobs": _definition(
-        "compile-render-jobs", _GENERATING, ("compile-render-jobs", "render-batch")
+        "compile-render-jobs",
+        _GENERATING,
+        ("compile-render-jobs", "render-batch"),
+        "agent-skill/v3",
     ),
     "render-batch": _definition(
         "render-batch",
         _GENERATING,
         ("render-batch", "validate-repair"),
-        "agent-skill/v6",
+        "agent-skill/v8",
     ),
     "validate-repair": _definition(
         "validate-repair",
         _GENERATING,
         ("validate-repair", "render-batch", "publish-delivery"),
-        "agent-skill/v6",
+        "agent-skill/v7",
     ),
     "publish-delivery": _definition(
         "publish-delivery",
         (RunStatus.GENERATING, RunStatus.NEEDS_REVIEW),
         ("publish-delivery", "resolve-step"),
-        "agent-skill/v2",
+        "agent-skill/v4",
     ),
     "resolve-step": _definition(
         "resolve-step",

@@ -5,8 +5,10 @@ This file is the single current rendering authority for the Agent and all execut
 ## Truth and stage
 
 1. The BOM defines process hierarchy, quantity, order, and source-backed text.
-2. The highest-version final total ASM defines occurrence identity, position, orientation, appearance, root coordinates, and fixed cameras.
+2. Each exact-matched top-level ASM batch locks its own highest-version authoritative ASM. That ASM alone defines occurrence identity, position, orientation, appearance, root coordinates, and fixed cameras inside the batch. Never merge coordinates or occurrence paths across parallel roots.
 3. Intermediate assemblies and historical render outputs are diagnostic evidence only.
+
+A BOM may be a forest with multiple parallel top-level ASM roots. Plan every root as an independent main batch, keep nested ASMs inside their containing batch, and concatenate validated tasks into one SOP. A row outside every root remains an explicit unscoped exception; never guess its batch. A product-title row is excluded only when title-level position, no exact ASM, no descendants, and no assembly instruction are all evidenced. Row number is never evidence.
 
 For step `n`:
 
@@ -22,7 +24,7 @@ Creo `FIX` against `ROOT` proves only final placement. It does not prove that a 
 
 - Select receiver evidence from the current occurrence's measured Creo assembly constraints. Prefer `INSERT`, then mate/alignment-style constraints; exclude receivers that move in the same step. If no usable receiver point and direction exist, leave the step unresolved instead of guessing.
 - Treat Creo `SURFACE`/`INSERT` directions as unsigned axes. When native solid bounds exist, test both signed translations and choose the sign that maximizes the worst post-translation clearance across every same-axis constrained receiver. Use the receiver-point half-space only as a deterministic fallback when bounds are missing or the clearance scores tie.
-- Group repeated occurrences from the same BOM row by compatible unsigned installation axis. Resolve one common signed direction for the whole group (majority clearance evidence, with stable occurrence order as an exact-tie fallback), and apply it to every occurrence in that shared step. Split only when the measured installation axes are genuinely incompatible.
+- Group repeated occurrences from the same BOM row by compatible unsigned installation axis. Resolve one common signed direction for the whole group (majority clearance evidence, with stable occurrence order as an exact-tie fallback), and apply it to every occurrence in that shared step. Split when the measured installation axes are genuinely incompatible, or when contracting occurrence chains into a group creates a proven dependency cycle. In the latter case split only groups on that cycle, rebuild each member from its original CAD evidence, and retain all occurrences and receiver/physical precedence edges. Record `GROUP_DEPENDENCY_SPLIT`; an irreducible occurrence-level cycle still blocks planning.
 - Use the deterministic display distance compiled from the locked assembly occurrence-origin extent (`8%` of its diagonal, or `80` when no usable extent exists).
 - Explosion is translation only and preserves every 3×3 rotation matrix. The interface normal remains the installation-axis truth. If a normal explosion still has material AABB overlap with staged context and is ambiguous because it telescopes along a long bridge, or because a part with aspect ratio at least `3` has strong contact-backed lateral evidence, the presentation vector may switch to one root axis within the receiver plane. The lateral candidate must reduce overlap to a bounded minimum and is selected before rendering; it is not a pixel review or retry.
 - A structured operator direction may confirm only the sign of an existing measured Creo receiver axis. Free text cannot generate coordinates, and the confirmation cannot replace the measured axis.
@@ -54,6 +56,8 @@ Creo `FIX` against `ROOT` proves only final placement. It does not prove that a 
 ## Appearance and hard framing checks
 
 - Render solid part geometry only; hide datums, curves, quilts, annotations, weld cosmetics, and UI/session text in Creo.
+- Apply the locked stage exclusions before auxiliary cleanup. Traverse only stage-related full occurrence paths (visible models, ancestors and included rigid descendants); excluded future branches cannot contribute graphics. Deduplicate layer edits by model, never the occurrence traversal of a repeated ASM. Preserve per-job model erasure; do not cache altered CAD state across steps.
+- Before auxiliary layer edits, resolve the entire stage-related model subtree. A missing visible model blocks the step with `CREO_VISIBLE_MODEL_MISSING` and its full occurrence path/model name; do not spend time cleaning earlier models first or automatically repeat an unchanged missing-input failure. Model collection is per job, not a cross-step CAD-state cache.
 - Export an undistorted native-viewport overscan whose short edge is 1600 pixels, then apply exactly one deterministic centre crop to `1600×1600`. Padding/letterboxing, stretching, upscaling, geometry-detected crop bounds, and per-image adaptive crops are forbidden.
 - Before the selected-object fit, scale the configured fit level by the inverse native viewport aspect ratio so every moving item and concrete receiver interface remains inside the central square crop. The final square raster must keep every moving item, receiver interface, installation boundary, and arrow readable and centered within the compiled gate.
 - Non-critical completed background may cross at most two frame edges; moving items, required receivers, and arrows may not be lost. The number of significant green arrow components may not be lower than the validated arrow-audit count.

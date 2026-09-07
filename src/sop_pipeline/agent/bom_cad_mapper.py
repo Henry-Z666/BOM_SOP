@@ -32,6 +32,26 @@ class BomCadMap:
     quantity_mismatch_rows: tuple[int, ...]
 
 
+@dataclass(frozen=True)
+class BomCadBatch:
+    batch_id: str
+    root_bom_row: int
+    source_bom_rows: tuple[int, ...]
+    mapping: BomCadMap
+
+
+@dataclass(frozen=True)
+class BomCadForest:
+    schema_version: str
+    assembly_file: str
+    rows: tuple[BomOccurrenceMapping, ...]
+    matched_rows: int
+    ambiguous_rows: tuple[int, ...]
+    missing_rows: tuple[int, ...]
+    quantity_mismatch_rows: tuple[int, ...]
+    batches: tuple[BomCadBatch, ...]
+
+
 def map_bom_to_occurrences(
     bom: NormalizedBom,
     inventory: ModelInventory,
@@ -79,15 +99,23 @@ def map_bom_to_occurrences(
             )
             continue
 
-        identifiers = {
-            normalize_identifier(value)
-            for value in (row.drawing_no, row.model, row.material_code)
-            if value.strip()
-        }
-        candidates = [
-            node for node in occurrences if identifiers.intersection(_node_identifiers(node))
-        ]
-        evidence = "图号/型号/物料编码与 Creo 模型名精确匹配"
+        candidates: list[dict[str, Any]] = []
+        evidence = "图号、型号和物料编码均未命中 Creo 模型名"
+        for label, raw_identifier in (
+            ("图号优先", row.drawing_no),
+            ("型号回退", row.model),
+            ("物料编码回退", row.material_code),
+        ):
+            identifier = normalize_identifier(raw_identifier)
+            if not identifier:
+                continue
+            matches = [
+                node for node in occurrences if identifier in _node_identifiers(node)
+            ]
+            if matches:
+                candidates = matches
+                evidence = f"{label}：与 Creo 模型名精确匹配"
+                break
         if parent is not None:
             parent_mapping = by_row.get(parent.row)
             parent_occurrences = (

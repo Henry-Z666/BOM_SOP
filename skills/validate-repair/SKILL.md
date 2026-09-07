@@ -8,18 +8,18 @@ description: Apply deterministic geometry, camera, arrow, and file-integrity har
 Invoke `validate-repair` through `SkillRuntime` after rendering. It emits
 `validation-result/v2` and `candidate-set/v1`.
 
-Run structural deterministic gates only. Never waive assembly, occurrence, visibility, camera identity,
-transform, arrow, or file-integrity failures. Image composition and readability are decided by a
-person viewing the real raster, not by automatic approval. Do not activate unrequested extra renders.
+Run structural deterministic gates before AI image review. Never waive assembly, occurrence,
+visibility, camera identity, transform, arrow, or file-integrity failures. AI reviews only image
+composition and readability, and it cannot activate unrequested extra renders.
 Produce two to four single-factor arrow-layout candidates only when the render
 artifact explicitly proves that all structural and geometric gates passed. When a real Creo
 image exists but fails a machine gate, retain the byte-identical image for informed human
 review; produce a placeholder only when no real image exists.
 
-Every structurally valid real image must be emitted as `QUESTIONED` with
-`manual_acceptance_allowed=true` and `image_review_mode=human_only/v1`, even when legacy image
-measurements reported no warnings. Do not allow it into publication until the person explicitly
-adopts it. Weak direction, non-axis-aligned receiver normals,
+Every structurally valid real image enters `ai_then_human/v1`. Emit `PASSED` with
+`approval_source=ai_review` when AI returns `passed=true`; otherwise emit `QUESTIONED` with
+`manual_acceptance_allowed=true`. Missing credentials, service errors, timeouts, and invalid AI
+schemas fall back to human review and never fail open. Weak direction, non-axis-aligned receiver normals,
 camera/receiver incompatibility, missing occurrences, invalid transforms/audits, and missing
 images remain machine hard blocks. A renderable hard block may expose its original image for an
 explicit, separately audited human override; it never becomes machine-passed.

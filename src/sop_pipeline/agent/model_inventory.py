@@ -14,6 +14,31 @@ def normalize_identifier(value: str) -> str:
     return re.sub(r"[^0-9A-Z]", "", value.upper())
 
 
+def matching_model_files_for_row(
+    row: NormalizedBomRow,
+    files: tuple[ModelFile, ...] | list[ModelFile],
+) -> tuple[ModelFile, ...]:
+    """Return the first exact identifier tier that has CAD files.
+
+    Drawing number is authoritative. Model number and material code are
+    fallbacks, never additional candidate pools that can create false
+    ambiguity when a higher-priority tier already matched.
+    """
+
+    for raw_identifier in (row.drawing_no, row.model, row.material_code):
+        identifier = normalize_identifier(raw_identifier)
+        if not identifier:
+            continue
+        matches = tuple(
+            model
+            for model in files
+            if normalize_identifier(model.base_name) == identifier
+        )
+        if matches:
+            return matches
+    return ()
+
+
 @dataclass(frozen=True)
 class ModelFile:
     relative_path: str
@@ -81,16 +106,19 @@ def inventory_models(cad_directory: Path, bom: NormalizedBom) -> ModelInventory:
         raise ValueError("CAD 文件夹中没有找到最终总装候选 ASM")
 
     root = _root_row(bom)
-    root_ids = {
+    root_ids = tuple(
         normalize_identifier(value)
         for value in (root.drawing_no, root.model, root.material_code)
         if value.strip()
-    }
+    )
 
     def assembly_score(model: ModelFile) -> tuple[int, int, str]:
         base = normalize_identifier(model.base_name)
-        exact = 1 if base in root_ids else 0
-        return exact, model.version, model.relative_path.casefold()
+        priority = next(
+            (len(root_ids) - index for index, identifier in enumerate(root_ids) if base == identifier),
+            0,
+        )
+        return priority, model.version, model.relative_path.casefold()
 
     ranked = sorted(assemblies, key=assembly_score, reverse=True)
     best_score = assembly_score(ranked[0])[:2]
@@ -99,19 +127,13 @@ def inventory_models(cad_directory: Path, bom: NormalizedBom) -> ModelInventory:
     )
     final_assembly = assembly_candidates[0]
 
-    by_base: dict[str, list[ModelFile]] = {}
-    for model in files:
-        by_base.setdefault(normalize_identifier(model.base_name), []).append(model)
     missing: list[int] = []
     ambiguous: list[int] = []
     non_modeled: list[int] = []
     for row in bom.rows:
-        identifiers = {
-            normalize_identifier(value)
-            for value in (row.drawing_no, row.model, row.material_code)
-            if value.strip()
+        matches = {
+            model.relative_path for model in matching_model_files_for_row(row, files)
         }
-        matches = {model.relative_path for identifier in identifiers for model in by_base.get(identifier, [])}
         if not matches and _is_non_modeled_material(row):
             non_modeled.append(row.row)
         elif not matches and not row.process_only:

@@ -40,6 +40,11 @@ from .quick_prompts import (
     DEFAULT_QUICK_PROMPT_PROVIDER,
     QuickPromptProvider,
 )
+from .secret_store import (
+    load_dashscope_key,
+    save_dashscope_key,
+    select_dashscope_key,
+)
 from .service import DesktopAgentService
 
 
@@ -158,8 +163,12 @@ def _actionable_review_details(entry: dict[str, object]) -> list[str]:
     if category:
         details.append(f"处理类别：{_CATEGORY_LABELS.get(category, category)}")
     error_code = str(entry.get("error_code") or "").strip()
-    if error_code == "MANUAL_IMAGE_REVIEW_REQUIRED":
-        details.append("请预览图片，可直接采用或选择问题后重新生成")
+    if error_code in {
+        "MANUAL_IMAGE_REVIEW_REQUIRED",
+        "AI_IMAGE_REVIEW_REJECTED",
+        "AI_IMAGE_REVIEW_UNAVAILABLE",
+    }:
+        details.append("AI未自动放行，请预览图片后采用或选择问题重新生成")
     elif error_code == "MOVING_ARROW_ANCHOR_UNAVAILABLE":
         details.append("请检查该零件的 Creo 实体几何与装配约束后重新生成")
     elif error_code in _CAMERA_VISIBILITY_CODES:
@@ -178,6 +187,10 @@ def _actionable_review_details(entry: dict[str, object]) -> list[str]:
 
 
 def _review_issue_summary(error_code: str) -> str:
+    if error_code == "AI_IMAGE_REVIEW_REJECTED":
+        return "AI判断图片存在疑点，需要人工确认。"
+    if error_code == "AI_IMAGE_REVIEW_UNAVAILABLE":
+        return "AI图片审核未完成，已转人工确认。"
     if error_code == "MANUAL_IMAGE_REVIEW_REQUIRED":
         return "图片需要人工确认。"
     if error_code == "MOVING_ARROW_ANCHOR_UNAVAILABLE":
@@ -206,6 +219,12 @@ class MainWindow(QMainWindow):
             quick_prompt_provider or DEFAULT_QUICK_PROMPT_PROVIDER
         )
         self.settings = QSettings("CreoSopAgent", "CreoSopAgent")
+        self.saved_dashscope_key = load_dashscope_key(self.settings)
+        if not self.saved_dashscope_key:
+            legacy_settings = QSettings("QwenCreoSopAgent", "QwenCreoSopAgent")
+            self.saved_dashscope_key = load_dashscope_key(legacy_settings)
+        if self.saved_dashscope_key:
+            os.environ["DASHSCOPE_API_KEY"] = self.saved_dashscope_key
         self.current_run_id: str | None = None
         self.progress_started_at = ""
         self.operation_active = False
@@ -241,7 +260,8 @@ class MainWindow(QMainWindow):
         title.setStyleSheet("font-size: 24px; font-weight: 600;")
         layout.addWidget(title)
         subtitle = QLabel(
-            "拖入 BOM，选择 CAD 文件夹。全程不调用 AI 或网络语义服务。"
+            "拖入 BOM，选择 CAD 文件夹。结构硬门通过后由 AI 审核图片；"
+            "AI 判断可用的步骤会自动进入 SOP，其余转人工复查。"
         )
         subtitle.setWordWrap(True)
         layout.addWidget(subtitle)
@@ -262,10 +282,24 @@ class MainWindow(QMainWindow):
             )
         )
         self.excel_path = QLineEdit(self.settings.value("excel_path", ""))
+        self.dashscope_key = QLineEdit()
+        self.dashscope_key.setEchoMode(QLineEdit.Password)
+        self.dashscope_key.setPlaceholderText(
+            "已安全保存，留空继续使用；输入新 Key 可替换"
+            if self.saved_dashscope_key
+            else "可填写 DashScope Key；未配置时自动转人工复查"
+        )
+        self.dashscope_status = QLabel(
+            "AI图片审核已配置，通过后自动纳入SOP"
+            if self.saved_dashscope_key or os.environ.get("DASHSCOPE_API_KEY", "").strip()
+            else "AI图片审核未配置，图片将进入人工复查"
+        )
         setup_form.addRow("Creo 安装目录", self.creo_path)
         setup_form.addRow("Creo 许可证文件", self.license_path)
         setup_form.addRow("J-Link", QLabel("随 Agent 提供，通过已安装 Creo 的官方接口运行"))
         setup_form.addRow("Excel 路径", self.excel_path)
+        setup_form.addRow("DashScope Key（AI审核）", self.dashscope_key)
+        setup_form.addRow("AI审核状态", self.dashscope_status)
 
         environment_ready = _environment_paths_are_ready(
             self.creo_path.text(), self.license_path.text()
@@ -530,9 +564,30 @@ class MainWindow(QMainWindow):
         if not creo_path or not license_path:
             self._show_error("首次使用请填写 Creo 安装目录和许可证文件。")
             return
+        dashscope_key, persist_dashscope_key = select_dashscope_key(
+            self.dashscope_key.text(),
+            self.saved_dashscope_key,
+            os.environ.get("DASHSCOPE_API_KEY", ""),
+        )
         self.settings.setValue("creo_path", self.creo_path.text().strip())
         self.settings.setValue("license_path", self.license_path.text().strip())
         self.settings.setValue("excel_path", self.excel_path.text().strip())
+        if dashscope_key and persist_dashscope_key:
+            try:
+                save_dashscope_key(self.settings, dashscope_key)
+                self.settings.sync()
+            except OSError as error:
+                self._show_error(f"无法安全保存 DashScope Key：{error}")
+                return
+            self.saved_dashscope_key = dashscope_key
+            self.dashscope_key.clear()
+            self.dashscope_key.setPlaceholderText(
+                "已安全保存，留空继续使用；输入新 Key 可替换"
+            )
+        if dashscope_key:
+            os.environ["DASHSCOPE_API_KEY"] = dashscope_key
+            os.environ["CREO_SOP_AI_REVIEW"] = "1"
+            self.dashscope_status.setText("AI图片审核已配置，通过后自动纳入SOP")
         os.environ["CREO_SOP_LOADPOINT"] = creo_path
         os.environ["CREO_SOP_LICENSE_FILE"] = license_path
         if self.experience_mode.isChecked():

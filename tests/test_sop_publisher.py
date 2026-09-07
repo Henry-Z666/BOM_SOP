@@ -40,6 +40,20 @@ def _step(index: int, process: int, image: Path, **changes) -> SopStep:
 
 
 class SopPublisherTests(unittest.TestCase):
+    def test_interleaved_processes_are_grouped_without_reordering_their_images(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            steps = tuple(_step(i, process, _image(root, f"{i}.jpg"))
+                          for i, process in enumerate((1, 2, 1, 2, 1), 1))
+            path = SopPublisher().publish(steps, root / "delivery")
+            workbook = load_workbook(path)
+            self.assertEqual(workbook.sheetnames, ["主工序 1", "主工序 2"])
+            self.assertEqual([len(s._images) for s in workbook], [3, 2])
+            self.assertEqual(workbook.worksheets[0]["AJ21"].value, "M-1")
+            self.assertEqual(workbook.worksheets[0]["AJ22"].value, "M-3")
+            self.assertEqual(workbook.worksheets[0]["AJ23"].value, "M-5")
+            workbook.close()
+
     def test_42_images_are_grouped_by_8_processes_with_continuation_pages(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

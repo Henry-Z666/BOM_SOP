@@ -161,6 +161,48 @@ def native_task() -> RenderTask:
 
 
 class AgentNativeCreoWorkerTests(unittest.TestCase):
+    def test_missing_visible_model_is_not_retried_without_input_repair(self) -> None:
+        class MissingModelRunner:
+            def run(self, command):
+                return subprocess.CompletedProcess(command, 1, stdout="", stderr=(
+                    "CREO_VISIBLE_MODEL_MISSING: occurrence=10/2 model=missing.prt"
+                ))
+
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            task = native_task()
+            plan = RenderPlan("render-plan/v2", (task,))
+            worker = AgentNativeCreoWorker(
+                powershell="pwsh", batch_script=Path("native.ps1"),
+                models_root=Path("cad"), render_plan_json=Path("plan.json"),
+                runner=MissingModelRunner(), camera_visibility_enabled=False,
+            )
+            result = worker.render(worker.open_session(workspace, plan), task, 1)
+            self.assertEqual(result.disposition, "failed")
+            self.assertEqual(result.error_code, "CREO_VISIBLE_MODEL_MISSING")
+            self.assertEqual(list((workspace / "rendered").iterdir()), [])
+
+    def test_task_identity_mismatch_is_not_retryable(self) -> None:
+        class MismatchRunner:
+            def run(self, command):
+                return subprocess.CompletedProcess(
+                    command, 1, stdout="", stderr="RENDER_TASK_IDENTITY_MISMATCH"
+                )
+
+        with tempfile.TemporaryDirectory() as folder:
+            workspace = Path(folder)
+            task = native_task()
+            plan = RenderPlan("render-plan/v2", (task,))
+            worker = AgentNativeCreoWorker(
+                powershell="pwsh", batch_script=Path("native.ps1"),
+                models_root=Path("cad"), render_plan_json=Path("plan.json"),
+                runner=MismatchRunner(), camera_visibility_enabled=False,
+            )
+            result = worker.render(worker.open_session(workspace, plan), task, 1)
+            self.assertEqual(result.disposition, "failed")
+            self.assertEqual(result.error_code, "RENDER_TASK_IDENTITY_MISMATCH")
+            self.assertEqual(list((workspace / "rendered").iterdir()), [])
+
     def test_compiled_presentation_contract_is_accepted_by_native_runner(self) -> None:
         root = Path(__file__).resolve().parents[1]
         compiler = (root / "src/sop_pipeline/agent/render_job_compiler.py").read_text(
@@ -224,6 +266,15 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         self.assertIn("MAX_RENDER_RASTERS_PER_ATTEMPT = 1", worker)
         self.assertIn("native-framing-audit/v1", batch)
         self.assertIn("$zoom -ne 1.0", batch)
+
+    def test_formal_auxiliary_cleanup_uses_activated_stage_without_state_cache(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        renderer = (root / "creo_java/src/RenderAssemblyImage.java").read_text(encoding="utf-8")
+        formal = renderer.split("static void renderInSession(", 1)[1]
+        scoped_call = "hideAuxiliaryFeatures(session, model, auxiliaryModels, \"\", desired)"
+        self.assertIn(scoped_call, formal)
+        self.assertLess(formal.index("assembly.ActivateSimpRep"), formal.index(scoped_call))
+        self.assertIn("session.EraseUndisplayedModels()", formal)
 
     def test_formal_export_overscans_native_viewport_then_center_crops_square(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -303,11 +354,14 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
                 count=1,
                 variant_index=0,
                 budget_task_id=f"{task.task_id}:attempt-1",
+                expected_task_id=task.task_id,
             )
 
         self.assertEqual(result.disposition, "passed")
         self.assertEqual(denied, "RENDER_FRAME_BUDGET_EXCEEDED")
         self.assertEqual(len(runner.commands), 1)
+        command = runner.commands[0]
+        self.assertEqual(command[command.index("-ExpectedTaskId") + 1], task.task_id)
 
     def test_system_retry_gets_one_new_native_frame(self) -> None:
         with tempfile.TemporaryDirectory() as folder:

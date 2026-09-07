@@ -16,10 +16,17 @@ class PortableDependencyTests(unittest.TestCase):
         self.assertNotRegex(pyproject, r"\bopenai\b|@oai/artifact-tool|codex_node")
         self.assertNotRegex(source, r"\bimport openai\b|\bfrom openai\b|codex_node")
 
-    def test_runtime_contains_no_model_provider_dependency(self) -> None:
+    def test_runtime_contains_only_the_declared_image_review_provider(self) -> None:
         config = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
         dependencies = config["project"]["dependencies"]
-        allowed = {"numpy", "openpyxl", "pillow", "pyside6", "pywin32"}
+        allowed = {
+            "dashscope",
+            "numpy",
+            "openpyxl",
+            "pillow",
+            "pyside6",
+            "pywin32",
+        }
         names = {
             value.split(">", 1)[0].split("=", 1)[0].split(";", 1)[0].strip().lower()
             for value in dependencies

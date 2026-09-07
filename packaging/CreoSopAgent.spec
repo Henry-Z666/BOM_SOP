@@ -1,5 +1,5 @@
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 root = Path(SPECPATH).parent
 skill_names = (
@@ -8,9 +8,10 @@ skill_names = (
     "render-batch", "validate-repair", "publish-delivery", "resolve-step",
 )
 
-hiddenimports = collect_submodules("sop_pipeline")
+hiddenimports = collect_submodules("sop_pipeline") + collect_submodules("dashscope")
 datas = [(str(root / "skills" / name), f"skills/{name}") for name in skill_names]
 datas += [(str(root / "assets" / "sop-template.xlsx"), "assets")]
+datas += collect_data_files("dashscope")
 datas += [
     (str(root / "creo_java" / "RuntimeConfig.ps1"), "creo_java"),
     (str(root / "creo_java" / "build.ps1"), "creo_java"),
@@ -48,6 +49,11 @@ a = Analysis(
     excludes=["openai"],
     noarchive=False,
 )
+# These are Windows system APIs, not redistributable toolchain dependencies.
+# Some Python host environments inject Poppler/libheif DLL search directories
+# even with a clean PATH. Their ICU exports are incompatible with Qt's imports.
+a.binaries = [entry for entry in a.binaries
+              if Path(entry[0]).name.lower() not in {"icuuc.dll", "ucrtbase.dll"}]
 pyz = PYZ(a.pure)
 exe = EXE(
     pyz,

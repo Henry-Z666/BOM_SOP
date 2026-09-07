@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from io import BytesIO
-from itertools import groupby
 from math import floor
 from pathlib import Path
 import re
@@ -158,9 +157,10 @@ class SopPublisher:
             workbook.close()
             raise ValueError("内置SOP模板结构不匹配：缺少装配内容区域")
         pages: list[tuple[SopStep, ...]] = []
-        for _process_id, process_steps in groupby(
-            steps, key=lambda item: item.main_process_id
-        ):
+        process_groups: dict[str, list[SopStep]] = {}
+        for step in steps:
+            process_groups.setdefault(step.main_process_id, []).append(step)
+        for process_steps in process_groups.values():
             grouped = tuple(process_steps)
             offset = 0
             for page_size in balanced_page_sizes(len(grouped), self.images_per_page):

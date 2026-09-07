@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
 from hashlib import sha256
+from graphlib import CycleError, TopologicalSorter
 import json
 import math
 from typing import Any
@@ -89,6 +90,58 @@ class FormalRenderPlan:
 
 
 @dataclass(frozen=True)
+class FormalRenderBatch:
+    batch_id: str
+    root_bom_row: int
+    source_bom_rows: tuple[int, ...]
+    plan: FormalRenderPlan
+
+
+@dataclass(frozen=True)
+class FormalRenderForest:
+    schema_version: str
+    assembly_file: str
+    batches: tuple[FormalRenderBatch, ...]
+    fingerprint: str
+
+    @property
+    def steps(self) -> tuple[FormalRenderStep, ...]:
+        return tuple(step for batch in self.batches for step in batch.plan.steps)
+
+    @property
+    def diagnostics(self) -> tuple[PlanningDiagnostic, ...]:
+        return tuple(item for batch in self.batches for item in batch.plan.diagnostics)
+
+    @property
+    def ready_steps(self) -> int:
+        return sum(batch.plan.ready_steps for batch in self.batches)
+
+    @property
+    def questioned_steps(self) -> int:
+        return sum(batch.plan.questioned_steps for batch in self.batches)
+
+    @property
+    def checkpoint_interval(self) -> int:
+        return max((batch.plan.checkpoint_interval for batch in self.batches), default=20)
+
+
+def create_formal_render_forest(
+    batches: tuple[FormalRenderBatch, ...],
+) -> FormalRenderForest:
+    payload = {
+        "schema_version": "formal-render-forest/v1",
+        "assembly_file": "assembly-forest",
+        "batches": [asdict(batch) for batch in batches],
+    }
+    return FormalRenderForest(
+        schema_version="formal-render-forest/v1",
+        assembly_file="assembly-forest",
+        batches=batches,
+        fingerprint=_canonical_hash(payload),
+    )
+
+
+@dataclass(frozen=True)
 class _OccurrenceEvidence:
     occurrence_id: str
     receiver_id: str
@@ -137,7 +190,10 @@ def compile_formal_render_plan(
         )
     scope_bases: dict[str, set[str]] = {}
     initial_completed: set[str] = set()
+    context_only_bom_rows: set[int] = set()
+    unresolved_bom_rows: set[int] = set()
     raw_steps: list[tuple[tuple[int, int, int], FormalRenderStep]] = []
+    group_evidence: dict[str, list[_OccurrenceEvidence]] = {}
 
     root_children = [
         row
@@ -151,17 +207,11 @@ def compile_formal_render_plan(
         if mapped.bom_row == root_mapping.bom_row or mapped.status == "non_renderable":
             continue
         if mapped.status != "matched":
-            diagnostics.append(
-                PlanningDiagnostic(
-                    "BOM_OCCURRENCE_UNRESOLVED",
-                    f"BOM 第 {mapped.bom_row} 行没有唯一、足量的 occurrence 映射。",
-                    (mapped.bom_row,),
-                    mapped.occurrence_ids,
-                )
-            )
+            unresolved_bom_rows.add(mapped.bom_row)
             continue
 
         if root_foundation is not None and mapped.bom_row == root_foundation.bom_row:
+            context_only_bom_rows.add(mapped.bom_row)
             initial_completed.update(mapped.occurrence_ids)
             if not _fixed_to_parent(mapped, root_mapping, constraints):
                 diagnostics.append(
@@ -183,6 +233,7 @@ def compile_formal_render_plan(
         if fixed_scope == "ROOT":
             fixed_scope = None
         if fixed_scope is not None and fixed_scope != "ROOT":
+            context_only_bom_rows.add(mapped.bom_row)
             for occurrence_id in mapped.occurrence_ids:
                 scope_bases.setdefault(fixed_scope, set()).add(occurrence_id)
             continue
@@ -248,6 +299,7 @@ def compile_formal_render_plan(
             )
             rank = mapped.bom_row
             raw_steps.append(((rank, 1 if _mapped_assembly(mapped, nodes) else 0, mapped.bom_row), step))
+            group_evidence[step.step_id] = members
 
         if missing:
             group_index += 1
@@ -295,9 +347,85 @@ def compile_formal_render_plan(
                 )
             )
 
+    planned_bom_rows = {
+        bom_row
+        for _, step in raw_steps
+        for bom_row in step.source_bom_rows
+    }
+    matched_generation_rows = {
+        item.bom_row
+        for item in mapping.rows
+        if item.bom_row != root_mapping.bom_row and item.status == "matched"
+    }
+    unaccounted = matched_generation_rows - planned_bom_rows - context_only_bom_rows
+    if unaccounted:
+        raise ValueError(
+            "正式规划静默遗漏已映射BOM行："
+            + ", ".join(str(value) for value in sorted(unaccounted)[:20])
+        )
+    if unresolved_bom_rows:
+        diagnostics.append(
+            PlanningDiagnostic(
+                "BOM_PLANNING_COVERAGE_INCOMPLETE",
+                (
+                    f"共有 {len(unresolved_bom_rows)} 行可生成BOM物料没有唯一、足量的 occurrence 映射；"
+                    "这些行已计入规划覆盖审计，但不会静默生成图片。"
+                ),
+                tuple(sorted(unresolved_bom_rows)),
+            )
+        )
+
     ordered = [item[1] for item in sorted(raw_steps, key=lambda item: (item[0], item[1].step_id))]
-    ordered = _attach_dependencies(ordered)
-    ordered, physical_diagnostics = _attach_physical_dependencies(ordered)
+    # Contracting independent occurrence chains into BOM-row groups can make
+    # an otherwise acyclic graph cyclic. Split only groups on a proven cycle,
+    # rebuilding geometry from their original per-occurrence CAD evidence.
+    # Recompute all edges; never remove a receiver or precedence constraint.
+    mapping_by_row = {item.bom_row: item for item in mapping.rows}
+    while True:
+        ordered = _attach_dependencies(ordered)
+        ordered, physical_diagnostics = _attach_physical_dependencies(ordered)
+        try:
+            TopologicalSorter({step.step_id: step.depends_on for step in ordered}).prepare()
+            break
+        except CycleError as error:
+            cycle = set(error.args[1])
+        split_ids = {
+            step.step_id for step in ordered
+            if step.step_id in cycle and len(group_evidence.get(step.step_id, ())) > 1
+        }
+        if not split_ids:
+            # A real occurrence/assembly precedence conflict needs repair or
+            # a process decision. Keep the existing fail-closed diagnostic.
+            _topologically_order(ordered)
+            raise AssertionError("cycle detector and ordering disagree")
+        rebuilt: list[FormalRenderStep] = []
+        for step in ordered:
+            if step.step_id not in split_ids:
+                rebuilt.append(step)
+                continue
+            members = group_evidence[step.step_id]
+            replacements = []
+            for index, member in enumerate(members, 1):
+                replacement = _proven_step(
+                    row=bom_rows[step.source_bom_rows[0]],
+                    mapped=mapping_by_row[step.source_bom_rows[0]],
+                    members=[member], group_index=1, group_count=1,
+                    process_id=step.main_process_id, camera_basis=camera_basis,
+                    nodes=nodes, display_distance=_display_distance(nodes),
+                )
+                replacements.append(replace(
+                    replacement,
+                    step_id=f"{step.step_id}-dependency-{index:03d}",
+                    title=f"{step.title}（依赖分组 {index}/{len(members)}）",
+                ))
+            rebuilt.extend(replacements)
+            diagnostics.append(PlanningDiagnostic(
+                "GROUP_DEPENDENCY_SPLIT",
+                "重复件合并引入依赖循环，按原始CAD实例证据拆分；保留全部零件和接收关系。",
+                step.source_bom_rows, step.moving_occurrences,
+                tuple(item.step_id for item in replacements),
+            ))
+        ordered = rebuilt
     diagnostics.extend(physical_diagnostics)
     ordered = _topologically_order(ordered)
     ordered = _complete_plan_state(ordered, scope_bases, initial_completed)
@@ -348,11 +476,18 @@ def compile_formal_render_plan(
 
 
 def lock_formal_render_plan(
-    plan: FormalRenderPlan,
+    plan: FormalRenderPlan | FormalRenderForest,
     answers: dict[str, str],
-) -> FormalRenderPlan:
+) -> FormalRenderPlan | FormalRenderForest:
     """Apply explicit bounded choices and recompute all derived plan state."""
 
+    if isinstance(plan, FormalRenderForest):
+        return create_formal_render_forest(
+            tuple(
+                replace(batch, plan=lock_formal_render_plan(batch.plan, answers))
+                for batch in plan.batches
+            )
+        )
     if plan.schema_version not in {"formal-render-plan/v1", "formal-render-plan/v2"}:
         raise ValueError("不支持的正式规划版本")
     removed: set[str] = set()
@@ -432,7 +567,27 @@ def lock_formal_render_plan(
     )
 
 
-def formal_render_plan_from_dict(payload: dict[str, Any]) -> FormalRenderPlan:
+def formal_render_plan_from_dict(
+    payload: dict[str, Any],
+) -> FormalRenderPlan | FormalRenderForest:
+    if payload.get("schema_version") == "formal-render-forest/v1":
+        batches = tuple(
+            FormalRenderBatch(
+                batch_id=str(item["batch_id"]),
+                root_bom_row=int(item["root_bom_row"]),
+                source_bom_rows=tuple(int(value) for value in item["source_bom_rows"]),
+                plan=formal_render_plan_from_dict(dict(item["plan"])),
+            )
+            for item in payload["batches"]
+        )
+        if any(not isinstance(batch.plan, FormalRenderPlan) for batch in batches):
+            raise ValueError("正式规划森林不能嵌套")
+        return FormalRenderForest(
+            schema_version="formal-render-forest/v1",
+            assembly_file=str(payload["assembly_file"]),
+            batches=batches,
+            fingerprint=str(payload["fingerprint"]),
+        )
     if payload.get("schema_version") not in {"formal-render-plan/v1", "formal-render-plan/v2"}:
         raise ValueError("不支持的正式规划版本")
     return FormalRenderPlan(

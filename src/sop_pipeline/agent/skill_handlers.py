@@ -5,6 +5,7 @@ from copy import deepcopy
 from hashlib import sha256
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -12,7 +13,15 @@ from PIL import Image, ImageDraw, ImageFont
 from sop_pipeline.camera_planner import select_fixed_camera_for_stage
 from sop_pipeline.explosion_planner import select_display_translation
 
-from .bom_cad_mapper import BomCadMap, BomOccurrenceMapping, map_bom_to_occurrences
+from .ai_image_review import reviewer_from_env
+from .assembly_forest import build_assembly_forest, scoped_bom
+from .bom_cad_mapper import (
+    BomCadBatch,
+    BomCadForest,
+    BomCadMap,
+    BomOccurrenceMapping,
+    map_bom_to_occurrences,
+)
 from .bom_normalizer import NormalizedBom, NormalizedBomRow, normalize_bom
 from .bundle_paths import materialized_creo_script
 from .creo_discovery import (
@@ -28,8 +37,12 @@ from .desktop_workflow import (
 from .deterministic_resolution import structured_step_revision
 from .draft_planner import DraftInstallationStep, DraftPlan, create_draft_plan
 from .formal_render_planner import (
+    FormalRenderBatch,
+    FormalRenderForest,
     FormalRenderPlan,
+    FormalRenderStep,
     compile_formal_render_plan,
+    create_formal_render_forest,
     formal_render_plan_from_dict,
 )
 from .gate_policy import GateCategory, classify_failures, gate_policy
@@ -159,40 +172,56 @@ def lock_assembly(
     try:
         bom = _normalized(context.read_json(_require_ref(invocation, "normalized-bom")))
         inventory = inventory_models(context.run.cad_directory, bom)
-        assembly_path = context.run.cad_directory / inventory.final_assembly
-        lock = {
-            "schema_version": "assembly-lock/v1",
-            "assembly_file": inventory.final_assembly,
-            "version": _creo_version(inventory.final_assembly),
-            "sha256": _file_hash(assembly_path),
-            "candidates": list(inventory.assembly_candidates),
-            "root_coordinate_system": "pending-creo-discovery",
-        }
+        forest = build_assembly_forest(bom, inventory)
+        if not forest.roots:
+            raise ValueError("BOM 中没有找到可锁定的顶层 ASM 层级")
+        assemblies = []
+        for scope in forest.roots:
+            assembly_path = context.run.cad_directory / scope.assembly_file
+            assemblies.append(
+                {
+                    "batch_id": f"assembly-{scope.root_bom_row:04d}",
+                    "root_bom_row": scope.root_bom_row,
+                    "level": scope.level,
+                    "assembly_file": scope.assembly_file,
+                    "version": _creo_version(scope.assembly_file),
+                    "sha256": _file_hash(assembly_path),
+                    "root_coordinate_system": "pending-creo-discovery",
+                    "source_bom_rows": list(scope.source_bom_rows),
+                    "nested_asm_rows": list(scope.nested_asm_rows),
+                }
+            )
+        if (
+            len(assemblies) == 1
+            and not forest.product_titles
+            and not forest.unscoped_bom_rows
+        ):
+            item = assemblies[0]
+            lock = {
+                "schema_version": "assembly-lock/v1",
+                "assembly_file": item["assembly_file"],
+                "version": item["version"],
+                "sha256": item["sha256"],
+                "root_coordinate_system": item["root_coordinate_system"],
+            }
+        else:
+            lock = {
+                "schema_version": "assembly-lock/v2",
+                "product_titles": [
+                    {"bom_row": item.bom_row, "evidence": list(item.evidence)}
+                    for item in forest.product_titles
+                ],
+                "assemblies": assemblies,
+                "unscoped_bom_rows": list(forest.unscoped_bom_rows),
+            }
     except (KeyError, OSError, ValueError) as error:
         return _blocked("ASSEMBLY_LOCK_FAILED", str(error))
-    status = (
-        SkillStatus.QUESTIONED
-        if len(inventory.assembly_candidates) > 1
-        else SkillStatus.PASSED
-    )
-    diagnostics = (
-        (
-            Diagnostic(
-                "MULTIPLE_FINAL_ASSEMBLIES",
-                "发现多个同等可信的最终总装候选，已保留到生成前确认。",
-                inventory.assembly_candidates,
-            ),
-        )
-        if status is SkillStatus.QUESTIONED
-        else ()
-    )
     return SkillHandlerOutput(
-        status=status,
+        status=SkillStatus.PASSED,
         artifacts=(
             SkillArtifactValue("model-inventory", inventory),
             SkillArtifactValue("assembly-lock", lock),
         ),
-        diagnostics=diagnostics,
     )
 
 
@@ -216,23 +245,61 @@ def discover_cad(
                 ),
                 runtime_config=runtime_config,
             )
-        graph = discovery.discover(
-            context.run.cad_directory,
-            str(lock["assembly_file"]),
-            context.run.workspace,
-        )
-        if graph.get("schema_version") != "creo-cad-graph/v3":
-            raise ValueError("Creo discovery没有返回creo-cad-graph/v3")
-        if str(graph.get("assembly_file")) != str(lock["assembly_file"]):
-            raise ValueError("Creo打开的总装与锁定版本不一致")
-        graph = dict(graph)
-        authoritative = dict(graph.get("authoritative_assembly", {}))
-        authoritative.setdefault("sha256", lock["sha256"])
-        authoritative.setdefault("coordinate_system", "root_asm")
-        graph["authoritative_assembly"] = authoritative
+        if lock.get("schema_version") == "assembly-lock/v2":
+            assemblies = []
+            for item in lock.get("assemblies", []):
+                discovered = discovery.discover(
+                    context.run.cad_directory,
+                    str(item["assembly_file"]),
+                    context.run.workspace,
+                )
+                assemblies.append(
+                    {
+                        "batch_id": str(item["batch_id"]),
+                        "root_bom_row": int(item["root_bom_row"]),
+                        "source_bom_rows": [
+                            int(value) for value in item.get("source_bom_rows", [])
+                        ],
+                        "nested_asm_rows": [
+                            int(value) for value in item.get("nested_asm_rows", [])
+                        ],
+                        "graph": _locked_discovery_graph(discovered, item),
+                    }
+                )
+            if not assemblies:
+                raise ValueError("多总装锁定合同没有可扫描的 ASM")
+            graph = {
+                "schema_version": "creo-cad-forest/v1",
+                "product_titles": list(lock.get("product_titles", [])),
+                "unscoped_bom_rows": list(lock.get("unscoped_bom_rows", [])),
+                "assemblies": assemblies,
+            }
+        else:
+            discovered = discovery.discover(
+                context.run.cad_directory,
+                str(lock["assembly_file"]),
+                context.run.workspace,
+            )
+            graph = _locked_discovery_graph(discovered, lock)
     except (KeyError, OSError, RuntimeError, ValueError) as error:
         return _blocked("CREO_DISCOVERY_FAILED", str(error))
     return _passed(SkillArtifactValue("creo-cad-graph", graph))
+
+
+def _locked_discovery_graph(
+    graph: dict[str, Any],
+    lock: Mapping[str, Any],
+) -> dict[str, Any]:
+    if graph.get("schema_version") != "creo-cad-graph/v3":
+        raise ValueError("Creo discovery没有返回creo-cad-graph/v3")
+    if str(graph.get("assembly_file")) != str(lock["assembly_file"]):
+        raise ValueError("Creo打开的总装与锁定版本不一致")
+    result = dict(graph)
+    authoritative = dict(result.get("authoritative_assembly", {}))
+    authoritative.setdefault("sha256", lock["sha256"])
+    authoritative.setdefault("coordinate_system", "root_asm")
+    result["authoritative_assembly"] = authoritative
+    return result
 
 
 def map_bom_cad(
@@ -242,8 +309,11 @@ def map_bom_cad(
         bom = _normalized(context.read_json(_require_ref(invocation, "normalized-bom")))
         inventory = _inventory(context.read_json(_require_ref(invocation, "model-inventory")))
         graph = context.read_json(_require_ref(invocation, "creo-cad-graph"))
-        draft = create_draft_plan(bom, inventory)
-        mapping = map_bom_to_occurrences(bom, inventory, graph, draft)
+        if graph.get("schema_version") == "creo-cad-forest/v1":
+            mapping = _map_bom_cad_forest(bom, inventory, graph)
+        else:
+            draft = create_draft_plan(bom, inventory)
+            mapping = map_bom_to_occurrences(bom, inventory, graph, draft)
     except (KeyError, TypeError, ValueError) as error:
         return _blocked("BOM_CAD_MAPPING_FAILED", str(error))
     questioned = bool(
@@ -285,11 +355,19 @@ def plan_assembly(
         inventory = _inventory(context.read_json(_require_ref(invocation, "model-inventory")))
         mapping = _mapping(context.read_json(_require_ref(invocation, "bom-cad-map")))
         graph = context.read_json(_require_ref(invocation, "creo-cad-graph"))
-        draft = create_draft_plan(bom, inventory)
-        formal = compile_formal_render_plan(bom, draft, mapping, graph)
+        if isinstance(mapping, BomCadForest):
+            draft, formal = _plan_assembly_forest(bom, inventory, mapping, graph)
+        else:
+            draft = create_draft_plan(bom, inventory)
+            formal = compile_formal_render_plan(bom, draft, mapping, graph)
     except (KeyError, TypeError, ValueError) as error:
         return _blocked("ASSEMBLY_PLANNING_FAILED", str(error))
-    questioned = formal.questioned_steps > 0
+    questioned = bool(
+        formal.questioned_steps
+        or mapping.ambiguous_rows
+        or mapping.missing_rows
+        or mapping.quantity_mismatch_rows
+    )
     return SkillHandlerOutput(
         status=SkillStatus.QUESTIONED if questioned else SkillStatus.PASSED,
         artifacts=(
@@ -307,6 +385,153 @@ def plan_assembly(
     )
 
 
+def _plan_assembly_forest(
+    bom: NormalizedBom,
+    inventory: ModelInventory,
+    mapping: BomCadForest,
+    graph: Mapping[str, Any],
+) -> tuple[DraftPlan, FormalRenderForest]:
+    if graph.get("schema_version") != "creo-cad-forest/v1":
+        raise ValueError("多总装映射需要 creo-cad-forest/v1")
+    forest = build_assembly_forest(bom, inventory)
+    scopes = {scope.root_bom_row: scope for scope in forest.roots}
+    graphs = {str(item["batch_id"]): item for item in graph["assemblies"]}
+    mapped_batches = {batch.batch_id: batch for batch in mapping.batches}
+    drafts: list[DraftPlan] = []
+    formal_batches: list[FormalRenderBatch] = []
+    for batch_id, graph_item in graphs.items():
+        mapped = mapped_batches.get(batch_id)
+        if mapped is None:
+            raise ValueError(f"顶层 ASM 批次 {batch_id} 缺少 BOM/CAD 映射")
+        scope = scopes.get(int(graph_item["root_bom_row"]))
+        if scope is None:
+            raise ValueError(f"顶层 ASM 批次 {batch_id} 不在当前 BOM 中")
+        batch_bom = scoped_bom(bom, scope)
+        batch_graph = dict(graph_item["graph"])
+        batch_inventory = replace(
+            inventory,
+            final_assembly=str(batch_graph["assembly_file"]),
+            assembly_candidates=(str(batch_graph["assembly_file"]),),
+        )
+        batch_draft = create_draft_plan(
+            batch_bom,
+            batch_inventory,
+            assembly_batch=True,
+        )
+        batch_formal = compile_formal_render_plan(
+            batch_bom,
+            batch_draft,
+            mapped.mapping,
+            batch_graph,
+        )
+        drafts.append(batch_draft)
+        formal_batches.append(
+            FormalRenderBatch(
+                batch_id=batch_id,
+                root_bom_row=scope.root_bom_row,
+                source_bom_rows=scope.source_bom_rows,
+                plan=batch_formal,
+            )
+        )
+    combined_draft = DraftPlan(
+        schema_version="draft-plan/v1",
+        final_assembly="assembly-forest",
+        steps=tuple(step for draft in drafts for step in draft.steps),
+        checkpoint_interval=max(
+            (draft.checkpoint_interval for draft in drafts),
+            default=20,
+        ),
+    )
+    return combined_draft, create_formal_render_forest(tuple(formal_batches))
+
+
+def _map_bom_cad_forest(
+    bom: NormalizedBom,
+    inventory: ModelInventory,
+    graph: Mapping[str, Any],
+) -> BomCadForest:
+    forest = build_assembly_forest(bom, inventory)
+    scopes = {scope.root_bom_row: scope for scope in forest.roots}
+    batches: list[BomCadBatch] = []
+    rows_by_number: dict[int, BomOccurrenceMapping] = {}
+    for item in graph.get("assemblies", []):
+        root_row = int(item["root_bom_row"])
+        scope = scopes.get(root_row)
+        if scope is None:
+            raise ValueError(f"CAD 批次根行 {root_row} 不在当前 BOM 的顶层 ASM 中")
+        batch_bom = scoped_bom(bom, scope)
+        batch_graph = dict(item["graph"])
+        batch_inventory = replace(
+            inventory,
+            final_assembly=str(batch_graph["assembly_file"]),
+            assembly_candidates=(str(batch_graph["assembly_file"]),),
+        )
+        draft = create_draft_plan(
+            batch_bom,
+            batch_inventory,
+            assembly_batch=True,
+        )
+        batch_mapping = map_bom_to_occurrences(
+            batch_bom,
+            batch_inventory,
+            batch_graph,
+            draft,
+        )
+        for row in batch_mapping.rows:
+            if row.bom_row in rows_by_number:
+                raise ValueError(f"BOM 第 {row.bom_row} 行同时属于多个顶层 ASM 批次")
+            rows_by_number[row.bom_row] = row
+        batches.append(
+            BomCadBatch(
+                batch_id=str(item["batch_id"]),
+                root_bom_row=root_row,
+                source_bom_rows=tuple(int(value) for value in item["source_bom_rows"]),
+                mapping=batch_mapping,
+            )
+        )
+
+    title_evidence = {
+        item.bom_row: item.evidence for item in forest.product_titles
+    }
+    non_modeled = set(inventory.non_modeled_bom_rows)
+    for row in bom.rows:
+        if row.row in rows_by_number:
+            continue
+        if row.row in title_evidence:
+            evidence = "；".join(title_evidence[row.row])
+            status = "non_renderable"
+            evidence = "产品标题判定：" + evidence
+        elif row.process_only or row.row in non_modeled:
+            status = "non_renderable"
+            evidence = "BOM/CAD 预检已确认该行不要求独立实体 occurrence"
+        else:
+            status = "missing"
+            evidence = "该行不属于任何已锁定顶层 ASM 层级，未跨层级猜测归属"
+        rows_by_number[row.row] = BomOccurrenceMapping(
+            bom_row=row.row,
+            level=row.level,
+            drawing_no=row.drawing_no,
+            name=row.name,
+            expected_quantity=None,
+            parent_bom_row=None,
+            occurrence_ids=(),
+            status=status,
+            evidence=evidence,
+        )
+
+    rows = tuple(rows_by_number[row.row] for row in bom.rows)
+    return BomCadForest(
+        schema_version="bom-cad-forest/v1",
+        assembly_file="assembly-forest",
+        rows=rows,
+        matched_rows=sum(row.status == "matched" for row in rows),
+        ambiguous_rows=tuple(row.bom_row for row in rows if row.status == "ambiguous"),
+        missing_rows=tuple(row.bom_row for row in rows if row.status == "missing"),
+        quantity_mismatch_rows=tuple(
+            row.bom_row for row in rows if row.status == "quantity_mismatch"
+        ),
+        batches=tuple(batches),
+    )
 def clarify_plan(
     context: SkillContext, invocation: SkillInvocation
 ) -> SkillHandlerOutput:
@@ -318,14 +543,87 @@ def clarify_plan(
         formal = formal_render_plan_from_dict(
             context.read_json(_require_ref(invocation, "formal-render-plan"))
         )
-        questions = list(_base_questions(bom, inventory))
+        graph_payload = context.read_json(_require_ref(invocation, "creo-cad-graph"))
+        multi_assembly = isinstance(mapping, BomCadForest)
+        questions = list(_base_questions(bom, inventory, multi_assembly=multi_assembly))
         questions.extend(_mapping_questions(mapping))
         questions.extend(_planning_questions(formal))
+        root_rows = {
+            item.bom_row for item in mapping.rows if item.occurrence_ids == ("ROOT",)
+        }
+        non_renderable_rows = {
+            item.bom_row for item in mapping.rows if item.status == "non_renderable"
+        }
+        planned_rows = {
+            int(row_number)
+            for step in formal.steps
+            for row_number in step.source_bom_rows
+        }
+        unresolved_rows = {
+            item.bom_row
+            for item in mapping.rows
+            if item.status in {"missing", "ambiguous", "quantity_mismatch"}
+        }
+        context_only_rows = {
+            item.bom_row
+            for item in mapping.rows
+            if item.status == "matched"
+            and item.bom_row not in root_rows
+            and item.bom_row not in planned_rows
+        }
+        accounted_rows = (
+            root_rows
+            | non_renderable_rows
+            | planned_rows
+            | unresolved_rows
+            | context_only_rows
+        )
+        information_coverage = round(
+            100.0 * len(accounted_rows) / len(mapping.rows), 2
+        ) if mapping.rows else 100.0
+        graph_batches = (
+            tuple(graph_payload.get("assemblies", ()))
+            if graph_payload.get("schema_version") == "creo-cad-forest/v1"
+            else ()
+        )
+        assembly_files = (
+            tuple(str(item["graph"]["assembly_file"]) for item in graph_batches)
+            if graph_batches
+            else (inventory.final_assembly,)
+        )
+        product_titles = tuple(graph_payload.get("product_titles", ()))
+        unscoped_rows = tuple(int(value) for value in graph_payload.get("unscoped_bom_rows", ()))
+        cad_occurrences = (
+            sum(len(item["graph"].get("occurrences", ())) for item in graph_batches)
+            if graph_batches
+            else len(graph_payload.get("occurrences", ()))
+        )
+        cad_constraints = (
+            sum(len(item["graph"].get("constraints", ())) for item in graph_batches)
+            if graph_batches
+            else len(graph_payload.get("constraints", ()))
+        )
+        lock_summary = (
+            f"锁定{len(assembly_files)}个顶层ASM批次（{'、'.join(assembly_files)}）"
+            if multi_assembly
+            else f"锁定总装{inventory.final_assembly}"
+        )
+        title_summary = (
+            "产品标题行"
+            + "、".join(str(item["bom_row"]) for item in product_titles)
+            + "按无ASM、无后续部件、无装配步骤的证据排除，并非按行号排除；"
+            if product_titles
+            else ""
+        )
         packet = ClarificationPacket(
             schema_version="clarification-packet/v1",
             summary=(
-                f"已识别{len(bom.rows)}行物料、{len(bom.main_process_numbers)}个主工序，"
-                f"锁定总装{inventory.final_assembly}，并规划{len(formal.steps)}个安装步骤。"
+                f"已识别{len(bom.rows)}行物料，{lock_summary}；"
+                f"{title_summary}"
+                f"{len(planned_rows)}行进入{len(formal.steps)}个安装步骤，"
+                f"{len(context_only_rows)}行为装配基体/上下文，"
+                f"{len(unresolved_rows)}行映射未解决，{len(non_renderable_rows)}行不渲染，"
+                f"{len(unscoped_rows)}行未归属任何顶层ASM。"
             ),
             items=tuple(questions),
             facts={
@@ -335,21 +633,29 @@ def clarify_plan(
                 "main_processes": len(bom.main_process_numbers),
                 "renderable_main_processes": len(bom.renderable_process_numbers),
                 "final_assembly": inventory.final_assembly,
+                "top_level_assembly_batches": len(assembly_files),
+                "top_level_assembly_files": assembly_files,
+                "product_title_rows": tuple(
+                    int(item["bom_row"]) for item in product_titles
+                ),
+                "product_title_evidence": {
+                    str(item["bom_row"]): tuple(item.get("evidence", ()))
+                    for item in product_titles
+                },
+                "unscoped_bom_rows": unscoped_rows,
                 "model_files": len(inventory.files),
-                "cad_occurrences": len(
-                    context.read_json(_require_ref(invocation, "creo-cad-graph")).get(
-                        "occurrences", []
-                    )
-                ),
-                "cad_constraints": len(
-                    context.read_json(_require_ref(invocation, "creo-cad-graph")).get(
-                        "constraints", []
-                    )
-                ),
+                "cad_occurrences": cad_occurrences,
+                "cad_constraints": cad_constraints,
                 "mapped_bom_rows": mapping.matched_rows,
                 "ambiguous_occurrence_rows": len(mapping.ambiguous_rows),
                 "missing_occurrence_rows": len(mapping.missing_rows),
                 "quantity_mismatch_rows": len(mapping.quantity_mismatch_rows),
+                "draft_installation_steps": len(draft.steps),
+                "planned_bom_rows": len(planned_rows),
+                "planning_context_only_bom_rows": len(context_only_rows),
+                "planning_unresolved_bom_rows": len(unresolved_rows),
+                "planning_non_renderable_bom_rows": len(non_renderable_rows),
+                "planning_information_coverage_percent": information_coverage,
                 "formal_render_steps": len(formal.steps),
                 "formal_ready_steps": formal.ready_steps,
                 "formal_questioned_steps": formal.questioned_steps,
@@ -840,6 +1146,7 @@ def validate_repair(
         batch = context.read_json(_require_ref(invocation, "render-batch-"))
         jobs = _render_plan(context.read_json(_require_ref(invocation, "locked-render-jobs")))
         by_step = {task.step_id: task for task in jobs.tasks}
+        reviewer = context.adapters.get("image_reviewer") or reviewer_from_env()
         validated: list[dict[str, Any]] = []
         candidate_groups: list[dict[str, Any]] = []
         questioned = False
@@ -881,13 +1188,56 @@ def validate_repair(
                 item.get("deterministic_geometry_passed", False)
             )
             manual_acceptance_allowed = False
+            ai_invoked = False
+            ai_passed: bool | None = None
+            ai_model: str | None = None
+            ai_issues: list[str] = []
+            approval_source: str | None = None
             if geometry_passed and image_path is not None and image_path.is_file():
-                # Image quality is now decided exclusively by the person who
-                # sees the real Creo raster. Structural gates have already
-                # established that the image is safe to present for review.
-                status = StepStatus.QUESTIONED
-                questioned = True
-                manual_acceptance_allowed = not planning_review_required
+                if planning_review_required:
+                    status = StepStatus.QUESTIONED
+                elif reviewer is None:
+                    status = StepStatus.QUESTIONED
+                    issues.append("AI图片审核未配置，已转人工复查。")
+                else:
+                    try:
+                        ai_invoked = True
+                        decision = reviewer.review_render(
+                            image_path,
+                            {
+                                "step_id": step_id,
+                                "title": task.payload.get("title", step_id),
+                                "moving_count": len(
+                                    task.payload.get("moving_occurrences", [])
+                                ),
+                                "receiver_count": len(
+                                    task.payload.get("receiver_occurrences", [])
+                                ),
+                                "camera_id": task.payload.get("camera_id"),
+                                "deterministic_geometry_gate": "passed",
+                            },
+                        )
+                        ai_passed = bool(decision.passed)
+                        ai_model = str(getattr(decision, "model", "unknown"))
+                        ai_issues = [str(value) for value in decision.issues]
+                        if ai_passed:
+                            status = StepStatus.PASSED
+                            approval_source = "ai_review"
+                        else:
+                            status = StepStatus.QUESTIONED
+                            issues.extend(ai_issues)
+                    except Exception as error:
+                        # The model SDK may surface transport failures as its
+                        # own exception classes.  Keep the review boundary
+                        # fail-safe: a provider outage must route the image to
+                        # human review instead of blocking the whole pipeline.
+                        status = StepStatus.QUESTIONED
+                        issues.append(f"AI图片审核不可用，已转人工复查：{error}")
+                manual_acceptance_allowed = (
+                    status is not StepStatus.PASSED
+                    and not planning_review_required
+                )
+                questioned = questioned or status is not StepStatus.PASSED
             else:
                 status = (
                     StepStatus.QUESTIONED
@@ -957,15 +1307,23 @@ def validate_repair(
                 and image_path is not None
                 and image_path.is_file()
                 and not planning_review_required
+                and status is not StepStatus.PASSED
             ):
-                review_error_code = "MANUAL_IMAGE_REVIEW_REQUIRED"
-                review_error_message = (
-                    "图片质量不做自动判定；请人工预览后采用，或选择问题二次生成。"
+                review_error_code = (
+                    "AI_IMAGE_REVIEW_REJECTED"
+                    if ai_passed is False
+                    else "AI_IMAGE_REVIEW_UNAVAILABLE"
                 )
-                review_primary_code = "MANUAL_IMAGE_REVIEW_REQUIRED"
+                review_error_message = (
+                    "AI判断图片需要复查；请人工预览后采用，或选择问题二次生成。"
+                    if ai_passed is False
+                    else "AI图片审核未完成；已安全转入人工复查。"
+                )
+                review_primary_code = review_error_code
                 review_failures = []
                 review_category = "human_review"
-                issues = [review_error_message]
+                if review_error_message not in issues:
+                    issues.insert(0, review_error_message)
 
             diagnostic_payload = {
                 "schema_version": "validation-diagnostic/v1",
@@ -981,8 +1339,12 @@ def validate_repair(
                 "attempted_actions": item.get("attempted_actions", []),
                 "suggested_actions": item.get("suggested_actions", []),
                 "retained_image": item.get("retained_image"),
-                "review_mode": "deterministic_only/v1",
-                "image_review_mode": "human_only/v1",
+                "review_mode": "deterministic_plus_ai/v1",
+                "image_review_mode": "ai_then_human/v1",
+                "ai_invoked": ai_invoked,
+                "ai_passed": ai_passed,
+                "ai_model": ai_model,
+                "approval_source": approval_source,
                 "review_issues": issues,
                 "final_status": status.value,
                 "image_path": (
@@ -1038,6 +1400,16 @@ def validate_repair(
                     "suggested_actions": item.get("suggested_actions", []),
                     "retained_image": item.get("retained_image"),
                     "manual_acceptance_allowed": manual_acceptance_allowed,
+                    "structural_gate_passed": geometry_passed,
+                    "ai_review": {
+                        "schema_version": "ai-image-review/v1",
+                        "invoked": ai_invoked,
+                        "passed": ai_passed,
+                        "model": ai_model,
+                        "image_sha256": _file_hash(image_path),
+                        "issues": ai_issues,
+                    },
+                    "approval_source": approval_source,
                     "image_kind": (
                         "rendered"
                         if image_path is not None
@@ -1075,6 +1447,31 @@ def validate_repair(
             else ()
         ),
     )
+
+
+def _publication_process_name(
+    process_id: str,
+    bom_by_row: Mapping[int, NormalizedBomRow],
+    source: NormalizedBomRow | None,
+) -> str:
+    owner_match = re.fullmatch(r"process-asm-(\d+)", process_id)
+    owner = bom_by_row.get(int(owner_match.group(1))) if owner_match else None
+    if owner and owner.name:
+        return owner.name
+    return source.name if source and source.name else process_id
+
+
+def _publication_quantity(
+    step: FormalRenderStep, row: NormalizedBomRow, material_row_count: int
+) -> int | float:
+    if (
+        material_row_count == 1
+        and step.moving_occurrences
+        and isinstance(row.quantity, (int, float))
+        and 0 < len(step.moving_occurrences) <= row.quantity
+    ):
+        return len(step.moving_occurrences)
+    return row.quantity if isinstance(row.quantity, (int, float)) else 1
 
 
 def publish_delivery(
@@ -1146,11 +1543,7 @@ def publish_delivery(
             step = formal_by_step[step_id]
             status = StepStatus(item["status"])
             machine_status = status.value
-            # Legacy validation artifacts may say PASSED, but image-quality
-            # approval is now human-only. Publication must not silently carry
-            # that old machine disposition across this seam.
-            if status is StepStatus.PASSED:
-                status = StepStatus.QUESTIONED
+            approval_source = item.get("approval_source")
             human_disposition: str | None = None
             applied_review_decision_ref: str | None = None
             included_in_sop = True
@@ -1202,6 +1595,7 @@ def publish_delivery(
                     )
                 machine_status = str(prior.get("machine_status") or machine_status)
                 human_disposition = prior.get("human_disposition")
+                approval_source = prior.get("approval_source", approval_source)
                 applied_review_decision_ref = prior.get("review_decision_ref")
                 included_in_sop = bool(prior.get("included_in_sop", True))
             if (
@@ -1209,6 +1603,7 @@ def publish_delivery(
             ):
                 status = StepStatus.PASSED
                 human_disposition = "accept_current_image"
+                approval_source = "human_review"
             elif (
                 selected_candidate == HUMAN_OVERRIDE_IMAGE_ID
             ):
@@ -1240,6 +1635,7 @@ def publish_delivery(
                 image_path = selected_path
                 status = StepStatus.PASSED
                 human_disposition = ACCEPT_WITH_OVERRIDE
+                approval_source = "human_override"
                 applied_review_decision_ref = decision_ref
             elif selected_candidate == SKIP_PUBLICATION_CANDIDATE_ID:
                 if not isinstance(human_decision, Mapping):
@@ -1252,6 +1648,7 @@ def publish_delivery(
                     raise ValueError("跳过步骤的审核决定与当前步骤不一致")
                 status = StepStatus.PASSED
                 human_disposition = SKIP_FROM_PUBLICATION
+                approval_source = "human_skip"
                 applied_review_decision_ref = decision_ref
                 included_in_sop = False
             elif selected_candidate:
@@ -1268,6 +1665,7 @@ def publish_delivery(
                 image_path = chosen.path
                 status = StepStatus.PASSED
                 human_disposition = "accept_candidate"
+                approval_source = "human_review"
             if status is StepStatus.PASSED:
                 # Once a step is resolved, its alternatives leave both the
                 # review queue and the user delivery directory.
@@ -1282,7 +1680,9 @@ def publish_delivery(
                 (
                     row.material_code or row.drawing_no,
                     row.name,
-                    int(row.quantity) if isinstance(row.quantity, (int, float)) else 1,
+                    (
+                        _publication_quantity(step, row, len(material_rows))
+                    ),
                 )
                 for row in material_rows
             )
@@ -1291,7 +1691,9 @@ def publish_delivery(
                 sop_steps.append(SopStep(
                     step_id=step_id,
                     main_process_id=step.main_process_id,
-                    main_process_name=(source.name if source and source.name else step.main_process_id),
+                    main_process_name=(
+                        _publication_process_name(step.main_process_id, bom_by_row, source)
+                    ),
                     title=step.title,
                     image=SopImage(
                         image_id=f"image-{step_id}",
@@ -1332,6 +1734,7 @@ def publish_delivery(
                         context.run.workspace, image_path
                     ),
                     "machine_status": machine_status,
+                    "approval_source": approval_source,
                     "human_disposition": human_disposition,
                     "included_in_sop": included_in_sop,
                     "review_decision_ref": applied_review_decision_ref,
@@ -2427,11 +2830,22 @@ def _draft(payload: dict[str, Any]) -> DraftPlan:
     )
 
 
-def _mapping(payload: dict[str, Any]) -> BomCadMap:
-    return BomCadMap(
-        schema_version=str(payload["schema_version"]),
-        assembly_file=str(payload["assembly_file"]),
-        rows=tuple(
+def _mapping(payload: dict[str, Any]) -> BomCadMap | BomCadForest:
+    def parse_map(item: Mapping[str, Any]) -> BomCadMap:
+        return BomCadMap(
+            schema_version=str(item["schema_version"]),
+            assembly_file=str(item["assembly_file"]),
+            rows=parse_rows(item["rows"]),
+            matched_rows=int(item["matched_rows"]),
+            ambiguous_rows=tuple(int(value) for value in item["ambiguous_rows"]),
+            missing_rows=tuple(int(value) for value in item["missing_rows"]),
+            quantity_mismatch_rows=tuple(
+                int(value) for value in item["quantity_mismatch_rows"]
+            ),
+        )
+
+    def parse_rows(items: Any) -> tuple[BomOccurrenceMapping, ...]:
+        return tuple(
             BomOccurrenceMapping(
                 bom_row=int(item["bom_row"]),
                 level=str(item["level"]),
@@ -2451,15 +2865,31 @@ def _mapping(payload: dict[str, Any]) -> BomCadMap:
                 status=str(item["status"]),
                 evidence=str(item["evidence"]),
             )
-            for item in payload["rows"]
-        ),
-        matched_rows=int(payload["matched_rows"]),
-        ambiguous_rows=tuple(int(value) for value in payload["ambiguous_rows"]),
-        missing_rows=tuple(int(value) for value in payload["missing_rows"]),
-        quantity_mismatch_rows=tuple(
-            int(value) for value in payload["quantity_mismatch_rows"]
-        ),
-    )
+            for item in items
+        )
+
+    if payload.get("schema_version") == "bom-cad-forest/v1":
+        return BomCadForest(
+            schema_version="bom-cad-forest/v1",
+            assembly_file=str(payload["assembly_file"]),
+            rows=parse_rows(payload["rows"]),
+            matched_rows=int(payload["matched_rows"]),
+            ambiguous_rows=tuple(int(value) for value in payload["ambiguous_rows"]),
+            missing_rows=tuple(int(value) for value in payload["missing_rows"]),
+            quantity_mismatch_rows=tuple(
+                int(value) for value in payload["quantity_mismatch_rows"]
+            ),
+            batches=tuple(
+                BomCadBatch(
+                    batch_id=str(item["batch_id"]),
+                    root_bom_row=int(item["root_bom_row"]),
+                    source_bom_rows=tuple(int(value) for value in item["source_bom_rows"]),
+                    mapping=parse_map(item["mapping"]),
+                )
+                for item in payload["batches"]
+            ),
+        )
+    return parse_map(payload)
 
 
 def _render_plan(payload: dict[str, Any]) -> RenderPlan:
@@ -2483,7 +2913,10 @@ def _render_plan(payload: dict[str, Any]) -> RenderPlan:
 
 
 def _base_questions(
-    bom: NormalizedBom, inventory: ModelInventory
+    bom: NormalizedBom,
+    inventory: ModelInventory,
+    *,
+    multi_assembly: bool = False,
 ) -> tuple[ClarificationItem, ...]:
     questions: list[ClarificationItem] = []
     if len(bom.sheet_candidates) > 1:
@@ -2497,7 +2930,7 @@ def _base_questions(
                 ("候选工作表有效表头和物料行评分相同。",),
             )
         )
-    if len(inventory.assembly_candidates) > 1:
+    if len(inventory.assembly_candidates) > 1 and not multi_assembly:
         questions.append(
             ClarificationItem(
                 "select-final-assembly",

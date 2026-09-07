@@ -8,12 +8,35 @@ import unittest
 from openpyxl import load_workbook
 
 from sop_pipeline.agent import AgentCore, DesktopWorkflow, RunStatus
+from sop_pipeline.agent.bom_cad_mapper import BomCadMap, BomOccurrenceMapping
 from sop_pipeline.agent.creo_discovery import StaticCreoDiscovery
+from sop_pipeline.agent.desktop_workflow import _mapping_questions
 from tests.test_agent_analysis import _xlsx
 from tests.test_pipeline_orchestrator import _fixture as pipeline_fixture
 
 
 class DesktopWorkflowTests(unittest.TestCase):
+    def test_unresolved_mapping_question_states_that_rows_will_not_be_generated(self) -> None:
+        mapping = BomCadMap(
+            "bom-cad-map/v1",
+            "root.asm.1",
+            (
+                BomOccurrenceMapping(2, "1", "ROOT", "总装", 1, None, ("ROOT",), "matched", "root"),
+                BomOccurrenceMapping(3, "1.1", "MISSING", "缺失件", 1, 2, (), "missing", "not found"),
+            ),
+            1,
+            (),
+            (3,),
+            (),
+        )
+
+        questions = _mapping_questions(mapping)
+
+        question = next(item for item in questions if item.item_id == "creo-quantity-mismatch")
+        self.assertIn("共有 1 行", question.question)
+        self.assertIn("本次不会生成", question.question)
+        self.assertIn("完整未解决名单", question.options[0])
+
     def test_real_discovery_facts_are_registered_before_confirmation(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -106,6 +129,10 @@ class DesktopWorkflowTests(unittest.TestCase):
             self.assertEqual(packet.facts["creo_discovery"], "passed")
             self.assertEqual(packet.facts["cad_occurrences"], 2)
             self.assertEqual(packet.facts["mapped_bom_rows"], 3)
+            self.assertEqual(packet.facts["planning_information_coverage_percent"], 100.0)
+            self.assertEqual(packet.facts["planned_bom_rows"], 1)
+            self.assertEqual(packet.facts["planning_context_only_bom_rows"], 1)
+            self.assertEqual(packet.facts["planning_unresolved_bom_rows"], 0)
             run = core.get_run(run_id)
             self.assertTrue((run.workspace / "analysis" / "creo-cad-graph.json").is_file())
             self.assertTrue((run.workspace / "analysis" / "bom-cad-map.json").is_file())
