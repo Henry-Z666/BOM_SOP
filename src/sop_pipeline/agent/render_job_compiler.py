@@ -12,6 +12,7 @@ from sop_pipeline.camera_visibility import (
 
 from .formal_render_planner import FormalRenderForest, FormalRenderPlan, FormalRenderStep
 from .render_scheduler import RenderPlan, RenderTask
+from .bom_normalizer import validate_color_boundary_rows
 
 
 def compile_locked_render_jobs(
@@ -39,6 +40,8 @@ def compile_locked_render_jobs(
         return RenderPlan(schema_version="render-plan/v2", tasks=tasks)
     if plan.schema_version != "formal-render-plan/v2":
         raise ValueError("render job compilation requires formal-render-plan/v2")
+    if not plan.color_boundaries:
+        raise ValueError("正式计划缺少BOM颜色边界证据，请从当前BOM重新规划")
     required_decisions = {
         f"subassembly-scope-{item.bom_rows[0]:04d}"
         for item in plan.diagnostics
@@ -53,6 +56,8 @@ def compile_locked_render_jobs(
         raise ValueError("formal render plan lacks authoritative assembly SHA-256")
     tasks: list[RenderTask] = []
     for index, step in enumerate(plan.steps):
+        if plan.color_boundaries:
+            validate_color_boundary_rows(plan.color_boundaries, step.source_bom_rows)
         unknown_dependencies = set(step.depends_on) - known_steps
         if unknown_dependencies:
             raise ValueError(
@@ -64,6 +69,11 @@ def compile_locked_render_jobs(
         payload = {
             "schema_version": "creo-render-task/v1",
             "source_plan_fingerprint": plan.fingerprint,
+            "source_bom_rows": list(step.source_bom_rows),
+            "bom_color_boundaries": {
+                'schema_version': 'bom-color-boundary/v1',
+                'rows': {str(r): plan.color_boundaries['rows'][str(r)] for r in step.source_bom_rows},
+            } if plan.color_boundaries else {},
             "assembly_file": plan.assembly_file,
             "authoritative_assembly": {
                 "assembly_file": plan.assembly_file,
@@ -98,6 +108,7 @@ def compile_locked_render_jobs(
             "arrow_anchors": _compile_arrow_anchors(step),
             "receiver_interface_selections": _compile_receiver_interface_selections(step),
             "arrow_renderer": "creo_display_list/v1",
+            "arrow_color": "red",
             "diagnostics": list(step.diagnostics),
             "repair_space": {
                 "camera_ids": list(step.allowed_camera_ids),
@@ -107,6 +118,15 @@ def compile_locked_render_jobs(
                 "framing_repairs": "activity_coordinate_fit_only/v1",
             },
         }
+        from .installation_view import generalized_view, installation_image_roles
+        # Unresolved diagnostic stages have no installation normal. Preserve
+        # their explicit placeholder status instead of inventing a camera.
+        if payload['receiver_normal_root'] is not None:
+            payload = generalized_view(payload)
+            roles = installation_image_roles(payload)
+        else:
+            roles = ['detail']
+        payload["image_role_plan"] = {"schema_version": "installation-image-roles/v1", "roles": roles, "expansion_status": "pending_dual_expansion" if len(roles)>1 else "single_image", "complete_operation_coverage_required": True}
         tasks.append(
             RenderTask(
                 task_id=step.step_id,
@@ -433,7 +453,7 @@ def _native_selected_fit_contract() -> dict[str, Any]:
         "command": "ProCmdZoomIntoOutline",
         "selection_scope": "moving_occurrences_and_receiver_surfaces/v1",
         "coordinate_adjustment": "none_native_surface_fit/v1",
-        "zoom_to_selected_level": 0.70,
+        "zoom_to_selected_level": 0.85,
         "level_policy": "fixed_native_selection_margin/v1",
         "max_commands_per_render": 1,
         "manual_pan_zoom_forbidden": True,

@@ -4,6 +4,7 @@ param(
   [Parameter(Mandatory=$true)][string]$PreparedAssembly,
   [Parameter(Mandatory=$true)][string]$WorkerGenerationRoot,
   [string]$RuntimeConfig = '',
+  [string]$NativeBindingsManifest = '',
   [ValidateRange(1, 100)][int]$MaxCommands = 100,
   [ValidateRange(10, 3600)][int]$IdleSeconds = 300
 )
@@ -20,7 +21,9 @@ $classpath = (Join-Path $here 'build') + ';' + `
 
 Push-Location $PreparedModelsRoot
 try {
-  & $runtime.JavaCommand '--enable-native-access=ALL-UNNAMED' `
+  $bindingArguments = @()
+  if ($NativeBindingsManifest) { $bindingArguments += ('-Dsop.nativeBindings=' + (Resolve-Path -LiteralPath $NativeBindingsManifest).Path) }
+  & $runtime.JavaCommand '--enable-native-access=ALL-UNNAMED' @bindingArguments `
     '-Dfile.encoding=UTF-8' ('-Djava.library.path=' + $runtime.NativeLibrary) `
     '-cp' $classpath 'NativeArrowWorker' $runtime.CreoCommand `
     $PreparedAssembly $WorkerGenerationRoot $MaxCommands $IdleSeconds

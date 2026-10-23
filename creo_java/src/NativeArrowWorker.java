@@ -80,6 +80,7 @@ public final class NativeArrowWorker {
       System.loadLibrary("pfcasyncmt");
       connection = pfcAsyncConnection.AsyncConnection_Start(args[0], null);
       Session session = connection.GetSession();
+      NativeModelBindings.apply(session);
       long pid = ProcessHandle.current().pid();
       atomicWrite(ready, "native-arrow-worker/v1\t" + pid + "\t" + maxCommands + "\n");
       long idleDeadline = System.nanoTime() + idleSeconds * 1_000_000_000L;

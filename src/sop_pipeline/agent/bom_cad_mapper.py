@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
-from .bom_normalizer import NormalizedBom, NormalizedBomRow
+from .bom_normalizer import NormalizedBom, NormalizedBomRow, assembly_scope_frontier
 from .model_inventory import ModelInventory, normalize_identifier
 from .draft_planner import DraftPlan
 
@@ -58,6 +58,7 @@ def map_bom_to_occurrences(
     graph: dict[str, Any],
     draft_plan: DraftPlan | None = None,
 ) -> BomCadMap:
+    bom = assembly_scope_frontier(bom)
     if graph.get("schema_version") != "creo-cad-graph/v3":
         raise ValueError("BOM/CAD 映射需要 creo-cad-graph/v3")
     occurrences = graph.get("occurrences")
@@ -101,16 +102,19 @@ def map_bom_to_occurrences(
 
         candidates: list[dict[str, Any]] = []
         evidence = "图号、型号和物料编码均未命中 Creo 模型名"
-        for label, raw_identifier in (
-            ("图号优先", row.drawing_no),
-            ("型号回退", row.model),
-            ("物料编码回退", row.material_code),
+        for label, raw_identifiers in (
+            ("图号优先", (row.drawing_no,)),
+            ("CAD模型名称", tuple(row.cad_model_names.splitlines())),
+            ("型号回退", (row.model,)),
+            ("物料编码回退", (row.material_code,)),
         ):
-            identifier = normalize_identifier(raw_identifier)
-            if not identifier:
+            identifiers = {normalize_identifier(raw) for raw in raw_identifiers if raw.strip()}
+            if not identifiers:
                 continue
             matches = [
-                node for node in occurrences if identifier in _node_identifiers(node)
+                node for node in occurrences
+                if node.get("feature_status_code") not in {2, 3, 4, 5}
+                and identifiers & _node_identifiers(node)
             ]
             if matches:
                 candidates = matches
@@ -139,6 +143,14 @@ def map_bom_to_occurrences(
                     candidates = descendants
                     evidence += "；由 BOM 父项限定为后代 occurrence，需复核中间层级"
 
+        # Imported variants may retain another drawing's historical parameter.
+        # Within the proven parent scope, prefer an exact installed model name
+        # over a parameter-only match. Vendor names still use native parameters
+        # when no exact drawing/model filename exists.
+        exact_models=[node for node in candidates if identifiers & _node_model_identifiers(node)]
+        if exact_models:
+            candidates=exact_models
+            evidence+='；实际模型名优先于历史参数'
         occurrence_ids = tuple(sorted({_node_id(node) for node in candidates}, key=_path_key))
         if not occurrence_ids:
             status = "missing"
@@ -178,11 +190,36 @@ def map_bom_to_occurrences(
     )
 
 
+def _node_model_identifiers(node: dict[str, Any]) -> set[str]:
+    return {value for value in (
+        normalize_identifier(str(node.get('model_name',''))),
+        normalize_identifier(_remove_creo_suffix(str(node.get('part_no','')))),
+        normalize_identifier(_remove_creo_suffix(str(node.get('descriptor_instance','')))),
+    ) if value}
+
 def _node_identifiers(node: dict[str, Any]) -> set[str]:
     values = {
         normalize_identifier(str(node.get("model_name", ""))),
         normalize_identifier(_remove_creo_suffix(str(node.get("part_no", "")))),
     }
+    # Native parameters provide exact report identities even when a vendor's
+    # CAD file name differs from the purchasing drawing number. Do not match
+    # arbitrary parameter text, descriptions, or partial substrings.
+    identity_parameters = {
+        "DRAWING_NO", "DRAWING_NUMBER", "PART_NO", "PART_NUMBER",
+        "MATERIAL_CODE", "MODEL", "MODEL_NUMBER", "图号", "物料编码", "型号",
+        "SL_PRT_NUMBER", "P_MODEL_NAME", "SL_MODEL_NAME", "PWGXH_CODE",
+    }
+    parameters = node.get("parameters", {})
+    if isinstance(parameters, dict):
+        values.update(
+            normalize_identifier(str(value))
+            for key, value in parameters.items()
+            if str(key).upper() in identity_parameters
+        )
+    # An instance identifies the installed part; the generic identifies its
+    # family, so generic names must not bind an arbitrary family member.
+    values.add(normalize_identifier(_remove_creo_suffix(str(node.get("descriptor_instance", "")))))
     return {value for value in values if value}
 
 

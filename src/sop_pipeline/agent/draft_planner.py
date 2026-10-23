@@ -5,7 +5,7 @@ import hashlib
 import json
 import re
 
-from .bom_normalizer import NormalizedBom, NormalizedBomRow
+from .bom_normalizer import NormalizedBom, NormalizedBomRow, assembly_scope_frontier
 from .model_inventory import ModelInventory, matching_model_files_for_row
 
 
@@ -73,6 +73,7 @@ def create_draft_plan(
     *,
     assembly_batch: bool = False,
 ) -> DraftPlan:
+    bom = assembly_scope_frontier(bom)
     root = _root_row(bom)
     root_is_assembly = assembly_batch and _row_is_assembly(root, inventory)
     non_modeled = set(inventory.non_modeled_bom_rows)

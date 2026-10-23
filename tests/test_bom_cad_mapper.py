@@ -33,6 +33,16 @@ def row(
 
 
 class BomCadMapperTests(unittest.TestCase):
+    def test_exact_model_drawing_excludes_stale_parameter_on_other_variant(self):
+        bom=NormalizedBom('normalized-bom/v1','BOM',1,{},(row(2,'1','ROOT'),row(3,'1.1','DRAW-A',quantity=2)),('BOM',))
+        inventory=ModelInventory('model-inventory/v1',(ModelFile('root.asm.1','ROOT','asm',1),),'root.asm.1',('root.asm.1',),(),(),())
+        graph={'schema_version':'creo-cad-graph/v3','assembly_file':'root.asm.1','occurrences':[
+            {'occurrence_id':'1','parent_occurrence':'ROOT','model_name':'DRAW-B','parameters':{'P_MODEL_NAME':'DRAW-A'}},
+            {'occurrence_id':'2','parent_occurrence':'ROOT','model_name':'DRAW-A'},
+            {'occurrence_id':'3','parent_occurrence':'ROOT','model_name':'DRAW-A'}]}
+        result=map_bom_to_occurrences(bom,inventory,graph)
+        self.assertEqual(result.rows[1].occurrence_ids,('2','3'))
+        self.assertEqual(result.rows[1].status,'matched')
     def test_drawing_number_wins_over_a_conflicting_model_number(self) -> None:
         bom = NormalizedBom(
             "normalized-bom/v1",

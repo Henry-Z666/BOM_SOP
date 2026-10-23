@@ -16,6 +16,7 @@ import java.util.*;
 
 /** Fact-only, asynchronous Creo Java Free OTK assembly extractor. */
 public final class AutoCadDiscovery {
+  private static final java.util.Set<String> focusedPaths=new java.util.HashSet<>(java.util.Arrays.asList(System.getProperty("sop.discoveryFocus","").split(",")));
   private static final class LocalAnchor {
     final Point3D point; final String source;
     LocalAnchor(Point3D point, String source) { this.point = point; this.source = source; }
@@ -283,6 +284,7 @@ public final class AutoCadDiscovery {
     if (value == ComponentConstraintType._ASM_CONSTRAINT_CSYS) return "CSYS";
     if (value == ComponentConstraintType._ASM_CONSTRAINT_TANGENT) return "TANGENT";
     if (value == ComponentConstraintType._ASM_CONSTRAINT_FIX) return "FIX";
+    if (value == ComponentConstraintType._ASM_CONSTRAINT_DEF_PLACEMENT) return "DEFAULT_PLACEMENT";
     if (value == ComponentConstraintType._ASM_CONSTRAINT_AUTO) return "AUTO";
     return "TYPE_" + value;
   }
@@ -361,6 +363,30 @@ public final class AutoCadDiscovery {
     }
   }
   private static void append(StringBuilder target, String value) { if (target.length() > 0) target.append(','); target.append(value); }
+  private static String parametersJson(Model model) {
+    StringBuilder result = new StringBuilder();
+    if (model == null) return "{}";
+    try {
+      Parameters parameters = model.ListParams();
+      for (int i = 0; parameters != null && i < parameters.getarraysize(); i++) {
+        Parameter parameter = parameters.get(i);
+        try {
+          ParamValue value = parameter.GetValue();
+          String text;
+          try { text = value.GetStringValue(); }
+          catch (Throwable nonString) {
+            try { text = String.valueOf(value.GetDoubleValue()); }
+            catch (Throwable nonDouble) {
+              try { text = String.valueOf(value.GetIntValue()); }
+              catch (Throwable nonInt) { text = String.valueOf(value.GetBoolValue()); }
+            }
+          }
+          append(result, "\"" + esc(parameter.GetName()) + "\":\"" + esc(text) + "\"");
+        } catch (Throwable unavailable) {}
+      }
+    } catch (Throwable unavailable) {}
+    return "{" + result + "}";
+  }
   private static void discoverAssembly(Session session, Assembly root, Assembly current, intseq parentPath,
                                        double[][] parentToRoot, StringBuilder nodes, StringBuilder edges,
                                        java.util.Map<String, double[][]> outlineCache) throws jxthrowable {
@@ -369,8 +395,11 @@ public final class AutoCadDiscovery {
       ComponentFeat component = (ComponentFeat)features.get(i); ModelDescriptor model = component.GetModelDescr();
       intseq componentPath = appendPath(parentPath, component.GetId());
       String path = pathId(componentPath);
+      boolean focused=focusedPaths.contains("")||focusedPaths.stream().anyMatch(p->path.equals(p)||path.startsWith(p+"/"));
+      boolean ancestor=focusedPaths.stream().anyMatch(p->p.startsWith(path+"/"));
+      if(!focused&&!ancestor)continue;
       double[][] componentToRoot = multiply(matrix(component.GetPosition()), parentToRoot);
-      Model child = null; double[][] outline = null;
+      Model child = null; double[][] outline = null; String retrievalError = null;
       try {
         child = session.RetrieveModel(model);
         if (child instanceof Solid) {
@@ -379,14 +408,19 @@ public final class AutoCadDiscovery {
           else { outline = localOutline((Solid)child); outlineCache.put(outlineKey, outline); }
         }
       } catch (Throwable unavailableChild) {
-        System.err.println("[DISCOVERY-TRACE] child_scan_skipped=" + path);
+        retrievalError = error(unavailableChild);
+        System.err.println("[DISCOVERY-TRACE] child_scan_skipped=" + path + " model=" + model.GetFullName() + " error=" + retrievalError);
       }
       PhysicalAnchor physicalAnchorRoot = null;
-      try { physicalAnchorRoot = physicalAnchor(session, child, componentToRoot); } catch (Throwable ignored) {}
+      if(focused)try { physicalAnchorRoot = physicalAnchor(session, child, componentToRoot); } catch (Throwable ignored) {}
       append(nodes, "{\"id\":\"" + esc(path) + "\",\"occurrence_id\":\"" + esc(path)
         + "\",\"component_path\":" + intArray(componentPath) + ",\"parent_occurrence\":\"" + esc(pathId(parentPath))
         + "\",\"feature_id\":" + component.GetId() + ",\"part_no\":\"" + esc(model.GetFileName())
         + "\",\"model_name\":\"" + esc(model.GetFullName()) + "\",\"transform\":" + transform(componentToRoot)
+        + ",\"descriptor_generic\":\"" + esc(model.GetGenericName()) + "\",\"descriptor_instance\":\"" + esc(model.GetInstanceName())
+        + "\",\"feature_status_code\":" + component.GetStatus().getValue()
+        + ",\"retrieval_status\":\"" + (child == null ? "failed" : "retrieved") + "\",\"retrieval_error\":"
+        + (retrievalError == null ? "null" : "\"" + retrievalError + "\"") + ",\"parameters\":" + parametersJson(child)
         + ",\"bounds_root\":" + rootBounds(outline, componentToRoot)
         + ",\"physical_anchor_root\":" + (physicalAnchorRoot == null ? "null" : array(physicalAnchorRoot.point))
         + ",\"physical_anchor_source\":" + (physicalAnchorRoot == null ? "null" : "\"" + esc(physicalAnchorRoot.source) + "\"") + "}");
@@ -418,6 +452,7 @@ public final class AutoCadDiscovery {
       System.err.println("[DISCOVERY-TRACE] connected");
       System.err.println("[DISCOVERY-TRACE] remote_comm=" + CIPRemoteApp.getComm());
       Session session = connection.GetSession();
+      NativeModelBindings.apply(session);
       String requestedFile = new File(args[1]).getName();
       java.util.regex.Matcher version = java.util.regex.Pattern.compile("^(.*)\\.([0-9]+)$").matcher(requestedFile);
       String requestedName = version.matches() ? version.group(1) : requestedFile;

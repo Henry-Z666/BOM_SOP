@@ -22,7 +22,7 @@ from .bom_cad_mapper import (
     BomOccurrenceMapping,
     map_bom_to_occurrences,
 )
-from .bom_normalizer import NormalizedBom, NormalizedBomRow, normalize_bom
+from .bom_normalizer import NormalizedBom, NormalizedBomRow, normalize_bom, color_boundary_contract, validate_color_boundary_rows
 from .bundle_paths import materialized_creo_script
 from .creo_discovery import (
     PowerShellCreoDiscovery,
@@ -76,6 +76,8 @@ from .skill_runtime import (
     SkillHandlerOutput,
 )
 from .sop_publisher import SopImage, SopPublisher, SopStep
+from .process_bridge import assert_process_sources, compile_process_jobs, enrich_sop_step
+from .process_model import fingerprint as process_fingerprint
 from .step_revision import (
     CURRENT_IMAGE_CANDIDATE_ID,
     RevisionKind,
@@ -160,7 +162,7 @@ def normalize_bom_skill(
 ) -> SkillHandlerOutput:
     del invocation
     try:
-        bom = normalize_bom(context.run.bom_file)
+        bom = normalize_bom(context.run.bom_file, root_bom_row=context.adapters.get("root_bom_row"))
     except (OSError, ValueError) as error:
         return _blocked("BOM_NORMALIZATION_FAILED", str(error))
     return _passed(SkillArtifactValue("normalized-bom", bom))
@@ -689,7 +691,15 @@ def compile_render_jobs(
         plan = formal_render_plan_from_dict(
             context.read_json(_require_ref(invocation, "locked-render-plan"))
         )
-        jobs = compile_locked_render_jobs(plan)
+        if context.adapters.get("process_operations") is not None:
+            assert_process_sources(tuple(context.adapters["process_operations"]),
+                tuple(context.adapters.get("process_sources", ())))
+            if not isinstance(plan, FormalRenderPlan):
+                raise ValueError("第一阶段工艺操作接口仅接受单个锁定总装")
+            jobs = compile_process_jobs(plan, tuple(context.adapters["process_operations"]),
+                tuple(context.adapters.get("operation_bindings", ())))
+        else:
+            jobs = compile_locked_render_jobs(plan)
         for revision_ref in _refs(invocation, "step-revision"):
             jobs = _apply_step_revision(jobs, context.read_json(revision_ref))
     except (KeyError, TypeError, ValueError) as error:
@@ -701,6 +711,9 @@ def render_batch(
     context: SkillContext, invocation: SkillInvocation
 ) -> SkillHandlerOutput:
     try:
+        if context.adapters.get("process_operations") is not None:
+            assert_process_sources(tuple(context.adapters["process_operations"]),
+                tuple(context.adapters.get("process_sources", ())))
         input_manifest = context.read_json(
             _require_ref(invocation, "input-manifest")
         )
@@ -1487,6 +1500,11 @@ def publish_delivery(
             context.read_json(_require_ref(invocation, "locked-render-plan"))
         )
         bom = _normalized(context.read_json(_require_ref(invocation, "normalized-bom")))
+        # Publication is a separate seam: even a previously accepted picture
+        # cannot reopen manufacturing children of a currently issued assembly.
+        current_colors = color_boundary_contract(bom)
+        for planned_step in formal.steps:
+            validate_color_boundary_rows(current_colors, planned_step.source_bom_rows)
         root_bom_row = bom.rows[0] if bom.rows else None
         candidates = context.read_json(_require_ref(invocation, "candidate-set"))
         groups = {
@@ -1534,6 +1552,23 @@ def publish_delivery(
                 )
             )
         formal_by_step = {step.step_id: step for step in formal.steps}
+        process_tasks = {}
+        if context.adapters.get("process_operations") is not None:
+            assert_process_sources(tuple(context.adapters["process_operations"]),
+                tuple(context.adapters.get("process_sources", ())))
+            if not isinstance(formal, FormalRenderPlan):
+                raise ValueError("第一阶段工艺操作接口仅接受单个锁定总装")
+            expected_process_tasks = {task.step_id: task.payload for task in compile_process_jobs(
+                formal, tuple(context.adapters["process_operations"]),
+                tuple(context.adapters.get("operation_bindings", ()))) .tasks}
+            stored_jobs = context.read_json(_require_ref(invocation, "locked-render-jobs"))
+            process_tasks = {item['step_id']: item['payload'] for item in stored_jobs['tasks']}
+            if set(process_tasks) != set(expected_process_tasks):
+                raise ValueError("工艺操作已变化，必须重新编译并渲染")
+            for step_id in process_tasks:
+                for key in ('process_operation', 'process_confirmation', 'torque_annotations'):
+                    if process_fingerprint(process_tasks[step_id].get(key)) != process_fingerprint(expected_process_tasks[step_id].get(key)):
+                        raise ValueError("工艺参数或确认已变化，必须重新编译并渲染")
         bom_by_row = {row.row: row for row in bom.rows}
         sop_steps: list[SopStep] = []
         result_steps: list[dict[str, Any]] = []
@@ -1722,6 +1757,9 @@ def publish_delivery(
                     questioned=status is not StepStatus.PASSED,
                     candidates=candidate_images,
                 ))
+                if step_id in process_tasks:
+                    sop_steps[-1] = enrich_sop_step(sop_steps[-1], process_tasks[step_id])
+                    pending = pending or sop_steps[-1].parameter_status == "pending"
             result_steps.append(
                 {
                     "step_id": step_id,

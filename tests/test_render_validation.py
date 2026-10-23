@@ -564,3 +564,101 @@ def _camera_selection(selected_id: str) -> dict:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BackgroundArrowEvidenceTests(unittest.TestCase):
+    def test_red_cad_background_is_not_counted_as_an_arrow(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as folder:
+            folder=Path(folder);image,audit=_write_native_files(folder,(250,250,1350,1350))
+            base=Image.open(image).convert('RGB');ImageDraw.Draw(base).rectangle((0,200,350,1400),fill=(255,0,0))
+            background=Path(str(image)+'.background.jpg');base.save(background,quality=100)
+            ImageDraw.Draw(base).line((675,800,925,800),fill=(230,10,10),width=12);base.save(image,quality=100)
+            evidence=Path(str(image)+'.raster-evidence.json');evidence.write_text(json.dumps({'schema_version':'native-background-difference/v1','camera_and_stage_unchanged':True,'background_sha256':hashlib.sha256(background.read_bytes()).hexdigest(),'image_sha256':hashlib.sha256(image.read_bytes()).hexdigest()}),encoding='utf-8')
+            payload=_native_payload(arrow_color='red',arrow_evidence='native-background-difference/v1')
+            payload['presentation']['center_gate']['max_activity_center_offset_pixels']=400
+            payload['presentation']['center_gate']['max_arrow_center_offset_pixels']=400
+            report=DeterministicNativeRenderValidator().validate(image,audit,payload)
+            self.assertNotIn('ARROW_CLIPPED',report.failures)
+            self.assertEqual(report.arrow_raster.significant_components,1)
+            self.assertGreater(report.arrow_raster.border_margin_pixels,500)
+            background.write_bytes(b'changed')
+            report=DeterministicNativeRenderValidator().validate(image,audit,payload)
+            self.assertIn('ARROW_BACKGROUND_EVIDENCE_INVALID',report.failures)
+
+
+class CadRoiEvidenceTests(unittest.TestCase):
+    def test_native_roi_rejects_missing_or_modified_calibration(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as directory:
+            folder=Path(directory);image,audit=_write_native_files(folder,(250,250,1350,1350))
+            payload=_native_payload(installation_view={'coordinate_adapter':'cad_roi_screen_transform/v1','roi_feature_span':10},stage_geometry_root={'moving_bounds':[{'min':[0,0,0],'max':[10,10,10]}]})
+            report=DeterministicNativeRenderValidator().validate(image,audit,payload)
+            self.assertIn('CAD_ROI_EVIDENCE_INVALID',report.failures)
+            snapshots=[]
+            for name in ['a','pan']:
+                file=folder/(name+'.jpg');Image.new('RGB',(10,10),'white').save(file)
+                snapshots.append({'file':str(file),'sha256':hashlib.sha256(file.read_bytes()).hexdigest()})
+            calibration_file=Path(str(image)+'.calibration.json')
+            calibration_file.write_text(json.dumps({'schema_version':'native-viewport-calibration/v1','profile':[1,-1,100,-100,0,0,1600,1600],'residual':[0,0],'snapshots':snapshots}),encoding='utf-8')
+            roi_file=Path(str(image)+'.roi.json')
+            roi_file.write_text(json.dumps({'schema_version':'cad-roi-screen-transform/v1','temporary_markers_removed':True,'zoom':2,'pan':[0,0],'feature_span':10,'calibration_sha256':hashlib.sha256(calibration_file.read_bytes()).hexdigest()}),encoding='utf-8')
+            report=DeterministicNativeRenderValidator().validate(image,audit,payload)
+            self.assertNotIn('CAD_ROI_EVIDENCE_INVALID',report.failures)
+            (folder/'pan.jpg').write_bytes(b'changed')
+            report=DeterministicNativeRenderValidator().validate(image,audit,payload)
+            self.assertIn('CAD_ROI_EVIDENCE_INVALID',report.failures)
+
+
+class LocatorEvidenceTests(unittest.TestCase):
+    def test_group_cover_and_native_text_frame_are_required(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as directory:
+            image=Path(directory)/'locator.jpg'
+            notes={'purpose':'spatial_group_indices_from_cad','labels':[{'text':'1','occurrence_ids':['a']},{'text':'2','occurrence_ids':['b']}]}
+            notes['contract_hash']='sha256:'+hashlib.sha256(json.dumps(notes,ensure_ascii=False,sort_keys=True).encode('utf-8')).hexdigest()
+            coverage={'schema_version':'installation-view-coverage/v1','role':'location','detail_groups':[['a'],['b']],
+                      'operation_occurrences':['a','b'],'display_occurrences':['a','b'],'positioning_context_status':'available'}
+            payload={'image_coverage':coverage,'installation_notes':notes}
+            labels=[{'text':str(i),'connection_id':'spatial-group-'+str(i),'occurrence_id':o,'text_box_camera':[i*100,100,40,60]} for i,o in enumerate(['a','b'],1)]
+            audit={'schema_version':'installation-note-audit/v1','renderer':'creo_display_list/v1','contract_hash':notes['contract_hash'],'overlap_check':'passed','labels':labels}
+            note_file=Path(str(image)+'.note.json');note_file.write_text(json.dumps(audit),encoding='utf-8')
+            Path(str(image)+'.roi.json').write_text(json.dumps({'camera_plane_to_final_pixels':[1,-1,400,900]}),encoding='utf-8')
+            failures=[];validator=DeterministicNativeRenderValidator();validator._validate_locator_numbers(image,payload,failures)
+            self.assertEqual(failures,[])
+            notes.update(anchor_state='authoritative_complete',layout_policy='ordered-perimeter-lane/v1')
+            notes.pop('contract_hash')
+            notes['contract_hash']='sha256:'+hashlib.sha256(json.dumps(notes,ensure_ascii=False,sort_keys=True).encode('utf-8')).hexdigest()
+            audit['contract_hash']=notes['contract_hash']
+            payload['installation_view']={'composition_policy':'single-image-balanced-fit/v15'}
+            payload['arrow_anchors']=[{'occurrence_id':o,'complete_point_root':[i,2,3]} for i,o in enumerate(['a','b'])]
+            for i,label in enumerate(labels):label.update(anchor_source='native_complete_installation_anchor',target_root=[i,2,3])
+            note_file.write_text(json.dumps(audit),encoding='utf-8')
+            failures=[];validator._validate_locator_numbers(image,payload,failures);self.assertEqual(failures,[])
+            labels[0]['target_root']=[9,9,9];note_file.write_text(json.dumps(audit),encoding='utf-8')
+            failures=[];validator._validate_locator_numbers(image,payload,failures);self.assertIn('LOCATOR_NOTE_EVIDENCE_INVALID',failures)
+            labels[0]['target_root']=[0,2,3]
+            labels[0]['text_box_camera'][0]=-500;note_file.write_text(json.dumps(audit),encoding='utf-8')
+            failures=[];validator._validate_locator_numbers(image,payload,failures);self.assertIn('LOCATOR_LABEL_CLIPPED',failures)
+            coverage['detail_groups']=[['a'],['a']]
+            failures=[];validator._validate_locator_numbers(image,payload,failures);self.assertIn('LOCATOR_NOTE_EVIDENCE_INVALID',failures)
+
+
+class MovingOccurrenceVisibilityTests(unittest.TestCase):
+    def test_hidden_moving_body_cannot_pass_on_receiver_and_arrow_pixels(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as directory:
+            image=Path(directory)/'moving.jpg';reference_file=Path(str(image)+'.background.jpg');without_file=Path(directory)/'without.jpg'
+            reference=Image.new('RGB',(1600,1600),(230,230,230));ImageDraw.Draw(reference).rectangle((500,500,1100,1100),fill=(100,100,100));reference.save(without_file,quality=100)
+            ImageDraw.Draw(reference).rectangle((700,700,900,900),fill=(0,100,200));reference.save(reference_file,quality=100)
+            def write_evidence():
+                Path(str(image)+'.moving-visibility.json').write_text(json.dumps({'schema_version':'native-occurrence-difference/v1','camera_and_other_occurrences_unchanged':True,'poses_restored':True,'reference_sha256':hashlib.sha256(reference_file.read_bytes()).hexdigest(),'entries':[{'occurrence_id':'m','file':str(without_file),'sha256':hashlib.sha256(without_file.read_bytes()).hexdigest()}]}),encoding='utf-8')
+            write_evidence();validator=DeterministicNativeRenderValidator();failures=[]
+            result=validator._validate_moving_visibility(image,{'moving_occurrences':['m']},failures)
+            self.assertEqual(failures,[]);self.assertGreaterEqual(result[0]['largest_visible_span_pixels'],200)
+            without_file.write_bytes(reference_file.read_bytes());write_evidence();failures=[]
+            result=validator._validate_moving_visibility(image,{'moving_occurrences':['m']},failures)
+            self.assertIn('MOVING_OCCURRENCE_HIDDEN',failures);self.assertEqual(result[0]['visible_pixels_estimate'],0)
+            without_file.write_bytes(b'changed');failures=[]
+            validator._validate_moving_visibility(image,{'moving_occurrences':['m']},failures)
+            self.assertIn('MOVING_VISIBILITY_EVIDENCE_INVALID',failures)

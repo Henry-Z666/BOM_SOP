@@ -1,5 +1,9 @@
 # Creo Assembly SOP Agent
 
+## Publication unit (2026-10-15)
+
+对外 SOP 按部件或安装区域组织工艺卡。原子安装步骤与渲染任务只作为内部执行、验证与追溯单位，不等同于出版页。紧固件及密封件归入所服务部件的安装过程。黄色 BOM 来料边界保持完整，不展开内部制造。详见 `rules/component-based-publication.md`；当次用户范围优先。
+
 This context describes the language shared by BOM understanding, Creo assembly planning, image generation, clarification, and SOP delivery.
 
 ## Language

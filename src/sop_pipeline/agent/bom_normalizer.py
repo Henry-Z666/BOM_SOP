@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import re
 from typing import Any
@@ -22,6 +22,9 @@ HEADER_ALIASES = {
     "assembly_text": {"装配步骤", "组装步骤", "工艺内容", "装配内容", "作业内容"},
     "control_points": {"关键控制点", "关键控制要点", "控制要点", "质量要求"},
     "tools": {"工具", "工装", "工装工具", "使用工具"},
+    "process_route": {"对应工艺路线工序", "工艺路线工序"},
+    "station": {"发料工位", "工位"},
+    "cad_model_names": {"模型名称", "CAD模型名称"},
 }
 
 
@@ -50,6 +53,12 @@ class NormalizedBomRow:
     tools: str
     main_process_number: int | None
     process_only: bool
+    process_route: str = ""
+    station: str = ""
+    cad_model_names: str = ""
+    source_level: str = ""
+    level_fill_rgb: str = ""
+    assembly_boundary: bool = False
 
 
 @dataclass(frozen=True)
@@ -201,7 +210,7 @@ def _quantity(text: str) -> float | int | str:
     return int(number) if number.is_integer() else number
 
 
-def normalize_bom(path: Path) -> NormalizedBom:
+def normalize_bom(path: Path, *, root_bom_row: int | None = None) -> NormalizedBom:
     path = Path(path)
     try:
         book = zipfile.ZipFile(path)
@@ -210,6 +219,7 @@ def normalize_bom(path: Path) -> NormalizedBom:
     with book:
         shared = _shared_strings(book)
         candidates: list[tuple[int, str, int, dict[str, int], list[tuple[int, dict[int, str]]]]] = []
+        fills = _level_cell_fills(book)
         for sheet_name, sheet_path in _workbook_sheets(book):
             rows = _read_sheet(book, sheet_path, shared)
             score, header_row, mapping = _sheet_score(rows)
@@ -248,10 +258,25 @@ def normalize_bom(path: Path) -> NormalizedBom:
                 tools=value(values, "tools"),
                 main_process_number=_main_process_number(assembly_text),
                 process_only=_process_only(assembly_text),
+                process_route=value(values, "process_route"),
+                station=value(values, "station"),
+                cad_model_names=value(values, "cad_model_names"),
+                source_level=value(values, "level"),
+                level_fill_rgb=fills.get((sheet_name,row_number,columns.get('level',0)),''),
+                assembly_boundary=fills.get((sheet_name,row_number,columns.get('level',0)),'')=='FFFF00',
             )
         )
     if not result_rows:
         raise ValueError(f"BOM 工作表 {sheet_name!r} 没有有效物料行")
+    if root_bom_row is not None:
+        selected = next((row for row in result_rows if row.row == root_bom_row), None)
+        if selected is None:
+            raise ValueError("产品配置指定的 BOM 根行不存在")
+        if not selected.level:
+            if selected != result_rows[0] or any(not row.level for row in result_rows[1:]):
+                raise ValueError("空层次根行必须唯一并位于物料层次之前")
+            result_rows = [replace(row, level="0" if row.row == root_bom_row else "0." + row.level)
+                for row in result_rows]
     top_score = candidates[0][0]
     tied = tuple(item[1] for item in candidates if item[0] == top_score)
     return NormalizedBom(
@@ -262,4 +287,76 @@ def normalize_bom(path: Path) -> NormalizedBom:
         rows=tuple(result_rows),
         sheet_candidates=tied,
     )
+
+
+def _level_cell_fills(book: zipfile.ZipFile) -> dict[tuple[str,int,int],str]:
+    """Retain explicit solid fill evidence; never infer yellow from a part name."""
+    if 'xl/styles.xml' not in book.namelist():return {}
+    styles=ET.fromstring(book.read('xl/styles.xml'))
+    fills=styles.find(f'{MAIN_NS}fills');xfs=styles.find(f'{MAIN_NS}cellXfs')
+    if fills is None or xfs is None:return {}
+    colors=[]
+    for fill in fills:
+        pattern=fill.find(f'{MAIN_NS}patternFill');rgb=''
+        if pattern is not None and pattern.get('patternType')=='solid':
+            fg=pattern.find(f'{MAIN_NS}fgColor')
+            if fg is not None:rgb=fg.get('rgb','')[-6:].upper()
+        colors.append(rgb)
+    style_colors=[colors[int(x.get('fillId','0'))] for x in xfs]
+    result={}
+    for name,part in _workbook_sheets(book):
+        for cell in ET.fromstring(book.read(part)).iter(f'{MAIN_NS}c'):
+            ref=cell.get('r','');match=re.fullmatch(r'([A-Z]+)(\d+)',ref)
+            if match:
+                index=int(cell.get('s','0'))
+                rgb=style_colors[index] if index<len(style_colors) else ''
+                if rgb:result[(name,int(match.group(2)),_column_index(ref))]=rgb
+    return result
+
+
+def supplied_assembly_owners(bom: NormalizedBom) -> dict[int,int]:
+    """Yellow assemblies are indivisible issued units; their descendants are internal."""
+    stack=[];owners={}
+    for row in bom.rows:
+        level=tuple(row.level.split('.')) if row.level else ()
+        while stack and not (len(level)>len(stack[-1][0]) and level[:len(stack[-1][0])]==stack[-1][0]):stack.pop()
+        if stack:owners[row.row]=stack[-1][1]
+        elif row.assembly_boundary:stack.append((level,row.row))
+    return owners
+
+
+def assembly_scope_frontier(bom: NormalizedBom) -> NormalizedBom:
+    owners=supplied_assembly_owners(bom)
+    return replace(bom,rows=tuple(r for r in bom.rows if r.row not in owners))
+
+
+def color_boundary_contract(bom: NormalizedBom) -> dict[str, Any]:
+    """Persist issued-unit ownership before filtering; reuse at every pipeline seam."""
+    owners = supplied_assembly_owners(bom)
+    return {
+        'schema_version': 'bom-color-boundary/v1',
+        'source_column': 'level',
+        'issued_fill_rgb': 'FFFF00',
+        'rows': {
+            str(r.row): {
+                'level': r.source_level or r.level,
+                'fill_rgb': r.level_fill_rgb,
+                'owner_row': owners.get(r.row),
+                'role': ('internal' if r.row in owners else
+                         'issued_unit' if r.assembly_boundary else 'process_context'),
+            } for r in bom.rows
+        },
+    }
+
+
+def validate_color_boundary_rows(contract: dict[str, Any], source_rows: Any) -> None:
+    """Prevent old plans or publication manifests reopening issued assemblies."""
+    if contract.get('schema_version') != 'bom-color-boundary/v1':
+        raise ValueError('Unsupported BOM color boundary contract')
+    for number in source_rows:
+        row = contract['rows'].get(str(number))
+        if row is None:
+            raise ValueError(f'BOM row {number} has no color boundary evidence')
+        if row['role'] == 'internal' or row.get('owner_row') is not None:
+            raise ValueError(f'BOM row {number} is internal to issued unit {row["owner_row"]}')
 

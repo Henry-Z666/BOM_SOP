@@ -14,6 +14,8 @@ config/creo-runtime.json
 
 # Source CAD and generated deliverables are kept locally, not in the workflow repository.
 零件图/
+AI生成SOP外发资料/
+archive/
 *.asm.*
 *.prt.*
 config.pro
@@ -36,3 +38,7 @@ data/
 # Local app and operating-system artifacts
 .DS_Store
 Thumbs.db
+
+# Personal document and superseded local handover draft
+/实习证明_可编辑模板.docx
+/项目交接文档.docx

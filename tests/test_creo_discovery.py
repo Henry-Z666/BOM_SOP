@@ -185,6 +185,22 @@ class CreoDiscoveryTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertLess(time.perf_counter() - started, 3.0)
 
+    def test_no_license_trace_bounds_a_hung_outer_process(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            code = (
+                "from pathlib import Path; import sys,time; "
+                "root=Path(sys.argv[sys.argv.index('-RunWorkspace')+1]); "
+                "root.mkdir(parents=True,exist_ok=True); "
+                "(root/'discovery.log').write_text('com.ptc.pfc.Implementation.pfcExceptions$XToolkitNoLicense'); "
+                "time.sleep(60)"
+            )
+            runner = SubprocessDiscoveryRunner(timeout_seconds=5)
+            started = time.perf_counter()
+            result = runner.run([sys.executable, "-c", code, "-RunWorkspace", str(root)])
+        self.assertEqual(result.returncode, 1)
+        self.assertLess(time.perf_counter() - started, 3.0)
+
     def _run(self, root: Path, runner: FakeDiscoveryRunner) -> dict:
         cad = root / "cad"
         cad.mkdir()
@@ -253,6 +269,18 @@ class CreoDiscoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             with self.assertRaisesRegex(RuntimeError, "COMPLETION_MISSING"):
                 self._run(Path(folder), MissingMarkerRunner(valid_graph()))
+
+    def test_native_reference_resolves_only_duplicated_parent_endpoint(self) -> None:
+        from sop_pipeline.agent.creo_discovery import _resolve_native_constraint_endpoints
+        payload = {"occurrences": [{"id": "46/149"}], "constraints": [
+            {"id": "c", "occurrences": ["ROOT", "1018/46/149"],
+             "assembly_reference": {"occurrence_id": "46/149", "geometry": {"status": "available"}}},
+            {"id": "bad", "occurrences": ["ROOT", "999"],
+             "assembly_reference": {"occurrence_id": "46/149", "geometry": {"status": "available"}}}]}
+        _resolve_native_constraint_endpoints(payload)
+        self.assertEqual(payload["constraints"][0]["occurrences"][1], "46/149")
+        self.assertEqual(payload["constraints"][1]["occurrences"][1], "999")
+        self.assertEqual(len(payload["constraint_endpoint_corrections"]), 1)
 
     def test_discovery_rejects_unknown_constraint_occurrence(self) -> None:
         graph = valid_graph()

@@ -2,10 +2,14 @@ param(
   [Parameter(Mandatory=$true)][string]$ModelsDirectory,
   [Parameter(Mandatory=$true)][string]$AssemblyRelativePath,
   [Parameter(Mandatory=$true)][string]$RunWorkspace,
-  [string]$RuntimeConfig = ''
+  [string]$RuntimeConfig = '',
+  [ValidateSet('AutoCadDiscovery','NativeCadIdentityProbe')][string]$ExtractorClass = 'AutoCadDiscovery',
+  [string]$FocusOccurrences = '',
+  [string]$NativeBindingsManifest = ''
 )
 
 $ErrorActionPreference = 'Stop'
+if ($NativeBindingsManifest) { $NativeBindingsManifest = (Resolve-Path -LiteralPath $NativeBindingsManifest).Path }
 $here = $PSScriptRoot
 $projectRoot = Split-Path -Parent $here
 . (Join-Path $here 'RuntimeConfig.ps1')
@@ -46,14 +50,15 @@ $traceFull = Join-Path $runRoot 'discovery.log'
 $completeFull = Join-Path $runRoot 'discovery.complete'
 
 $runtime = Get-CreoRuntime -ProjectRoot $projectRoot -ConfigPath $RuntimeConfig
+$null = & (Join-Path $here 'test_license_binding.ps1') -LicenseFile $runtime.LicenseFile -CreoLoadpoint $runtime.CreoLoadpoint
 $javaBuild = Join-Path $here 'build'
-$discoveryClass = Join-Path $javaBuild 'AutoCadDiscovery.class'
+$discoveryClass = Join-Path $javaBuild ($ExtractorClass + '.class')
 if (-not (Test-Path -LiteralPath $discoveryClass)) {
   New-Item -ItemType Directory -Force -Path $javaBuild | Out-Null
   $compileClasspath = (Join-Path $runtime.CommonFiles 'text\java\pfcasync.jar') + ';' +
     (Join-Path $runtime.CommonFiles 'text\java\otk.jar')
   & $runtime.JavacCommand --release 17 -cp $compileClasspath -d $javaBuild `
-    (Join-Path $here 'src\AutoCadDiscovery.java')
+    (Join-Path $here ('src\' + $ExtractorClass + '.java'))
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 Set-CreoRuntimeEnvironment -Runtime $runtime
@@ -65,9 +70,17 @@ $classpath = $javaBuild + ';' +
 Push-Location $stagedModels
 $javaExitCode = 1
 try {
-  & $runtime.JavaCommand '--enable-native-access=ALL-UNNAMED' `
+  $extractorArguments = @($runtime.CreoCommand,$stagedAssembly,$outputFull,$completeFull)
+  if ($ExtractorClass -eq 'NativeCadIdentityProbe') {
+    if ([string]::IsNullOrWhiteSpace($FocusOccurrences)) { throw 'Native identity probing requires full occurrence paths.' }
+    $extractorArguments += $FocusOccurrences
+  }
+  $bindingArguments = @()
+  if ($NativeBindingsManifest) { $bindingArguments += ('-Dsop.nativeBindings=' + (Resolve-Path -LiteralPath $NativeBindingsManifest).Path) }
+  if ($ExtractorClass -eq 'AutoCadDiscovery' -and $FocusOccurrences) { $bindingArguments += ('-Dsop.discoveryFocus=' + $FocusOccurrences) }
+  & $runtime.JavaCommand '--enable-native-access=ALL-UNNAMED' @bindingArguments `
     ('-Djava.library.path=' + $runtime.NativeLibrary) -cp $classpath `
-    AutoCadDiscovery $runtime.CreoCommand $stagedAssembly $outputFull $completeFull `
+    $ExtractorClass @extractorArguments `
     *> $traceFull
   $javaExitCode = $LASTEXITCODE
 }

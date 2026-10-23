@@ -1,4 +1,4 @@
-param(
+﻿param(
   [Parameter(Mandatory=$true)][string]$ModelsRoot,
   [Parameter(Mandatory=$true)][string]$RenderPlanJson,
   [Parameter(Mandatory=$true)][string]$OutputFolder,
@@ -11,6 +11,7 @@ param(
   [string]$RunWorkspaceRoot = '',
   [string]$WorkerRoot = '',
   [string]$RuntimeConfig = '',
+  [string]$NativeBindingsManifest = '',
   # This is an internal render-command failsafe. The Python scheduler owns
   # the product contract and sends exactly one render command per formal task.
   [ValidateRange(1, 100)][int]$MaxWorkerCommands = 100,
@@ -20,6 +21,12 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($NativeBindingsManifest) {
+  $NativeBindingsManifest = (Resolve-Path -LiteralPath $NativeBindingsManifest).Path
+  if (-not $WorkerRoot) { throw 'Native bindings require a dedicated worker.' }
+  $bindingHash = (Get-FileHash -LiteralPath $NativeBindingsManifest -Algorithm SHA256).Hash.Substring(0,12)
+  $WorkerRoot = Join-Path $WorkerRoot ('bindings-' + $bindingHash)
+}
 $here = $PSScriptRoot
 $projectRoot = Split-Path -Parent $here
 . (Join-Path $here 'RuntimeConfig.ps1')
@@ -68,7 +75,8 @@ else {
     $temporary = Join-Path $internalRoot ('.prepared-models-' + [guid]::NewGuid().ToString('N'))
     try {
       Copy-Item -LiteralPath $sourceRoot -Destination $temporary -Recurse
-      Copy-Item -LiteralPath (Join-Path $here 'isolated_config.pro') -Destination (Join-Path $temporary 'config.pro') -Force
+      # Geometry/auxiliary visibility is controlled and audited by J-Link.
+      # Do not inject legacy UI startup options; they can break Creo 13 RPC initialization.
       [IO.File]::WriteAllText(
         (Join-Path $temporary '.agent-copy-complete.json'),
         '{"schema_version":"prepared-model-copy/v1","complete":true}',
@@ -112,13 +120,15 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   $task = $tasks[$index]
   $payload = $task.payload
   if ([string]$payload.schema_version -ne 'creo-render-task/v1') { throw "Invalid task schema at index $index." }
-  if ([string]$payload.execution_mode -notin @('formal','diagnostic_preview')) { throw "Task $($task.step_id) is not eligible for Creo rendering." }
+  if ([string]$payload.execution_mode -notin @('formal','diagnostic_preview','completed_position')) { throw "Task $($task.step_id) is not eligible for Creo rendering." }
+  if ([string]$payload.execution_mode -eq 'completed_position' -and ($null -eq $payload.PSObject.Properties['completed_stage_only'] -or -not [bool]$payload.completed_stage_only)) { throw 'Completed position mode requires unchanged native positions.' }
   if ([string]$payload.arrow_renderer -ne 'creo_display_list/v1') { throw "Task $($task.step_id) does not use Creo-native arrows." }
   if ([string]$payload.authoritative_assembly.assembly_file -ne $assemblyName) { throw 'A batch cannot mix authoritative assemblies.' }
   if (([string]$payload.authoritative_assembly.sha256) -ne ([string]$firstPayload.authoritative_assembly.sha256)) { throw 'A batch cannot mix assembly hashes.' }
   $taskId = [string]$task.task_id
   if ($taskId -notmatch '^[A-Za-z0-9._-]+$') { throw "Unsafe task ID: $taskId" }
   $moving = @($payload.moving_occurrences)
+  $completedPosition = $null -ne $payload.PSObject.Properties['completed_stage_only'] -and [bool]$payload.completed_stage_only
   $visible = @($payload.visible_occurrences)
   # Initial render jobs predate manual rerender choices and therefore do not
   # carry visibility_enforcement.  Read the optional revision through the
@@ -146,7 +156,18 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
     $visible = $exactVisible
   }
   $receivers = @($payload.receiver_occurrences)
-  if ($moving.Count -lt 1 -or $visible.Count -lt 1 -or $receivers.Count -lt 1) { throw "Task $taskId has incomplete occurrence sets." }
+  $nativeVisible = @($visible)
+  $exclusionProperty = $payload.PSObject.Properties['bom_visibility_exclusions']
+  if ($null -ne $exclusionProperty) {
+    foreach ($excluded in @($exclusionProperty.Value)) {
+      if ([string]$excluded -notmatch '^\d+(/\d+)*$') { throw 'Invalid BOM scope exclusion.' }
+      foreach ($required in @($moving)+@($receivers)) {
+        if ([string]$required -eq [string]$excluded -or ([string]$required).StartsWith(([string]$excluded)+'/')) { throw 'BOM exclusion hides required installation geometry.' }
+      }
+      $nativeVisible += '!' + [string]$excluded
+    }
+  }
+  if ($moving.Count -lt 1 -or $visible.Count -lt 1 -or (-not $completedPosition -and $receivers.Count -lt 1)) { throw "Task $taskId has incomplete occurrence sets." }
   foreach ($required in @($moving + $receivers)) {
     if ($visible -notcontains $required) { throw "Task $taskId omits a moving or receiver occurrence from visibility." }
   }
@@ -182,12 +203,21 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
     throw "Task $taskId has no supported native selected-fit contract."
   }
   $selectedFitLevel = [double]$nativeSelectedFit.zoom_to_selected_level
+  $adaptiveSingleFit = $false
+  $singleViewProperty = $payload.PSObject.Properties['installation_view']
+  if ($null -ne $singleViewProperty -and $singleViewProperty.Value.PSObject.Properties['composition_policy']) {
+    $adaptiveSingleFit = [string]$singleViewProperty.Value.composition_policy -in @('single-image-context-margin/v1','single-image-anchor-fit/v2','single-image-balanced-fit/v3','single-image-balanced-fit/v4','single-image-balanced-fit/v5','single-image-balanced-fit/v6','single-image-balanced-fit/v7','single-image-balanced-fit/v8','single-image-balanced-fit/v9','single-image-balanced-fit/v10','single-image-balanced-fit/v11','single-image-balanced-fit/v12','single-image-balanced-fit/v13','single-image-balanced-fit/v14','single-image-balanced-fit/v15') -and
+      $selectedFitLevel -ge 0.35 -and $selectedFitLevel -le 1.45 -and
+      [Math]::Abs($selectedFitLevel - [double]$singleViewProperty.Value.selected_fit_level) -lt 1e-6
+  }
   if ([double]::IsNaN($selectedFitLevel) -or [double]::IsInfinity($selectedFitLevel) -or
       ([Math]::Abs($selectedFitLevel - 0.70) -gt 1.0e-9 -and
        [Math]::Abs($selectedFitLevel - 0.80) -gt 1.0e-9 -and
        [Math]::Abs($selectedFitLevel - 0.85) -gt 1.0e-9 -and
-       [Math]::Abs($selectedFitLevel - 0.95) -gt 1.0e-9)) {
-    throw "Task $taskId must use a bounded native selected-fit margin (0.70, 0.80, 0.85, or 0.95)."
+       [Math]::Abs($selectedFitLevel - 0.95) -gt 1.0e-9 -and
+       [Math]::Abs($selectedFitLevel - 1.45) -gt 1.0e-9 -and
+       [Math]::Abs($selectedFitLevel - 1.50) -gt 1.0e-9 -and -not $adaptiveSingleFit)) {
+    throw "Task $taskId must use a bounded native selected-fit margin (0.70, 0.80, 0.85, 0.95, 1.45, or 1.50)."
   }
   if ($Operation -eq 'Visibility') {
     if (-not $WorkerRoot) { throw 'Visibility evidence must run inside NativeArrowWorker.' }
@@ -236,7 +266,7 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
       ([double]$translation[0]).ToString('G17', $culture),
       ([double]$translation[1]).ToString('G17', $culture),
       ([double]$translation[2]).ToString('G17', $culture),
-      ($receivers -join ';'),($visible -join ';'),$cameraSpecs['fixed_123'],$cameraSpecs['fixed_456'],
+      ($receivers -join ';'),($nativeVisible -join ';'),$cameraSpecs['fixed_123'],$cameraSpecs['fixed_456'],
       ($focusOccurrences -join ';'),($labelRows -join ';'),$encodedTranslations
     ) -join "`t"))
     Write-Output ("[AGENT_RENDER] task {0} visibility fixed_123 fixed_456" -f $taskId)
@@ -250,7 +280,9 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   $variant = $variants[$VariantIndex]
   if ([string]::IsNullOrWhiteSpace([string]$variant.variant_id)) { throw "Task $taskId has an unnamed presentation variant." }
   $cameraId = [string]$variant.camera_id
-  if ($cameraId -notin @('fixed_123', 'fixed_456')) { throw "Task $taskId has an invalid fixed camera." }
+  $localView = $payload.PSObject.Properties['installation_view']
+  $localAllowed = $null -ne $localView -and [string]$localView.Value.schema_version -eq 'installation-interface-view/v1' -and $cameraId -eq 'interface_oblique'
+  if ($cameraId -notin @('fixed_123', 'fixed_456') -and -not $localAllowed) { throw "Task $taskId has an invalid camera." }
   $cameraProperty = $payload.camera_catalog.PSObject.Properties[$cameraId]
   if ($null -eq $cameraProperty) { throw "Task $taskId has no camera catalog entry for $cameraId." }
   $camera = $cameraProperty.Value
@@ -264,6 +296,61 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
   $cameraSpec = 'ABS:' + (& $formatVector $camera.position_direction_root)
   $cameraSpec += ',UP:' + (& $formatVector $camera.up_reference_root)
   $cameraSpec += ',FIT_SELECTED:' + $selectedFitLevel.ToString('G17', $culture)
+  if ($null -ne $payload.PSObject.Properties['completed_stage_framing']) {
+    $stageFrame=$payload.completed_stage_framing
+    if (-not $payload.completed_stage_only -or [string]$stageFrame.schema_version -ne 'native-stage-bounds-fit/v1') { throw 'Stage bounds framing requires an unchanged completed stage.' }
+    $stageBoxes=@($stageFrame.bounds)
+    if ((@($stageBoxes | ForEach-Object {$_.occurrence_id} | Sort-Object -Unique) -join ';') -ne (@($visible | Sort-Object -Unique) -join ';') -or $stageBoxes.Count -ne $visible.Count) { throw 'Completed framing must cover exactly the visible stage.' }
+    $encodedStage=New-Object Collections.Generic.List[string]
+    foreach ($box in $stageBoxes) {
+      if (@($box.min).Count -ne 3 -or @($box.max).Count -ne 3) { throw 'Invalid stage CAD bounds.' }
+      for ($a=0;$a -lt 3;$a++) { if (-not [double]::IsFinite([double]$box.min[$a]) -or -not [double]::IsFinite([double]$box.max[$a]) -or [double]$box.min[$a] -gt [double]$box.max[$a]) { throw 'Invalid stage CAD bound coordinates.' } }
+      $encodedStage.Add((& $formatVector $box.min)+':'+(& $formatVector $box.max))
+    }
+    $cameraSpec += ',STAGE_BOUNDS:'+($encodedStage -join ';')
+  }
+  if ($null -ne $payload.PSObject.Properties['installation_notes'] -and $null -ne $payload.installation_notes.PSObject.Properties['layout_policy'] -and [string]$payload.installation_notes.layout_policy -eq 'ordered-perimeter-lane/v1') {
+    if ([string]$payload.image_coverage.role -ne 'location' -or [string]$payload.installation_notes.anchor_state -ne 'authoritative_complete' -or [string]$localView.Value.composition_policy -ne 'single-image-balanced-fit/v15') { throw 'Spatial perimeter notes require a v15 complete-position locator.' }
+    $cameraSpec += ',NOTE_LAYOUT:spatial_perimeter'
+  }
+
+  if ($null -ne $localView) {
+    $fitScope=[string]$localView.Value.fit_scope
+    if ($fitScope -notin @('moving_only','moving_interfaces','anchor_surfaces','balanced_surfaces','protected_surfaces','protected_groups')) { throw "Task $taskId has an invalid interface fit scope." }
+    $cameraSpec += ',FIT_SCOPE:'+$fitScope
+    if ($null -ne $localView.Value.PSObject.Properties['coordinate_adapter'] -and [string]$localView.Value.coordinate_adapter -in @('cad_roi_screen_transform/v1','cad_location_screen_transform/v1')) {
+      if ([string]$localView.Value.composition_policy -notin @('single-image-balanced-fit/v11','single-image-balanced-fit/v12','single-image-balanced-fit/v13','single-image-balanced-fit/v14','single-image-balanced-fit/v15') -or
+          $null -eq $payload.PSObject.Properties['image_coverage'] -or [string]$payload.image_coverage.role -notin @('detail','location') -or
+          -not [double]::IsFinite([double]$localView.Value.roi_feature_span) -or [double]$localView.Value.roi_feature_span -le 0) {
+        throw 'CAD ROI requires a v11 detail role and a positive CAD feature span.'
+      }
+      $expectedRole = if ([string]$localView.Value.coordinate_adapter -eq 'cad_location_screen_transform/v1') { 'location' } else { 'detail' }
+      if ([string]$payload.image_coverage.role -ne $expectedRole -or
+          ($expectedRole -eq 'location' -and [string]$localView.Value.composition_policy -notin @('single-image-balanced-fit/v12','single-image-balanced-fit/v13','single-image-balanced-fit/v14','single-image-balanced-fit/v15'))) {
+        throw 'Native ROI adapter does not match its image role.'
+      }
+      $cameraSpec += ',ROI_SPAN:'+([double]$localView.Value.roi_feature_span).ToString('G17',$culture)
+      if ($null -ne $localView.Value.PSObject.Properties['roi_frame_fraction']) {
+        $fraction = [double]$localView.Value.roi_frame_fraction
+        if ($expectedRole -ne 'detail' -or -not [double]::IsFinite($fraction) -or $fraction -lt .5 -or $fraction -gt .9) {
+          throw 'Detail ROI frame fraction must be bounded between 0.5 and 0.9.'
+        }
+        $cameraSpec += ',ROI_FRACTION:'+$fraction.ToString('G17',$culture)
+      }
+      if ([string]$localView.Value.coordinate_adapter -eq 'cad_location_screen_transform/v1') { $cameraSpec += ',ROI_ROLE:location' }
+    }
+  }
+  $ghostProperty=$payload.PSObject.Properties['receiver_ghosting']
+  if ($null -ne $ghostProperty) {
+    $ghost=$ghostProperty.Value
+    if ($ghost.schema_version -ne 'native-receiver-ghost/v1' -or $ghost.style -ne 'native_transparent') { throw 'Unknown native receiver appearance contract.' }
+    $ghostPaths=@($ghost.occurrence_ids)
+    if ($ghostPaths.Count -eq 0) { throw 'Receiver appearance requires occurrence paths.' }
+    foreach($ghostPath in $ghostPaths) {
+      if ($ghostPath -notmatch '^\d+(?:/\d+)*$' -or $ghostPath -notin @($payload.receiver_occurrences) -or $ghostPath -in @($payload.moving_occurrences)) { throw 'Only exact native receiving occurrences can be made transparent.' }
+    }
+    $cameraSpec+=',GHOST_RECEIVERS:'+($ghostPaths -join ';')
+  }
   $pan = @($variant.pan)
   if ($pan.Count -ne 2) { throw "Task $taskId has an invalid pan offset." }
   $panX = [double]$pan[0]
@@ -282,7 +369,7 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
     }
     $anchorRows.Add($anchorOccurrence + '=' + (& $formatVector $anchorPoint))
   }
-  if ($anchorRows.Count -ne $moving.Count) {
+  if (-not $completedPosition -and $anchorRows.Count -ne $moving.Count) {
     throw "Task $taskId does not have one planned arrow anchor per moving occurrence."
   }
   $receiverSelectionRows = New-Object Collections.Generic.List[string]
@@ -300,25 +387,77 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
     }
     $receiverSelectionRows.Add($encodedSelection)
   }
-  if ($receiverSelectionRows.Count -lt 1) {
+  if (-not $completedPosition -and $receiverSelectionRows.Count -lt 1) {
     throw "Task $taskId has no receiver interface surface selection."
   }
   $image = Join-Path $output ($taskId + '.jpg')
   $audit = Join-Path $output ($taskId + '.arrow.json')
   Remove-Item -LiteralPath $image,$audit -Force -ErrorAction SilentlyContinue
+  if ($null -ne $payload.PSObject.Properties['moving_visibility_evidence'] -and [string]$payload.moving_visibility_evidence -eq 'native-occurrence-difference/v1') { $cameraSpec += ',MOVING_EVIDENCE:occurrence_difference' }
+  if ($null -ne $payload.PSObject.Properties['arrow_evidence'] -and [string]$payload.arrow_evidence -eq 'native-background-difference/v1') { $cameraSpec += ',ARROW_EVIDENCE:background_difference' }
+  if ($null -ne $payload.PSObject.Properties['physical_component_display'] -and [string]$payload.physical_component_display -eq 'bom_explicit_include/v1') { $cameraSpec += ',PHYSICAL_DISPLAY:explicit_include' }
+  $torqueRows = New-Object Collections.Generic.List[string]
+  $torqueBounds = New-Object Collections.Generic.List[string]
+  $torqueHash = ''
+  $torqueProperty = $payload.PSObject.Properties['torque_annotations']
+  $installationNote = $false
+  if ($null -eq $torqueProperty -and $null -ne $payload.PSObject.Properties['installation_notes']) {
+    $torqueProperty = $payload.PSObject.Properties['installation_notes']; $installationNote = $true
+    $cameraSpec += ',NOTE_KIND:installation'
+  }
+  if ($null -ne $payload.PSObject.Properties['annotation_bundle']) {
+    $torqueProperty=$payload.PSObject.Properties['annotation_bundle']; $installationNote=$true
+    $cameraSpec += ',NOTE_KIND:installation'
+  }
+  if ($null -ne $torqueProperty -and @($torqueProperty.Value.labels).Count -gt 0) {
+    $annotations = $torqueProperty.Value
+    if ([string]$annotations.schema_version -ne $(if ($installationNote) {'installation-notes/v1'} else {'torque-annotations/v1'}) -or
+        [string]$annotations.status -ne 'confirmed' -or [string]$annotations.renderer -ne 'creo_display_list/v1') {
+      throw 'Unconfirmed torque annotations cannot reach Creo.'
+    }
+    $torqueHash = [string]$annotations.contract_hash
+    if ($torqueHash -notmatch '^sha256:[0-9a-f]{64}$') { throw 'Torque annotation contract hash missing.' }
+    $seenTorque = New-Object Collections.Generic.HashSet[string]
+    foreach ($label in @($annotations.labels)) {
+      $text = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$label.text))
+      $connection = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$label.connection_id))
+      foreach ($occurrence in @($label.occurrence_ids)) {
+        if ($moving -notcontains $occurrence -or -not $seenTorque.Add($(if ($null -ne $payload.PSObject.Properties['annotation_bundle']) {[string]$label.connection_id+'|'+[string]$occurrence} else {[string]$occurrence}))) { throw 'Invalid torque occurrence coverage.' }
+        $torqueRows.Add(([string]$occurrence) + '#' + $text + '#' + $connection)
+      }
+    }
+    $movingBounds = @($payload.stage_geometry_root.moving_bounds)
+    if ($movingBounds.Count -ne $moving.Count) { throw 'Torque labels require all native moving bounds.' }
+    for ($boundIndex=0;$boundIndex -lt $moving.Count;$boundIndex++) {
+      $box = $movingBounds[$boundIndex]
+      $vectorProperty = $payload.occurrence_translation_vectors_root.PSObject.Properties[[string]$moving[$boundIndex]]
+      $vector = @($vectorProperty.Value)
+      $values = @()
+      foreach ($corner in @($box.min,$box.max)) {
+        for ($axis=0;$axis -lt 3;$axis++) { $values += ([double]$corner[$axis]+[double]$vector[$axis]) }
+      }
+      $torqueBounds.Add((& $formatVector $values))
+    }
+    foreach ($box in @($(if ($installationNote) {$annotations.protected_bounds} else {$payload.stage_geometry_root.context_bounds}))) { $torqueBounds.Add((& $formatVector @($box.min+$box.max))) }
+    Remove-Item -LiteralPath ($image + '.torque.json') -Force -ErrorAction SilentlyContinue
+  }
   $manifestRows.Add((@(
     $image,
     ($moving -join ';'),
     ([double]$translation[0]).ToString('G17', $culture),
     ([double]$translation[1]).ToString('G17', $culture),
     ([double]$translation[2]).ToString('G17', $culture),
-    ($visible -join ';'),
+    ($nativeVisible -join ';'),
     $cameraSpec,
     $audit,
     ($focusOccurrences -join ';'),
     ($anchorRows -join ';'),
     ($receiverSelectionRows -join ';'),
-    $encodedTranslations
+    $encodedTranslations,
+    ($torqueRows -join ';'),
+    ($torqueBounds -join ';'),
+    $torqueHash,
+    $(if ($null -ne $payload.PSObject.Properties['completed_stage_only'] -and $payload.completed_stage_only) { 'completed' } else { 'installation' })
   ) -join "`t"))
   $renderedFiles.Add($image)
   $auditFiles.Add($audit)
@@ -328,13 +467,16 @@ for ($index = $StartIndex; $index -lt $stop; $index++) {
     zoom_to_selected_level = $selectedFitLevel
     selection_scope = [string]$nativeSelectedFit.selection_scope
     coordinate_adjustment = [string]$nativeSelectedFit.coordinate_adjustment
+    terminal_stage_visibility = $(if ($null -ne $payload.PSObject.Properties['terminal_stage_visibility']) { $payload.terminal_stage_visibility } else { $null })
+    visible_occurrences = @($payload.visible_occurrences)
+    excluded_occurrences = @($(if ($null -ne $payload.PSObject.Properties['bom_visibility_exclusions']) { $payload.bom_visibility_exclusions }))
   })
   Write-Output ("[AGENT_RENDER] task {0} presentation_variant {1} camera {2} zoom {3}" -f $taskId,$VariantIndex,$cameraId,$zoom)
 }
 
 & (Join-Path $here 'test_license_binding.ps1') -LicenseFile $runtime.LicenseFile -CreoLoadpoint $runtime.CreoLoadpoint
 $needsBuild = $false
-foreach ($className in @('AutoCadDiscovery', 'ArrowProjection', 'RenderAssemblyImage', 'NativeArrowBatch', 'NativeArrowWorker')) {
+foreach ($className in @('AutoCadDiscovery', 'ArrowProjection', 'TorqueLabelLayout', 'UnicodeVectorText', 'NativeTorqueAnnotations', 'RenderAssemblyImage', 'NativeArrowBatch', 'NativeArrowWorker')) {
   $classFile = Join-Path $here ('build\' + $className + '.class')
   $sourceFile = Join-Path $here ('src\' + $className + '.java')
   if (-not (Test-Path -LiteralPath $classFile) -or
@@ -374,6 +516,15 @@ if ($WorkerRoot) {
     throw 'WorkerRoot must stay inside the current Agent run workspace.'
   }
   New-Item -ItemType Directory -Force -Path $worker | Out-Null
+  $startupHasher = [Security.Cryptography.SHA256]::Create()
+  try { $startupKey = ([BitConverter]::ToString($startupHasher.ComputeHash([Text.Encoding]::UTF8.GetBytes($worker.ToLowerInvariant())))).Replace('-','').Substring(0,24) }
+  finally { $startupHasher.Dispose() }
+  $startupMutex = [Threading.Mutex]::new($false, ('Local\CreoSopWorkerStartup_' + $startupKey))
+  $startupOwned = $false
+  try {
+    try { $startupOwned = $startupMutex.WaitOne([TimeSpan]::FromSeconds($TimeoutSeconds)) }
+    catch [Threading.AbandonedMutexException] { $startupOwned = $true }
+    if (-not $startupOwned) { throw 'Timed out waiting for this run worker startup lock.' }
   $current = Join-Path $worker 'current-worker.tsv'
   $generation = $null
   $workerPid = 0
@@ -392,7 +543,7 @@ if ($WorkerRoot) {
         # invalid five-second device-specific window.
         $heartbeatFresh = (Test-Path -LiteralPath $candidateHeartbeat -PathType Leaf) -and
           ((Get-Item -LiteralPath $candidateHeartbeat).LastWriteTimeUtc -ge
-            (Get-Date).ToUniversalTime().AddSeconds(-($WorkerIdleSeconds + $CompletionGraceSeconds)))
+            (Get-Date).ToUniversalTime().AddSeconds(-([Math]::Max($WorkerIdleSeconds,$TimeoutSeconds) + $CompletionGraceSeconds)))
         if ($null -ne $candidateProcess -and $heartbeatFresh -and
             (Test-Path -LiteralPath (Join-Path $candidate 'ready.tsv') -PathType Leaf)) {
           $generation = $candidate
@@ -417,6 +568,7 @@ if ($WorkerRoot) {
     $launcherArguments += ' -WorkerGenerationRoot "' + $generation + '"'
     $launcherArguments += ' -MaxCommands ' + $MaxWorkerCommands
     $launcherArguments += ' -IdleSeconds ' + $WorkerIdleSeconds
+    if ($NativeBindingsManifest) { $launcherArguments += ' -NativeBindingsManifest "' + $NativeBindingsManifest + '"' }
     $hostExecutable = (Get-Process -Id $PID).Path
     $launcherProcess = Start-Process -FilePath $hostExecutable -ArgumentList $launcherArguments -PassThru `
       -RedirectStandardOutput $log -RedirectStandardError $errorLog -WindowStyle Hidden
@@ -445,6 +597,10 @@ if ($WorkerRoot) {
       [Text.UTF8Encoding]::new($false)
     )
     Move-Item -LiteralPath $temporaryCurrent -Destination $current -Force
+  }
+  } finally {
+    if ($startupOwned) { $startupMutex.ReleaseMutex() }
+    $startupMutex.Dispose()
   }
   Write-Output ("[AGENT_RENDER] worker_generation {0}" -f $generation)
 
@@ -558,6 +714,10 @@ foreach ($item in $framingAudits) {
     crop_policy = 'fixed_center_square/v1'
     padding_forbidden = $true
     stretching_forbidden = $true
+    terminal_stage_visibility = $item.terminal_stage_visibility
+    visible_occurrences = @($item.visible_occurrences)
+    excluded_occurrences = @($item.excluded_occurrences)
+    rendered_image_sha256 = (Get-FileHash -LiteralPath (Join-Path $output ([string]$item.image_file)) -Algorithm SHA256).Hash.ToLowerInvariant()
   }
   [IO.File]::WriteAllText(
     $temporaryAudit,

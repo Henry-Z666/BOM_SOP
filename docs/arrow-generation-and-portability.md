@@ -73,7 +73,7 @@
 正式路径禁止在 JPEG 上补画箭头，也禁止在原生绘制失败时静默切换为像素合成。
 旧像素箭头实现和批次 runner 已从仓库删除；历史结果不能作为新批次输入。
 
-当前原生 renderer 使用绿色、细线和小箭头头；最终固定画框仍需检查箭头可读性、
+当前原生 renderer 使用绿色粗实心箭身和实心三角箭头，适配一页多图缩放；最终固定画框仍需检查箭头可读性、
 主体占比、遮挡和边界。线宽等样式由 Creo 原生图元能力和版本化 renderer 合同控制，
 不能由自由文本或出版脚本临时改写。
 
@@ -89,7 +89,7 @@
   "anchor_priority": ["planar_interior", "cylindrical_side", "solid_descendant_surface"],
   "merge_policy": "same_direction_with_coverage_audit/v1",
   "renderer": "creo_display_list/v1",
-  "style": {"color": "green", "line": "thin", "head": "small"},
+  "style": {"color": "green", "line": "filled_native_strokes", "head": "filled_triangle", "version": "bold/v1"},
   "final_frame": {"width": 1600, "height": 1600},
   "overlap_policy": "reject_or_audited_merge/v1"
 }

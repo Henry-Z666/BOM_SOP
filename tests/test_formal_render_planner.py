@@ -158,10 +158,43 @@ def fixture() -> tuple[NormalizedBom, DraftPlan, BomCadMap, dict]:
 
 
 class FormalRenderPlannerTests(unittest.TestCase):
+    def test_marked_foundation_does_not_show_complete_frame_before_assembly(self) -> None:
+        bom,draft,mapping,graph=fixture()
+        bom=replace(bom,rows=tuple(replace(r,assembly_boundary=True,level_fill_rgb='FFFF00') if r.row==4 else r for r in bom.rows))
+        plan=compile_formal_render_plan(bom,draft,mapping,graph)
+        self.assertEqual(plan.initial_completed_occurrences,('10/1',))
+        self.assertNotIn('10',plan.initial_completed_occurrences)
+        bolt=next(s for s in plan.steps if s.source_bom_rows==(5,))
+        self.assertNotIn('10',bolt.visible_occurrences)
+        self.assertIn('10/1',bolt.visible_occurrences)
+    def test_small_fastener_uses_local_solid_scale(self) -> None:
+        bom, draft, mapping, graph = fixture()
+        graph["occurrences"][2]["bounds_root"] = {
+            "status": "available", "min": [-1, -1, 9], "max": [1, 1, 11]}
+        plan = compile_formal_render_plan(bom, draft, mapping, graph)
+        step = next(s for s in plan.steps if s.source_bom_rows == (5,))
+        self.assertAlmostEqual(math.sqrt(sum(v*v for v in step.translation_vector_root)), 3.0)
+        self.assertEqual(step.moving_occurrences, ("10/2",))
+        self.assertEqual(step.receiver_occurrences, ("10/1",))
+
+    def test_cycle_preserves_a_reviewable_draft_without_formal_plan(self) -> None:
+        from sop_pipeline.agent.formal_render_planner import PlanningDependencyCycle
+        plan = compile_formal_render_plan(*fixture())
+        first = replace(plan.steps[0], step_id="a", depends_on=("b",))
+        second = replace(plan.steps[1], step_id="b", depends_on=("a",))
+        with self.assertRaises(PlanningDependencyCycle) as caught:
+            _topologically_order([first, second])
+        payload = caught.exception.diagnostic_payload()
+        self.assertEqual(payload["schema_version"], "planning-blockers/v1")
+        self.assertFalse(payload["production_eligible"])
+        self.assertEqual(set(payload["blocked_step_ids"]), {"a", "b"})
+        self.assertEqual(payload["steps"][0]["depends_on"], ("b",))
+        self.assertEqual(payload["steps"][1]["moving_occurrences"], second.moving_occurrences)
+
     def test_native_fit_selects_receiver_surfaces_not_complete_receiver_occurrence(self) -> None:
         contract = _native_selected_fit_contract()
 
-        self.assertEqual(contract["zoom_to_selected_level"], 0.70)
+        self.assertEqual(contract["zoom_to_selected_level"], 0.85)
         self.assertEqual(
             contract["selection_scope"],
             "moving_occurrences_and_receiver_surfaces/v1",
@@ -750,8 +783,9 @@ class FormalRenderPlannerTests(unittest.TestCase):
             ],
         )
         self.assertEqual(task.payload["arrow_renderer"], "creo_display_list/v1")
-        self.assertIn(task.payload["camera"]["id"], {"fixed_123", "fixed_456"})
-        self.assertEqual(set(task.payload["camera_catalog"]), {"fixed_123", "fixed_456"})
+        self.assertEqual(task.payload["camera"]["id"], "interface_oblique")
+        self.assertEqual(set(task.payload["camera_catalog"]), {"fixed_123", "fixed_456", "interface_oblique"})
+        self.assertFalse(task.payload["installation_view"]["whole_part_required"])
         visibility = task.payload["camera_visibility"]
         self.assertEqual(
             visibility["schema_version"], "camera-visibility-contract/v1"
@@ -792,7 +826,7 @@ class FormalRenderPlannerTests(unittest.TestCase):
                 "command": "ProCmdZoomIntoOutline",
                 "selection_scope": "moving_occurrences_and_receiver_surfaces/v1",
                 "coordinate_adjustment": "none_native_surface_fit/v1",
-                "zoom_to_selected_level": 0.70,
+                "zoom_to_selected_level": task.payload['installation_view']['selected_fit_level'],
                 "level_policy": "fixed_native_selection_margin/v1",
                 "max_commands_per_render": 1,
                 "manual_pan_zoom_forbidden": True,

@@ -267,14 +267,19 @@ class AgentNativeCreoWorkerTests(unittest.TestCase):
         self.assertIn("native-framing-audit/v1", batch)
         self.assertIn("$zoom -ne 1.0", batch)
 
-    def test_formal_auxiliary_cleanup_uses_activated_stage_without_state_cache(self) -> None:
+    def test_formal_auxiliary_cleanup_uses_activated_stage_and_verified_pose_reset(self) -> None:
         root = Path(__file__).resolve().parents[1]
         renderer = (root / "creo_java/src/RenderAssemblyImage.java").read_text(encoding="utf-8")
         formal = renderer.split("static void renderInSession(", 1)[1]
         scoped_call = "hideAuxiliaryFeatures(session, model, auxiliaryModels, \"\", desired)"
         self.assertIn(scoped_call, formal)
         self.assertLess(formal.index("assembly.ActivateSimpRep"), formal.index(scoped_call))
-        self.assertIn("session.EraseUndisplayedModels()", formal)
+        self.assertIn("retainedAuxiliaryModels", formal)
+        self.assertIn("restoreDynamicPoses(session,stageAssembly,savedPoses", formal)
+        self.assertIn("POSE_RESTORE_MISMATCH", formal)
+        self.assertIn("stageAssembly.DeleteSimpRep(jobRep)", formal)
+        self.assertIn('if(!completed || arrowCleanupFailure!=null || cameraSpec.contains("PHYSICAL_DISPLAY:explicit_include"))', formal)
+        self.assertIn("discardRetainedAssembly(session)", formal)
 
     def test_formal_export_overscans_native_viewport_then_center_crops_square(self) -> None:
         root = Path(__file__).resolve().parents[1]

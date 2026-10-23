@@ -31,6 +31,126 @@ import javax.imageio.stream.FileImageOutputStream;
 
 /** Creates a native Creo JPEG from an isolated model copy through J-Link async. */
 public final class RenderAssemblyImage {
+  private static Session retainedSession;
+  private static Window retainedWindow;
+  private static Model retainedModel;
+  private static String retainedAssemblyFile;
+  private static final java.util.Set<String> retainedAuxiliaryModels = new java.util.HashSet<String>();
+  private static final java.util.Set<String> retainedVisibilityModels = new java.util.HashSet<String>();
+  private static Session structureSession;
+  private static Assembly structureRoot;
+  private static final java.util.Map<String, NativeModelNode> structureModels = new java.util.HashMap<String, NativeModelNode>();
+  private static NativeModelNode structureRootNode;
+
+  /** Only immutable model/feature identities are cached, never visibility or poses. */
+  private static final class NativeModelNode {
+    final Model model; final String name;
+    java.util.List<NativeComponentNode> components;
+    NativeModelNode(Model model,String name){this.model=model;this.name=name;}
+  }
+  private static final class NativeComponentNode {
+    final int id; final ModelDescriptor descriptor;
+    NativeModelNode child;
+    NativeComponentNode(int id,ModelDescriptor descriptor){this.id=id;this.descriptor=descriptor;}
+  }
+  private static void clearStructureCache() {
+    structureSession=null;structureRoot=null;structureRootNode=null;structureModels.clear();
+  }
+  private static NativeModelNode structureNode(Model model) throws jxthrowable {
+    String name=model.GetFileName();NativeModelNode node=structureModels.get(name);
+    if(node==null){node=new NativeModelNode(model,name);structureModels.put(name,node);}return node;
+  }
+  private static NativeModelNode structureRoot(Session session,Assembly root) throws jxthrowable {
+    if(structureSession!=session||structureRoot!=root){clearStructureCache();structureSession=session;structureRoot=root;structureRootNode=structureNode(root);}
+    return structureRootNode;
+  }
+  private static java.util.List<NativeComponentNode> structureChildren(NativeModelNode node) throws jxthrowable {
+    if(node.components==null){
+      java.util.List<NativeComponentNode> children=new java.util.ArrayList<NativeComponentNode>();
+      if(node.model instanceof Assembly){
+        Features features=((Assembly)node.model).ListFeaturesByType(Boolean.FALSE,FeatureType.FEATTYPE_COMPONENT);
+        for(int i=0;i<features.getarraysize();i++){
+          ComponentFeat component=(ComponentFeat)features.get(i);
+          if(!isSourceSuppressed(component))children.add(new NativeComponentNode(component.GetId(),component.GetModelDescr()));
+        }
+      }
+      node.components=children;
+    }
+    return node.components;
+  }
+  private static NativeModelNode structureChild(Session session,NativeComponentNode component,String path) throws jxthrowable {
+    if(component.child==null){
+      Model child;
+      try{child=session.RetrieveModel(component.descriptor);}
+      catch(com.ptc.pfc.pfcExceptions.XToolkitNotFound missing){throw new IllegalStateException("CREO_VISIBLE_MODEL_MISSING: occurrence="+path+" model="+component.descriptor.GetFileName(),missing);}
+      if(child==null)throw new IllegalStateException("CREO_VISIBLE_MODEL_MISSING: occurrence="+path+" model="+component.descriptor.GetFileName());
+      component.child=structureNode(child);
+    }
+    return component.child;
+  }
+
+  private static void discardRetainedAssembly(Session session) throws jxthrowable {
+    Window prior = retainedWindow;
+    retainedWindow=null;retainedModel=null;retainedSession=null;retainedAssemblyFile=null;
+    retainedAuxiliaryModels.clear();retainedVisibilityModels.clear();
+    clearStructureCache();
+    if(prior!=null)prior.Close();
+    session.EraseUndisplayedModels();
+  }
+
+  /** Discard assembly-owned display overrides while retaining immutable part geometry. */
+  private static java.util.List<String> discardAssemblyDisplayModels(Session session) throws jxthrowable {
+    Window prior=retainedWindow;retainedWindow=null;retainedModel=null;retainedSession=null;retainedAssemblyFile=null;clearStructureCache();
+    if(prior!=null)prior.Close();
+    Models models=session.ListModelsByType(ModelType.MDL_ASSEMBLY);
+    java.util.Map<String,Model> remaining=new java.util.LinkedHashMap<>();
+    java.util.Map<String,java.util.Set<String>> children=new java.util.HashMap<>();
+    for(int i=0;models!=null&&i<models.getarraysize();i++)remaining.put(models.get(i).GetFileName(),models.get(i));
+    for(java.util.Map.Entry<String,Model> entry:remaining.entrySet()){
+      java.util.Set<String> refs=new java.util.HashSet<>();Features features=((Assembly)entry.getValue()).ListFeaturesByType(Boolean.FALSE,FeatureType.FEATTYPE_COMPONENT);
+      for(int i=0;features!=null&&i<features.getarraysize();i++){
+        Model child=session.GetModelFromDescr(((ComponentFeat)features.get(i)).GetModelDescr());
+        if(child instanceof Assembly)refs.add(child.GetFileName());
+      }
+      children.put(entry.getKey(),refs);
+      Window own=session.GetModelWindow(entry.getValue());if(own!=null)own.Close();
+    }
+    Models parts=session.ListModelsByType(ModelType.MDL_PART);
+    Window anchorWindow=null;
+    if(parts!=null&&parts.getarraysize()>0){
+      Model anchor=parts.get(0);anchorWindow=session.GetModelWindow(anchor);
+      if(anchorWindow==null)anchorWindow=session.CreateModelWindow(anchor);
+      session.SetCurrentWindow(anchorWindow);anchorWindow.Activate();anchor.Display();
+    }
+    java.util.List<String> erased=new java.util.ArrayList<>();
+    while(!remaining.isEmpty()){
+      java.util.Set<String> referenced=new java.util.HashSet<>();for(String parent:remaining.keySet())for(String child:children.get(parent))if(remaining.containsKey(child))referenced.add(child);
+      java.util.List<String> roots=new java.util.ArrayList<>();for(String name:remaining.keySet())if(!referenced.contains(name))roots.add(name);
+      if(roots.isEmpty())throw new IllegalStateException("Assembly display graph has a cycle");
+      boolean progress=false;
+      for(String name:roots){
+        try{remaining.get(name).Erase();remaining.remove(name);erased.add(name);retainedAuxiliaryModels.remove(name);retainedVisibilityModels.remove(name);progress=true;}
+        catch(com.ptc.pfc.pfcExceptions.XToolkitInUse dependencyNotExposedByComponents){}
+      }
+      if(!progress){
+        erased.addAll(remaining.keySet());session.EraseUndisplayedModels();remaining.clear();
+        java.util.Set<String> loaded=new java.util.HashSet<>();Models retained=session.ListModels();
+        for(int i=0;retained!=null&&i<retained.getarraysize();i++)loaded.add(retained.get(i).GetFileName());
+        retainedAuxiliaryModels.retainAll(loaded);retainedVisibilityModels.retainAll(loaded);
+      }
+    }
+    Models after=session.ListModelsByType(ModelType.MDL_ASSEMBLY);
+    if(after!=null&&after.getarraysize()!=0)throw new IllegalStateException("Transient assembly display models remain loaded");
+    if(anchorWindow!=null)anchorWindow.Close();
+    System.err.println("[PERSISTENT] assembly_display_models_discarded="+erased.size()+" retained_part_geometry=true");
+    return erased;
+  }
+
+  private static Transform3D copyPose(Transform3D pose) throws jxthrowable {
+    double[][] values=matrix(pose);Matrix3D copy=Matrix3D.create();
+    for(int row=0;row<4;row++)for(int col=0;col<4;col++)copy.set(row,col,values[row][col]);
+    return pfcBase.Transform3D_Create(copy);
+  }
   private static final FeatureType[] AUXILIARY_FEATURE_TYPES = new FeatureType[] {
     FeatureType.FEATTYPE_WELDING_ROD, FeatureType.FEATTYPE_WELD_FILLET,
     FeatureType.FEATTYPE_WELD_GROOVE, FeatureType.FEATTYPE_WELD_PLUG_SLOT,
@@ -106,7 +226,7 @@ public final class RenderAssemblyImage {
       String term = rawTerm.trim();
       if (term.regionMatches(true, 0, "ABS:", 0, 4)) absolute = parseVectorTerm(term, "ABS:");
       else if (term.regionMatches(true, 0, "UP:", 0, 3)) upReference = parseVectorTerm(term, "UP:");
-      else if (!term.regionMatches(true, 0, "FIT_SELECTED:", 0, 13))
+      else if (!term.regionMatches(true, 0, "FIT_SELECTED:", 0, 13) && !term.startsWith("FIT_SCOPE:") && !term.startsWith("NOTE_KIND:") && !term.startsWith("ARROW_EVIDENCE:") && !term.startsWith("ROI_SPAN:") && !term.startsWith("ROI_ROLE:") && !term.startsWith("ROI_FRACTION:") && !term.startsWith("MOVING_EVIDENCE:") && !term.startsWith("NOTE_LAYOUT:") && !term.startsWith("STAGE_BOUNDS:") && !term.startsWith("GHOST_RECEIVERS:") && !term.equals("PHYSICAL_DISPLAY:explicit_include"))
         throw new IllegalArgumentException("Unknown formal camera term: " + term);
     }
     if (absolute == null || upReference == null)
@@ -166,9 +286,30 @@ public final class RenderAssemblyImage {
     if (model instanceof Solid) {
       Solid solid = (Solid)model;
       Layer auxiliaryLayer = null;
+      java.util.Set<Integer> physicalOwners=new java.util.HashSet<>();
+      boolean ownershipLoaded=false;
       for (FeatureType type : AUXILIARY_FEATURE_TYPES) {
         Features features = solid.ListFeaturesByType(Boolean.FALSE, type);
+        boolean surfaceFeature=type==FeatureType.FEATTYPE_DATUM_SURFACE||type==FeatureType.FEATTYPE_DATUM_QUILT;
+        if(surfaceFeature&&features!=null&&features.getarraysize()>0&&!ownershipLoaded) {
+          ownershipLoaded=true;
+          try {
+            ModelItems bodies=solid.ListItems(ModelItemType.ITEM_BODY);
+            java.util.List<SolidBody> allBodies=new java.util.ArrayList<>();
+            for(int b=0;bodies!=null&&b<bodies.getarraysize();b++)allBodies.add((SolidBody)bodies.get(b));
+            if(allBodies.isEmpty()&&solid.GetDefaultBody()!=null)allBodies.add(solid.GetDefaultBody());
+            for(SolidBody body:allBodies)if(body.GetBodyState().getValue()==SolidBodyState.BODY_STATE_ACTIVE.getValue()) {
+              Features owners=body.GetFeatures();for(int f=0;owners!=null&&f<owners.getarraysize();f++)physicalOwners.add(owners.get(f).GetId());
+            }
+          } catch(Throwable unavailableOwnership) {
+            System.err.println("[DEBUG-physical-ownership] unavailable model="+model.GetFileName());
+          }
+        }
         for (int i = 0; features != null && i < features.getarraysize(); i++) {
+          if(surfaceFeature&&physicalOwners.contains(features.get(i).GetId())) {
+            System.err.println("[DEBUG-physical-ownership] preserved model="+model.GetFileName()+" feature="+features.get(i).GetId()+" type="+type.getValue());
+            continue;
+          }
           if (auxiliaryLayer == null) auxiliaryLayer = model.CreateLayer("AI_SOP_AUXILIARY");
           auxiliaryLayer.AddItem(features.get(i));
           hidden++;
@@ -179,28 +320,64 @@ public final class RenderAssemblyImage {
     return hidden;
   }
 
+  private static boolean activePartGeometryAlreadyVisible(Model model) throws jxthrowable {
+    if(model instanceof Assembly || !(model instanceof Solid))return false;
+    Solid solid=(Solid)model;ModelItems items=solid.ListItems(ModelItemType.ITEM_BODY);
+    java.util.List<SolidBody> bodies=new java.util.ArrayList<>();
+    for(int i=0;items!=null&&i<items.getarraysize();i++)bodies.add((SolidBody)items.get(i));
+    if(bodies.isEmpty()&&solid.GetDefaultBody()!=null)bodies.add(solid.GetDefaultBody());
+    int checked=0;
+    for(SolidBody body:bodies)if(body.GetBodyState().getValue()==SolidBodyState.BODY_STATE_ACTIVE.getValue()){
+      Features features=body.GetFeatures();
+      for(int i=0;features!=null&&i<features.getarraysize();i++){
+        checked++;if(!features.get(i).GetIsVisible())return false;
+      }
+    }
+    return checked>0;
+  }
+
+  private static void normalizeSourceVisibility(Session session,Window rootWindow,Model root,java.util.Set<String> desired) throws jxthrowable {
+    java.util.Map<String,Model> models=new java.util.LinkedHashMap<String,Model>();
+    collectAuxiliaryModels(session,root,"",desired,models);int reset=0;
+    try {
+      for(java.util.Map.Entry<String,Model> entry:models.entrySet()) {
+        if(retainedVisibilityModels.contains(entry.getKey()))continue;
+        Model model=entry.getValue();
+        if(activePartGeometryAlreadyVisible(model)){
+          retainedVisibilityModels.add(entry.getKey());
+          System.err.println("[PERSISTENT] native_part_body_features_already_visible="+entry.getKey());
+          continue;
+        }
+        Window own=model==root?rootWindow:session.GetModelWindow(model);boolean created=own==null;
+        if(created)own=session.CreateModelWindow(model);
+        try {
+          session.SetCurrentWindow(own);own.Activate();model.Display();
+          session.RunMacro("~ Command `ProCmdViewShowAll`");own.Repaint();session.FlushCurrentWindow();
+          retainedVisibilityModels.add(entry.getKey());reset++;
+        }finally{if(created)own.Close();}
+      }
+    }finally{session.SetCurrentWindow(rootWindow);rootWindow.Activate();root.Display();rootWindow.Repaint();session.FlushCurrentWindow();}
+    System.err.println("[PERSISTENT] source_visibility_models_normalized="+reset+" cached="+retainedVisibilityModels.size());
+  }
+
+  private static boolean isSourceSuppressed(ComponentFeat component) throws jxthrowable {
+    int status = component.GetStatus().getValue();
+    // Simplified-representation suppression (3) belongs to the previous
+    // render stage and must be reconsidered for the next visibility set.
+    return status == 2 || status == 4 || status == 5;
+  }
+
   private static void collectAuxiliaryModels(Session session, Model model, String prefix,
       java.util.Set<String> desired, java.util.Map<String, Model> required) throws jxthrowable {
-    required.putIfAbsent(model.GetFileName(), model);
-    if (model instanceof Assembly) {
-      Features components = ((Assembly)model).ListFeaturesByType(Boolean.FALSE, FeatureType.FEATTYPE_COMPONENT);
-      for (int i = 0; i < components.getarraysize(); i++) {
-        ComponentFeat component = (ComponentFeat)components.get(i);
-        String path = prefix.isEmpty() ? "" + component.GetId() : prefix + "/" + component.GetId();
-        if (!stageRelated(path, desired)) continue;
-        ModelDescriptor descriptor = component.GetModelDescr();
-        Model child;
-        try {
-          child = session.RetrieveModel(descriptor);
-        } catch (com.ptc.pfc.pfcExceptions.XToolkitNotFound unavailable) {
-          throw new IllegalStateException("CREO_VISIBLE_MODEL_MISSING: occurrence=" + path
-              + " model=" + descriptor.GetFileName(), unavailable);
-        }
-        if (child == null) throw new IllegalStateException("CREO_VISIBLE_MODEL_MISSING: occurrence="
-            + path + " model=" + descriptor.GetFileName());
-        // Deduplicate edits only: repeated ASM occurrences may select different children.
-        collectAuxiliaryModels(session, child, path, desired, required);
-      }
+    NativeModelNode root=prefix.isEmpty()&&model instanceof Assembly?structureRoot(session,(Assembly)model):structureNode(model);
+    collectAuxiliaryModelsCached(session,root,prefix,desired,required);
+  }
+  private static void collectAuxiliaryModelsCached(Session session,NativeModelNode node,String prefix,
+      java.util.Set<String> desired,java.util.Map<String,Model> required) throws jxthrowable {
+    required.putIfAbsent(node.name,node.model);
+    for(NativeComponentNode component:structureChildren(node)){
+      String path=prefix.isEmpty()?""+component.id:prefix+"/"+component.id;
+      if(stageRelated(path,desired))collectAuxiliaryModelsCached(session,structureChild(session,component,path),path,desired,required);
     }
   }
 
@@ -224,7 +401,7 @@ public final class RenderAssemblyImage {
     java.util.List<intseq> result = new java.util.ArrayList<intseq>();
     if (encoded == null || encoded.trim().isEmpty()) return result;
     for (String rawPath : encoded.split(";")) {
-      String trimmed = rawPath.trim(); if (trimmed.isEmpty()) continue;
+      String trimmed = rawPath.trim(); if (trimmed.isEmpty()||trimmed.startsWith("!")) continue;
       intseq path = intseq.create();
       for (String rawId : trimmed.split("/")) {
         String id = rawId.trim();
@@ -304,7 +481,14 @@ public final class RenderAssemblyImage {
       double level) throws jxthrowable {
     if (session.UIGetCommand("ProCmdZoomIntoOutline") == null)
       throw new IllegalStateException("Creo command is unavailable: ProCmdZoomIntoOutline");
-    SelectionBuffer buffer = session.GetCurrentSelectionBuffer();
+    SelectionBuffer buffer = null;
+    for(int attempt=0;attempt<3;attempt++){
+      try { window.Activate();window.Repaint();session.FlushCurrentWindow();buffer=session.GetCurrentSelectionBuffer();break; }
+      catch(com.ptc.pfc.pfcExceptions.XToolkitCantAccess unavailable){
+        if(attempt==2)throw unavailable;
+        try{Thread.sleep(500);}catch(InterruptedException interrupted){Thread.currentThread().interrupt();throw new IllegalStateException("Native selected-fit retry interrupted",interrupted);}
+      }
+    }
     String previousLevel = session.GetConfigOption("zoom_to_selected_level");
     try {
       session.SetConfigOption("zoom_to_selected_level", String.format(java.util.Locale.ROOT, "%.6f", level));
@@ -350,6 +534,193 @@ public final class RenderAssemblyImage {
   }
 
   /** Encodes only locked occurrence IDs and root-coordinate points; no paths leave the run. */
+  private static void projectOutline(Outline3D outline,Transform3D pose,double[][] view,double[] box) throws jxthrowable {
+    for(int mask=0;mask<8;mask++){
+      Point3D local=Point3D.create();
+      for(int axis=0;axis<3;axis++)local.set(axis,outline.get((mask&(1<<axis))==0?0:1).get(axis));
+      Point3D root=pose.TransformPoint(local);double x=0,y=0;
+      for(int axis=0;axis<3;axis++){x+=root.get(axis)*view[axis][0];y+=root.get(axis)*view[axis][1];}
+      box[0]=Math.min(box[0],x);box[1]=Math.min(box[1],y);box[2]=Math.max(box[2],x);box[3]=Math.max(box[3],y);
+    }
+  }
+  private static double balancedFaceMargin(Assembly root,java.util.List<intseq> moving,java.util.List<ReceiverInterfaceSelection> faces,ArrowProjection.Result arrows) throws jxthrowable {
+    double[][] view=matrix(root.GetCurrentViewTransform());
+    // Creo view matrices contain display scale. Compare CAD extents and arrow
+    // anchors in the same physical camera-plane units, not scaled view units.
+    for(int col=0;col<2;col++){
+      double norm=0;for(int axis=0;axis<3;axis++)norm+=view[axis][col]*view[axis][col];
+      norm=Math.sqrt(norm);if(!(norm>0))throw new IllegalStateException("Invalid view basis");
+      for(int axis=0;axis<3;axis++)view[axis][col]/=norm;
+    }
+    double[] faceBox={Double.POSITIVE_INFINITY,Double.POSITIVE_INFINITY,Double.NEGATIVE_INFINITY,Double.NEGATIVE_INFINITY};
+    double[] bodyBox=faceBox.clone();
+    for(ReceiverInterfaceSelection face:faces){
+      ComponentPath path=pfcAssembly.CreateComponentPath(root,face.occurrencePath);
+      com.ptc.pfc.pfcGeometry.Surface surface=(com.ptc.pfc.pfcGeometry.Surface)path.GetLeaf().GetItemById(ModelItemType.ITEM_SURFACE,face.surfaceId);
+      projectOutline(surface.GetXYZExtents(),path.GetTransform(true),view,faceBox);
+    }
+    for(intseq ids:moving){ComponentPath path=pfcAssembly.CreateComponentPath(root,ids);projectOutline(path.GetLeaf().GetGeomOutline(),path.GetTransform(true),view,bodyBox);}
+    if(faces.isEmpty())faceBox=bodyBox.clone();
+    double faceSpan=Math.max(faceBox[2]-faceBox[0],faceBox[3]-faceBox[1]);
+    double bodySpan=Math.max(bodyBox[2]-bodyBox[0],bodyBox[3]-bodyBox[1]);
+    if(!Double.isFinite(faceSpan)||!Double.isFinite(bodySpan)||faceSpan<=0)throw new IllegalStateException("Invalid CAD projection for balanced framing");
+    double margin=Math.max(1.20,Math.min(1.80,Math.sqrt(Math.max(1.,bodySpan/faceSpan))));
+    double cx=(faceBox[0]+faceBox[2])/2,cy=(faceBox[1]+faceBox[3])/2;
+    double requiredRadius=faceSpan/2;
+    for(double[] segment:arrows==null?java.util.Collections.<double[]>emptyList():ArrowProjection.annotationProtectedSegments(arrows)){
+      double headPadding=Math.hypot(segment[2]-segment[0],segment[3]-segment[1])*.22;
+      requiredRadius=Math.max(requiredRadius,Math.max(Math.max(Math.abs(segment[0]-cx),Math.abs(segment[2]-cx)),Math.max(Math.abs(segment[1]-cy),Math.abs(segment[3]-cy)))+headPadding);
+    }
+    margin=Math.max(margin,2*requiredRadius/faceSpan*1.15);
+    System.err.println("[PERSISTENT] balanced_frame face_span="+faceSpan+" body_span="+bodySpan+" margin="+margin);
+    return margin;
+  }
+
+  private static void applyCadRoiFit(Session session,Window window,Assembly root,
+      ArrowProjection.Result arrows,double featureSpan,String output,double[] extraBounds) throws Exception,jxthrowable {
+    applyCadRoiFit(session,window,root,arrows,featureSpan,output,extraBounds,.65);
+  }
+
+  private static double nativeDetailFrameFraction(String cameraSpec) {
+    double fraction=.65;
+    for(String term:cameraSpec.split(","))if(term.startsWith("ROI_FRACTION:"))fraction=Double.parseDouble(term.substring(13));
+    if(!Double.isFinite(fraction)||fraction<.5||fraction>.9)throw new IllegalArgumentException("Invalid detail ROI fraction");
+    return fraction;
+  }
+  private static void applyCadRoiFit(Session session,Window window,Assembly root,
+      ArrowProjection.Result arrows,double featureSpan,String output,double[] extraBounds,double frameFraction) throws Exception,jxthrowable {
+    if(!Double.isFinite(frameFraction)||frameFraction<.5||frameFraction>.9)throw new IllegalArgumentException("Invalid CAD frame fraction");
+    double[][] view=matrix(root.GetCurrentViewTransform());
+    double sx=0,sy=0;for(int a=0;a<3;a++){sx+=view[a][0]*view[a][0];sy+=view[a][1]*view[a][1];}sx=Math.sqrt(sx);sy=Math.sqrt(sy);
+    double[] roi={Double.POSITIVE_INFINITY,Double.POSITIVE_INFINITY,Double.NEGATIVE_INFINITY,Double.NEGATIVE_INFINITY};
+    for(double[] segment:ArrowProjection.annotationProtectedSegments(arrows)){
+      roi[0]=Math.min(roi[0],Math.min(segment[0],segment[2]));roi[1]=Math.min(roi[1],Math.min(segment[1],segment[3]));
+      roi[2]=Math.max(roi[2],Math.max(segment[0],segment[2]));roi[3]=Math.max(roi[3],Math.max(segment[1],segment[3]));}
+    if(extraBounds!=null){roi[0]=Math.min(roi[0],extraBounds[0]);roi[1]=Math.min(roi[1],extraBounds[1]);roi[2]=Math.max(roi[2],extraBounds[2]);roi[3]=Math.max(roi[3],extraBounds[3]);}
+    double[] compact=ArrowProjection.compactMovingCameraBounds(root,arrows,featureSpan);
+    if(compact!=null){roi[0]=Math.min(roi[0],compact[0]);roi[1]=Math.min(roi[1],compact[1]);roi[2]=Math.max(roi[2],compact[2]);roi[3]=Math.max(roi[3],compact[3]);}
+    double arrowSpan=0;for(double[] segment:ArrowProjection.annotationProtectedSegments(arrows))arrowSpan=Math.max(arrowSpan,Math.hypot(segment[2]-segment[0],segment[3]-segment[1]));
+    double pad=Math.max(.75*featureSpan,.22*arrowSpan);if(extraBounds!=null)pad=Math.max(pad,.05*Math.max(roi[2]-roi[0],roi[3]-roi[1]));roi[0]-=pad;roi[1]-=pad;roi[2]+=pad;roi[3]+=pad;
+    // Centre the model-space camera on the CAD ROI before high screen zoom.
+    // This avoids amplifying subpixel calibration noise at view coordinates
+    // several hundred units away from the origin.
+    // Creo accepts only its native model-view pose here; centre through the
+    // calibrated screen transform below, without changing that pose.
+    double[] profile=calibrateViewport(session,window,root,arrows,output,view,sx,sy);
+    double desiredX=(roi[0]+roi[2])/2*sx+view[3][0],desiredY=(roi[1]+roi[3])/2*sy+view[3][1];
+    double zoom=frameFraction*Math.min(profile[6],profile[7])/Math.max((roi[2]-roi[0])*sx*Math.abs(profile[0]),(roi[3]-roi[1])*sy*Math.abs(profile[1]));
+    double panX=(profile[6]/2-profile[4]-zoom*(desiredX*profile[0]+profile[8]))/profile[2];
+    double panY=(profile[7]/2-profile[5]-zoom*(desiredY*profile[1]+profile[9]))/profile[3];
+    if(!Double.isFinite(zoom)||!Double.isFinite(panX)||!Double.isFinite(panY)||zoom<=0)throw new IllegalStateException("Invalid native CAD ROI transform");
+    window.SetScreenTransform(pfcBase.ScreenTransform_Create(panX,panY,zoom));window.Repaint();session.FlushCurrentWindow();
+    double pixelRatio=1600/Math.min(profile[6],profile[7]);
+    double[] pixelMap={pixelRatio*zoom*sx*profile[0],pixelRatio*zoom*sy*profile[1],800+pixelRatio*(profile[4]+zoom*(view[3][0]*profile[0]+profile[8])+panX*profile[2]-profile[6]/2),800+pixelRatio*(profile[5]+zoom*(view[3][1]*profile[1]+profile[9])+panY*profile[3]-profile[7]/2)};
+    Files.writeString(Path.of(output+".roi.json"),"{\"schema_version\":\"cad-roi-screen-transform/v1\",\"feature_span\":"+featureSpan+",\"frame_fraction\":"+frameFraction+",\"roi_camera_plane\":"+java.util.Arrays.toString(roi)+",\"zoom\":"+zoom+",\"pan\":["+panX+","+panY+"],\"source\":\"native_constraint_anchors_and_measured_bounds\",\"temporary_markers_removed\":true,\"camera_plane_to_final_pixels\":"+java.util.Arrays.toString(pixelMap)+",\"calibration_sha256\":\""+fileHash(output+".calibration.json")+"\"}",java.nio.charset.StandardCharsets.UTF_8);
+    System.err.println("[PERSISTENT] cad_roi zoom="+zoom+" pan=["+panX+","+panY+"] roi="+java.util.Arrays.toString(roi));
+  }
+
+  private static double[] viewportCalibration;
+  private static String viewportCalibrationKey,viewportCalibrationEvidence;
+  private static String jsonString(String s){return "\""+s.replace("\\","\\\\").replace("\"","\\\"")+"\"";}
+  private static String fileHash(String file) throws Exception {return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(Path.of(file))));}
+
+  private static int calibrationListId=94101;
+  private static Point3D calibrationPoint(double[] xyz) throws jxthrowable {Point3D p=Point3D.create();for(int i=0;i<3;i++)p.set(i,xyz[i]);return p;}
+  private static final class CalibrationListener extends DefaultDisplayListener {
+    final double[][] points;final double[] right,up;final double size;
+    CalibrationListener(double[][] p,double[] r,double[] u,double s){points=p;right=r;up=u;size=s;}
+    @Override public void OnDisplay(Display d) throws jxthrowable {
+      d.SetCurrentGraphicsMode(GraphicsMode.DRAW_GRAPHICS_NORMAL);d.SetCurrentGraphicsColor(StdColor.COLOR_ERROR);
+      for(double[] center:points)for(int line=0;line<=100;line++){
+        double[] a=new double[3],b=new double[3];for(int k=0;k<3;k++){a[k]=center[k]+up[k]*size*(line/50.0-1)-right[k]*size;b[k]=a[k]+2*right[k]*size;}
+        d.SetPenPosition(calibrationPoint(a));d.DrawLine(calibrationPoint(b));
+      }
+    }
+  }
+  private static double[][] calibrationSnapshot(Session session,Window window,String file) throws Exception,jxthrowable {
+    window.Repaint();session.FlushCurrentWindow();
+    JPEGImageExportInstructions i=squareCropSourceExportInstructions(window);i.SetDotsPerInch(DotsPerInch.RASTERDPI_100);i.SetImageDepth(RasterDepth.RASTERDEPTH_24);
+    window.ExportRasterImage(file,i);BufferedImage img=ImageIO.read(new File(file));int w=img.getWidth(),h=img.getHeight();
+    boolean[] seen=new boolean[w*h];java.util.List<double[]> found=new java.util.ArrayList<>();
+    for(int y=0;y<h;y++)for(int x=0;x<w;x++){int idx=y*w+x,c=img.getRGB(x,y);if(seen[idx]||((c>>16)&255)<170||((c>>8)&255)>90||(c&255)<170)continue;
+      java.util.ArrayDeque<Integer> todo=new java.util.ArrayDeque<>();todo.add(idx);seen[idx]=true;int n=0,minX=w,minY=h,maxX=-1,maxY=-1;double ax=0,ay=0;
+      while(!todo.isEmpty()){int q=todo.removeFirst(),qx=q%w,qy=q/w;n++;ax+=qx;ay+=qy;minX=Math.min(minX,qx);maxX=Math.max(maxX,qx);minY=Math.min(minY,qy);maxY=Math.max(maxY,qy);
+        for(int dy=-1;dy<=1;dy++)for(int dx=-1;dx<=1;dx++){int nx=qx+dx,ny=qy+dy;if(nx<0||ny<0||nx>=w||ny>=h)continue;int ni=ny*w+nx,nc=img.getRGB(nx,ny);if(!seen[ni]&&((nc>>16)&255)>170&&((nc>>8)&255)<90&&(nc&255)>170){seen[ni]=true;todo.add(ni);}}}
+      if(n>=6){if(minX<2||minY<2||maxX>=w-2||maxY>=h-2)throw new IllegalStateException("Viewport calibration marker clipped");found.add(new double[]{ax/n,ay/n,n});}
+    }
+    if(found.size()!=3)throw new IllegalStateException("Viewport calibration requires exactly three temporary markers; found="+found.size());
+    double[] right=java.util.Collections.max(found,java.util.Comparator.comparingDouble(v->v[0])),up=java.util.Collections.min(found,java.util.Comparator.comparingDouble(v->v[1]));
+    double[] origin=null;for(double[] v:found)if(v!=right&&v!=up)origin=v;
+    if(origin==null)throw new IllegalStateException("Viewport marker layout ambiguous");
+    return new double[][]{origin,right,up,new double[]{w,h}};
+  }
+  private static double[] calibrateViewport(Session session,Window window,Assembly root,ArrowProjection.Result arrows,String output,double[][] view,double sx,double sy) throws Exception,jxthrowable {
+    Dimension screen=Toolkit.getDefaultToolkit().getScreenSize();
+    String key=screen.width+"x"+screen.height+":"+window.GetGraphicsAreaWidth()+":"+window.GetGraphicsAreaHeight();
+    if(viewportCalibration!=null&&key.equals(viewportCalibrationKey)){
+      Files.writeString(Path.of(output+".calibration.json"),viewportCalibrationEvidence);return viewportCalibration;
+    }
+
+    ScreenTransform saved=window.GetScreenTransform();double z=saved.GetZoom(),px=saved.GetPanX(),py=saved.GetPanY();
+    // Shared calibration must not point at an SOP image that may be retried.
+    // Keep native probe bytes immutable for the lifetime of all dependent views.
+    Path evidenceDirectory=Path.of(output).toAbsolutePath().getParent().resolve("native-calibration-evidence").resolve(java.util.UUID.randomUUID().toString());
+    Files.createDirectories(evidenceDirectory);
+    String calibrationOutput=evidenceDirectory.resolve("viewport").toString();
+    // Calibrate at a neutral viewport center, independent of an installation
+    // anchor that may be outside the initial selected-fit view of a large ASM.
+    // The saved screen transform is restored before applying the audited ROI.
+    double probeZoom=1.0,probePanX=0.5,probePanY=0.5;
+    window.SetScreenTransform(pfcBase.ScreenTransform_Create(probePanX,probePanY,probeZoom));
+    // View-coordinate zero is on the raster's bottom border, not its centre.
+    // A half-clipped marker biases the inferred Y scale at high zoom.
+    double delta=160.0/(sx*probeZoom),cx=-view[3][0]/sx,cy=-view[3][1]/sy;
+    Outline3D rootOutline=root.GetGeomOutline();double markerDepth=Double.NEGATIVE_INFINITY;
+    for(int mask=0;mask<8;mask++){double d=0;for(int axis=0;axis<3;axis++)d+=rootOutline.get((mask&(1<<axis))==0?0:1).get(axis)*arrows.back[axis];markerDepth=Math.max(markerDepth,d);}
+    markerDepth+=100.;
+    double[][] points=new double[3][3];for(int n=0;n<3;n++)for(int k=0;k<3;k++)points[n][k]=(cx+(n==1?delta:0))*arrows.right[k]+(cy+(n==2?delta:0))*arrows.up[k]+markerDepth*arrows.back[k];
+    ColorRGB color=session.GetRGBFromStdColor(StdColor.COLOR_ERROR);DisplayList3D list=null;
+    try{
+      session.SetStdColorFromRGB(StdColor.COLOR_ERROR,pfcBase.ColorRGB_Create(1.0,0.0,1.0));
+      list=session.CreateDisplayList3D(calibrationListId++,new CalibrationListener(points,arrows.right,arrows.up,delta*.06));
+      Matrix3D identity=Matrix3D.create();for(int r=0;r<4;r++)for(int c=0;c<4;c++)identity.set(r,c,r==c?1:0);list.Display(pfcBase.Transform3D_Create(identity));
+      double[][] a=calibrationSnapshot(session,window,calibrationOutput+".calibration-a.jpg");
+      window.SetScreenTransform(pfcBase.ScreenTransform_Create(probePanX+.1,probePanY+.1,probeZoom));
+      double[][] c=calibrationSnapshot(session,window,calibrationOutput+".calibration-pan.jpg");
+
+      double kx=(c[0][0]-a[0][0])/.1,ky=(c[0][1]-a[0][1])/.1;
+      double scaleX=(a[1][0]-a[0][0])/(delta*sx*probeZoom),scaleY=(a[2][1]-a[0][1])/(delta*sy*probeZoom);
+
+      // Use the native model transform of the diagnostic marker to remove any
+      // viewport origin ambiguity; no real component pixels determine framing.
+      double vx=view[3][0],vy=view[3][1];for(int k=0;k<3;k++){vx+=points[0][k]*view[k][0];vy+=points[0][k]*view[k][1];}
+      // Native zoom can have an aspect-dependent origin. A pan-only probe
+      // cannot distinguish that term from the constant viewport offset.
+      double secondZoom=2.0;
+      window.SetScreenTransform(pfcBase.ScreenTransform_Create(probePanX,probePanY,secondZoom));
+      double[][] zoomProbe=calibrationSnapshot(session,window,calibrationOutput+".calibration-zoom.jpg");
+      double zoomOriginX=(zoomProbe[0][0]-a[0][0])/(secondZoom-probeZoom)-vx*scaleX;
+      double zoomOriginY=(zoomProbe[0][1]-a[0][1])/(secondZoom-probeZoom)-vy*scaleY;
+      double ox=a[0][0]-probeZoom*(vx*scaleX+zoomOriginX)-kx*probePanX,oy=a[0][1]-probeZoom*(vy*scaleY+zoomOriginY)-ky*probePanY;
+      double residualX=a[2][0]-a[0][0],residualY=a[1][1]-a[0][1];
+      if(!Double.isFinite(ox)||Math.abs(kx)<1||Math.abs(ky)<1||Math.abs(residualX)>8||Math.abs(residualY)>8)throw new IllegalStateException("Viewport calibration residual="+residualX+","+residualY);
+      double[] result={scaleX,scaleY,kx,ky,ox,oy,a[3][0],a[3][1],zoomOriginX,zoomOriginY};
+      StringBuilder snapshots=new StringBuilder("[");
+      for(String suffix:new String[]{".calibration-a.jpg",".calibration-pan.jpg",".calibration-zoom.jpg"}){
+        String file=Path.of(calibrationOutput+suffix).toAbsolutePath().toString();if(snapshots.length()>1)snapshots.append(',');
+        snapshots.append("{\"file\":").append(jsonString(file)).append(",\"sha256\":").append(jsonString(fileHash(file))).append('}');
+      }snapshots.append(']');
+      viewportCalibrationEvidence="{\"schema_version\":\"native-viewport-calibration/v2\",\"fingerprint\":"+jsonString(key)+",\"profile\":"+java.util.Arrays.toString(result)+",\"residual\":["+residualX+","+residualY+"],\"zoom_probe\":"+java.util.Arrays.deepToString(zoomProbe)+",\"world_markers\":"+java.util.Arrays.deepToString(points)+",\"pixel_markers\":"+java.util.Arrays.deepToString(a)+",\"snapshots\":"+snapshots+"}";
+      Files.writeString(Path.of(output+".calibration.json"),viewportCalibrationEvidence);
+      viewportCalibrationKey=key;
+      viewportCalibration=result;return result;
+    }finally{
+      try{if(list!=null)list.Delete();}
+      finally{try{session.SetStdColorFromRGB(StdColor.COLOR_ERROR,color);}
+        finally{window.SetScreenTransform(pfcBase.ScreenTransform_Create(px,py,z));window.Repaint();session.FlushCurrentWindow();}}
+    }
+  }
+
   private static java.util.Map<String,double[]> parsePlannedAnchors(String encoded) {
     java.util.Map<String,double[]> result = new java.util.HashMap<String,double[]>();
     if (encoded == null || encoded.trim().isEmpty()) return result;
@@ -450,7 +821,9 @@ public final class RenderAssemblyImage {
     }
     throw new IllegalArgumentException("Empty occurrence path");
   }
+
   private static void translateResolved(Session session, Assembly root, intseq ids, double dx, double dy, double dz) throws jxthrowable {
+    if(dx==0.0&&dy==0.0&&dz==0.0)return;
     // Prefer the official ComponentPath API.  Creo 13 Student can reject
     // GetTransform for some live paths; retain a mathematically equivalent
     // ComponentFeat fallback, still resolved from the same root path.
@@ -486,11 +859,12 @@ public final class RenderAssemblyImage {
       String occurrenceId = occurrencePathId(ids);
       try {
         Transform3D pose = pfcAssembly.CreateComponentPath(root, ids).GetTransform(true);
-        result.add(new DynamicPose(occurrenceId, ids, pose, true));
+        result.add(new DynamicPose(occurrenceId, ids, copyPose(pose), true));
+        continue;
       } catch (jxthrowable unsupportedPathTransform) {
-        result.add(new DynamicPose(occurrenceId, ids,
-            resolveComponent(session, root, ids).feature.GetPosition(), false));
       }
+      result.add(new DynamicPose(occurrenceId, ids,
+          copyPose(resolveComponent(session, root, ids).feature.GetPosition()), false));
     }
     return result;
   }
@@ -506,39 +880,29 @@ public final class RenderAssemblyImage {
     }
   }
   private static boolean stageRelated(String path, java.util.Set<String> desired) {
+    for(String keep:desired)if(keep.startsWith("!")&&(path.equals(keep.substring(1))||path.startsWith(keep.substring(1)+"/")))return false;
     for (String keep : desired) if (keep.equals(path) || keep.startsWith(path + "/") || path.startsWith(keep + "/")) return true;
     return false;
   }
   private static void addStageExclusions(Session session, Assembly assembly, String prefix, java.util.Set<String> desired, SimpRepItems items) throws jxthrowable {
-    Features features = assembly.ListFeaturesByType(Boolean.FALSE, FeatureType.FEATTYPE_COMPONENT);
-    for (int i = 0; i < features.getarraysize(); i++) {
-      ComponentFeat component = (ComponentFeat)features.get(i); String path = prefix.isEmpty() ? "" + component.GetId() : prefix + "/" + component.GetId();
-      if (!stageRelated(path, desired)) {
+    addCachedVisibilityExclusions(session,prefix.isEmpty()?structureRoot(session,assembly):structureNode(assembly),prefix,desired,"",items);
+  }
+  private static void addCachedVisibilityExclusions(Session session,NativeModelNode node,String prefix,
+      java.util.Set<String> desired,String excludedTarget,SimpRepItems items) throws jxthrowable {
+    for(NativeComponentNode component:structureChildren(node)){
+      String path=prefix.isEmpty()?""+component.id:prefix+"/"+component.id;
+      if(path.equals(excludedTarget)||!stageRelated(path,desired)){
         intseq ids = parseOccurrencePaths(path).get(0);
         SimpRepItem item = pfcSimpRep.SimpRepItem_Create(pfcSimpRep.SimpRepCompItemPath_Create(ids));
         item.SetAction(pfcSimpRep.SimpRepExclude_Create()); items.append(item); continue;
       }
-      try { Model child = session.RetrieveModel(component.GetModelDescr()); if (child instanceof Assembly) addStageExclusions(session, (Assembly)child, path, desired, items); } catch (Throwable ignored) {}
+      try{NativeModelNode child=structureChild(session,component,path);if(child.model instanceof Assembly)addCachedVisibilityExclusions(session,child,path,desired,excludedTarget,items);}catch(Throwable ignored){}
     }
   }
 
   private static void addVisibilityExclusions(Session session, Assembly assembly, String prefix,
       java.util.Set<String> desired, String excludedTarget, SimpRepItems items) throws jxthrowable {
-    Features features = assembly.ListFeaturesByType(Boolean.FALSE, FeatureType.FEATTYPE_COMPONENT);
-    for (int i = 0; i < features.getarraysize(); i++) {
-      ComponentFeat component = (ComponentFeat)features.get(i);
-      String path = prefix.isEmpty() ? "" + component.GetId() : prefix + "/" + component.GetId();
-      if (path.equals(excludedTarget) || !stageRelated(path, desired)) {
-        intseq ids = parseOccurrencePaths(path).get(0);
-        SimpRepItem item = pfcSimpRep.SimpRepItem_Create(pfcSimpRep.SimpRepCompItemPath_Create(ids));
-        item.SetAction(pfcSimpRep.SimpRepExclude_Create()); items.append(item); continue;
-      }
-      try {
-        Model child = session.RetrieveModel(component.GetModelDescr());
-        if (child instanceof Assembly)
-          addVisibilityExclusions(session, (Assembly)child, path, desired, excludedTarget, items);
-      } catch (Throwable ignored) {}
-    }
+    addCachedVisibilityExclusions(session,prefix.isEmpty()?structureRoot(session,assembly):structureNode(assembly),prefix,desired,excludedTarget,items);
   }
 
   private static void activateVisibilityRep(Session session, Assembly assembly,
@@ -550,6 +914,52 @@ public final class RenderAssemblyImage {
     addVisibilityExclusions(session, assembly, "", desired, excludedTarget, items);
     instructions.SetItems(items);
     assembly.ActivateSimpRep(assembly.CreateSimpRep(instructions));
+  }
+
+  private static void alignDiagnosticView(Assembly root,Window window,Transform3D desired,double panX,double panY,double zoom,double[] profile) throws jxthrowable {
+    double[][] a=matrix(desired),b=matrix(root.GetCurrentViewTransform());double sa=0,sb=0;for(int k=0;k<3;k++){sa+=a[k][0]*a[k][0];sb+=b[k][0]*b[k][0];}sa=Math.sqrt(sa);sb=Math.sqrt(sb);
+    double ratio=sa/sb;
+    for(int r=0;r<3;r++)for(int c=0;c<3;c++)if(Math.abs(a[r][c]-b[r][c]*ratio)>1.e-7)throw new IllegalStateException("Visibility diagnostic changed camera orientation");
+    double newZoom=zoom*ratio,newPanX=panX+((zoom*a[3][0]-newZoom*b[3][0])*profile[0]+(zoom-newZoom)*profile[8])/profile[2],newPanY=panY+((zoom*a[3][1]-newZoom*b[3][1])*profile[1]+(zoom-newZoom)*profile[9])/profile[3];
+    window.SetScreenTransform(pfcBase.ScreenTransform_Create(newPanX,newPanY,newZoom));
+  }
+  private static int pathDepth(intseq ids){try{return ids.getarraysize();}catch(jxthrowable error){throw new IllegalStateException("Cannot read occurrence path",error);}}
+  private static int visibilityEvidenceId=1;
+  private static void writeMovingVisibilityEvidence(Session session,Window window,Assembly root,SimpRep stage,SimpRepItems stageItems,
+      java.util.List<intseq> moving,java.util.List<intseq> visible,ArrowProjection.Result arrows,String output) throws Exception,jxthrowable {
+    long started=System.nanoTime();
+    java.util.List<intseq> ordered=new java.util.ArrayList<>(visible);ordered.sort(java.util.Comparator.comparingInt(RenderAssemblyImage::pathDepth));
+    java.util.List<DynamicPose> poses=captureDynamicPoses(session,root,ordered);
+    Transform3D view=copyPose(root.GetCurrentViewTransform());double[][] modelView=matrix(view);double sx=0,sy=0;for(int k=0;k<3;k++){sx+=modelView[k][0]*modelView[k][0];sy+=modelView[k][1]*modelView[k][1];}sx=Math.sqrt(sx);sy=Math.sqrt(sy);
+    double[] profile=calibrateViewport(session,window,root,arrows,output,modelView,sx,sy);
+    ScreenTransform screen=window.GetScreenTransform();
+    double px=screen.GetPanX(),py=screen.GetPanY(),zoom=screen.GetZoom();StringBuilder entries=new StringBuilder("[");
+    int index=0;
+    for(intseq target:moving){
+      String id=occurrencePathId(target);SimpRep hidden=null;
+      try{
+        SimpRepItems items=SimpRepItems.create();for(int i=0;i<stageItems.getarraysize();i++)items.append(stageItems.get(i));
+        SimpRepItem exclude=pfcSimpRep.SimpRepItem_Create(pfcSimpRep.SimpRepCompItemPath_Create(target));exclude.SetAction(pfcSimpRep.SimpRepExclude_Create());items.append(exclude);
+        CreateNewSimpRepInstructions instruction=pfcSimpRep.CreateNewSimpRepInstructions_Create("AI_VIS_PROOF_"+(visibilityEvidenceId++));instruction.SetIsTemporary(true);instruction.SetDefaultAction(SimpRepActionType.SIMPREP_INCLUDE);instruction.SetItems(items);
+        hidden=root.CreateSimpRep(instruction);root.ActivateSimpRep(hidden);
+        if(!root.GetDynamicPositioning()){System.err.println("[PERSISTENT] visibility_rep_reset_dynamic_positioning=true");root.SetDynamicPositioning(true);}
+        restoreDynamicPoses(session,root,poses,id);
+        alignDiagnosticView(root,window,view,px,py,zoom,profile);window.Repaint();session.FlushCurrentWindow();
+        JPEGImageExportInstructions export=squareCropSourceExportInstructions(window);export.SetDotsPerInch(DotsPerInch.RASTERDPI_200);export.SetImageDepth(RasterDepth.RASTERDEPTH_24);
+        String file=output+".without-moving-"+(++index)+".jpg";Path source=Path.of(file+".source.jpg");window.ExportRasterImage(source.toString(),export);cropCenterSquare(source,Path.of(file));
+        if(entries.length()>1)entries.append(',');entries.append("{\"occurrence_id\":").append(jsonString(id)).append(",\"file\":").append(jsonString(Path.of(file).toAbsolutePath().toString())).append(",\"sha256\":").append(jsonString(fileHash(file))).append('}');
+      }finally{
+        root.ActivateSimpRep(stage);if(!root.GetDynamicPositioning())root.SetDynamicPositioning(true);restoreDynamicPoses(session,root,poses,"");alignDiagnosticView(root,window,view,px,py,zoom,profile);window.Repaint();session.FlushCurrentWindow();
+        if(hidden!=null)try{root.DeleteSimpRep(hidden);}catch(com.ptc.pfc.pfcExceptions.XToolkitNotFound removed){}
+      }
+    }
+    for(DynamicPose p:poses){Transform3D current=p.componentPathApi?pfcAssembly.CreateComponentPath(root,p.ids).GetTransform(true):resolveComponent(session,root,p.ids).feature.GetPosition();double[][] before=matrix(p.pose),after=matrix(current);for(int r=0;r<4;r++)for(int c=0;c<4;c++)if(Math.abs(before[r][c]-after[r][c])>1.e-6)throw new IllegalStateException("Visibility proof changed occurrence pose="+p.occurrenceId);}
+    entries.append(']');
+    double[][] finalView=matrix(root.GetCurrentViewTransform());ScreenTransform finalScreen=window.GetScreenTransform();
+    String alignment="{\"source_model_view\":"+java.util.Arrays.deepToString(matrix(view))+",\"final_model_view\":"+java.util.Arrays.deepToString(finalView)+",\"target_pan_zoom\":["+px+","+py+","+zoom+"],\"final_pan_zoom\":["+finalScreen.GetPanX()+","+finalScreen.GetPanY()+","+finalScreen.GetZoom()+"],\"physical_to_pixel_preserved\":true}";
+    double seconds=(System.nanoTime()-started)/1e9;
+    Files.writeString(Path.of(output+".moving-visibility.json"),"{\"schema_version\":\"native-occurrence-difference/v1\",\"camera_and_other_occurrences_unchanged\":true,\"poses_restored\":true,\"view_alignment\":"+alignment+",\"reference_sha256\":"+jsonString(fileHash(output+".background.jpg"))+",\"entries\":"+entries+",\"seconds\":"+seconds+"}");
+    System.err.println("[PERSISTENT] moving_visibility_seconds="+seconds+" occurrences="+moving.size());
   }
 
   private static LinkedHashMap<String,Integer> parseVisibilityLabels(String encoded) {
@@ -620,7 +1030,7 @@ public final class RenderAssemblyImage {
     double pixelWidth = graphicsWidth * screenSize.getWidth();
     double pixelHeight = graphicsHeight * screenSize.getHeight();
     double aspect = Math.max(pixelWidth, pixelHeight) / Math.min(pixelWidth, pixelHeight);
-    double effective = Math.max(0.1, Math.min(2.0, requested / aspect));
+    double effective = Math.max(0.1, Math.min(0.95, requested / aspect));
     System.err.println("[PERSISTENT] square_crop_fit requested=" + requested
         + " aspect=" + aspect + " effective=" + effective);
     return effective;
@@ -646,6 +1056,7 @@ public final class RenderAssemblyImage {
     if (!writers.hasNext())
       throw new IllegalStateException("No JPEG writer available for square publication frame");
     ImageWriter writer = writers.next();
+    Files.deleteIfExists(output);
     try (FileImageOutputStream stream = new FileImageOutputStream(output.toFile())) {
       ImageWriteParam parameters = writer.getDefaultWriteParam();
       if (parameters.canWriteCompressed()) {
@@ -760,11 +1171,15 @@ public final class RenderAssemblyImage {
       String movingPaths, String receiverPaths, String encodedTranslations, String desiredPaths,
       String cameraSpec, String focusPaths, LinkedHashMap<String,Integer> labels,
       boolean requireVisibleTarget) throws Throwable {
+    // Visibility scenes close/erase their models independently; never leave
+    // a retained formal-render window pointing at an erased model.
+    if(retainedWindow!=null)discardRetainedAssembly(session);
     Window window = null; boolean completed = false;
     Path rawRoot = outputPng.resolveSibling(outputPng.getFileName().toString() + ".raw");
     try {
       Files.createDirectories(rawRoot);
       ModelDescriptor descriptor = assemblyDescriptor(assemblyFile);
+      NativeModelBindings.apply(session);
       window = session.OpenFile(descriptor); window.Activate(); Model model = window.GetModel();
       String requestedBase = new File(assemblyFile).getName().replaceFirst("\\.[0-9]+$", "");
       if (!model.GetFileName().equalsIgnoreCase(requestedBase)) throw new IllegalStateException("Opened unexpected assembly");
@@ -779,6 +1194,9 @@ public final class RenderAssemblyImage {
       for (String raw : receiverPaths.split(";")) if (!raw.trim().isEmpty()) receiverTargets.add(raw.trim());
       for (String target : labels.keySet()) if (!stageRelated(target, desired)) throw new IllegalArgumentException("Visibility target is outside the scene: " + target);
       activateVisibilityRep(session, assembly, desired, "", "AI_SOP_VIS_BASE");
+      boolean inheritedExploded=assembly.GetIsExploded();
+      System.err.println("[PERSISTENT] inherited_exploded_display="+inheritedExploded);
+      if(inheritedExploded)assembly.UnExplode();
       if (!assembly.GetDynamicPositioning()) assembly.SetDynamicPositioning(true);
       java.util.List<intseq> movingOccurrencePaths = parseOccurrencePaths(movingPaths);
       java.util.Map<String,double[]> translations = parseOccurrenceTranslations(encodedTranslations);
@@ -838,24 +1256,52 @@ public final class RenderAssemblyImage {
 
   /**
    * Renders one formal stage inside an already-started Creo session. The model
-   * lifecycle stays deliberately per-job: close its window and erase all
-   * undisplayed models in the finally block so a later job cannot inherit a
-   * temporary simplified representation, dynamic transform, camera, or arrow.
+   * model stays loaded between jobs. Restore and verify every moved pose,
+   * remove each temporary representation/annotation, and reapply the next
+   * job's exact visibility and camera. Discard the model on any failure.
    */
   /** Formal Agent path with constraint-backed same-CAD-point anchors. */
   static void renderInSession(Session session, String assemblyFile, String outputJpeg,
       String occurrencePaths, double dx, double dy, double dz, String visiblePaths,
       String cameraSpec, String arrowAuditJson, String focusPaths,
       String plannedAnchors, String receiverSelections, String encodedTranslations,
-      boolean drawNativeArrow) throws Throwable {
+      boolean drawNativeArrow, String torqueLabels, String torqueBounds, String torqueContractHash) throws Throwable {
+    renderInSession(session,assemblyFile,outputJpeg,occurrencePaths,dx,dy,dz,visiblePaths,
+        cameraSpec,arrowAuditJson,focusPaths,plannedAnchors,receiverSelections,encodedTranslations,
+        drawNativeArrow,torqueLabels,torqueBounds,torqueContractHash,false);
+  }
+  static void renderInSession(Session session, String assemblyFile, String outputJpeg,
+      String occurrencePaths, double dx, double dy, double dz, String visiblePaths,
+      String cameraSpec, String arrowAuditJson, String focusPaths,
+      String plannedAnchors, String receiverSelections, String encodedTranslations,
+      boolean drawNativeArrow, String torqueLabels, String torqueBounds, String torqueContractHash,
+      boolean completedStageOnly) throws Throwable {
     Window window = null;
     DisplayList3D arrowDisplay = null;
+    DisplayList3D torqueDisplay = null;
+    Assembly stageAssembly=null;
+    SimpRep previousRep=null,jobRep=null;
+    java.util.List<DynamicPose> savedPoses=null;
+    NativeReceiverAppearance receiverAppearance=new NativeReceiverAppearance();
+    String ghostReceivers="";
+    for(String term:cameraSpec.split(","))if(term.startsWith("GHOST_RECEIVERS:"))ghostReceivers=term.substring(16);
+    String ghostSourceHash=ghostReceivers.isEmpty()?null:fileHash(assemblyFile);
+    java.util.List<String> discardedDisplayModels=null;
+    boolean completed=false;
     try {
       long openStarted = System.nanoTime();
       ModelDescriptor descriptor = assemblyDescriptor(assemblyFile);
-      window = session.OpenFile(descriptor);
+      boolean reuse=retainedSession==session && assemblyFile.equals(retainedAssemblyFile) && retainedWindow!=null;
+      if(!reuse){
+        clearStructureCache();
+        if(retainedWindow!=null)discardRetainedAssembly(session);
+        NativeModelBindings.apply(session);
+        window=session.OpenFile(descriptor);
+        retainedSession=session;retainedWindow=window;retainedModel=window.GetModel();retainedAssemblyFile=assemblyFile;
+      }else window=retainedWindow;
       window.Activate();
-      Model model = window.GetModel();
+      Model model = retainedModel;
+      System.err.println("[PERSISTENT] assembly_reused="+reuse);
       System.err.println("[PERSISTENT] model_open_seconds=" + ((System.nanoTime() - openStarted) / 1.0e9));
       String requestedBase = new File(assemblyFile).getName().replaceFirst("\\.[0-9]+$", "");
       if (!model.GetFileName().equalsIgnoreCase(requestedBase)) {
@@ -870,47 +1316,85 @@ public final class RenderAssemblyImage {
       java.util.List<intseq> requestedOccurrences = parseOccurrencePaths(occurrencePaths);
       if (requestedOccurrences.isEmpty()) throw new IllegalArgumentException("No moving occurrence paths supplied");
       java.util.Set<String> desired = new java.util.HashSet<String>();
-      for (String rawPath : visiblePaths.split(";")) if (!rawPath.trim().startsWith("!")) desired.add(rawPath.trim());
+      for (String rawPath : visiblePaths.split(";")) if(!rawPath.trim().isEmpty())desired.add(rawPath.trim());
       java.util.List<intseq> visibleOccurrencePaths = parseOccurrencePaths(String.join(";", desired));
       if (visibleOccurrencePaths.isEmpty()) throw new IllegalArgumentException("No visible occurrence paths supplied");
       if (parseOccurrencePaths(focusPaths).isEmpty())
         throw new IllegalArgumentException("No installation focus occurrence paths supplied");
       Assembly assembly = (Assembly)model;
+      stageAssembly=assembly;
+      previousRep=assembly.GetActiveSimpRep();
       long stageStarted = System.nanoTime();
       CreateNewSimpRepInstructions stage = pfcSimpRep.CreateNewSimpRepInstructions_Create("AI_SOP_STAGE");
-      stage.SetIsTemporary(true); stage.SetDefaultAction(SimpRepActionType.SIMPREP_INCLUDE);
+      stage.SetIsTemporary(!cameraSpec.contains("MOVING_EVIDENCE:occurrence_difference")); stage.SetDefaultAction(SimpRepActionType.SIMPREP_INCLUDE);
       SimpRepItems items = SimpRepItems.create(); addStageExclusions(session, assembly, "", desired, items);
       // The temporary stage is only meaningful when its recursively generated
       // exclusion list is attached to the creation instructions.  Omitting
       // this call silently keeps the complete total assembly visible, which
       // invalidates the forward-stage contract and the calibrated framing.
       stage.SetItems(items);
-      assembly.ActivateSimpRep(assembly.CreateSimpRep(stage));
+      jobRep=assembly.CreateSimpRep(stage);
+      assembly.ActivateSimpRep(jobRep);
+      for(intseq requested:requestedOccurrences) {
+        ComponentPath occurrence=pfcAssembly.CreateComponentPath(assembly,requested);
+        System.err.println("[DEBUG-physical-stage] path="+occurrencePathId(requested)+" visible="+occurrence.GetIsVisible(jobRep));
+        try {
+          intseq parent=intseq.create();for(int a=0;a<requested.getarraysize()-1;a++)parent.append(requested.get(a));
+          Assembly owner=requested.getarraysize()==1?assembly:(Assembly)pfcAssembly.CreateComponentPath(assembly,parent).GetLeaf();
+          ComponentFeat feature=(ComponentFeat)owner.GetFeatureById(requested.get(requested.getarraysize()-1));
+          System.err.println("[DEBUG-physical-stage] placed="+feature.GetIsPlaced()+" frozen="+feature.GetIsFrozen()+" bulk="+feature.GetIsBulkitem()+" status="+feature.GetStatus().getValue()+" feature_visible="+feature.GetIsVisible()+" component_type="+feature.GetCompType().getValue()+" substitute="+feature.GetIsSubstitute());
+          MassProperty memberMass=assembly.GetMassPropertyByCompPath(occurrence,null,null);
+          System.err.println("[DEBUG-physical-stage] assembly_context_volume="+memberMass.GetVolume()+" mass="+memberMass.GetMass()+" gravity="+pointText(memberMass.GetGravityCenter()));
+        } catch(Throwable unavailableFlags) { }
+        try {
+          Solid physical=occurrence.GetLeaf();SolidBody body=physical.GetDefaultBody();
+          if(body!=null)System.err.println("[DEBUG-physical-stage] model="+physical.GetFileName()+" body="+body.GetId()+" state="+body.GetBodyState().getValue()+" construction="+body.IsConstruction());
+        }catch(jxthrowable unavailableBody) { }
+      }
       System.err.println("[PERSISTENT] stage_visibility_seconds=" + ((System.nanoTime() - stageStarted) / 1.0e9));
       System.err.println("[PERSISTENT] visible occurrences=" + visiblePaths + " stage_exclusions=" + items.getarraysize());
 
       // Future branches are already excluded by this exact same stage predicate.
       // Clean every displayed model plus its ancestors, not the entire root ASM.
-      // Keep per-job erasure below: no layer, pose, or visibility state is cached.
+      // Auxiliary content is static in the immutable model copy. Resolve all
+      // visible models every job, but blank each model only once per session.
       long auxiliaryStarted = System.nanoTime();
-      java.util.Set<String> auxiliaryModels = new java.util.HashSet<String>();
+      java.util.Set<String> auxiliaryModels = retainedAuxiliaryModels;
       int hiddenAuxiliaryFeatures = hideAuxiliaryFeatures(session, model, auxiliaryModels, "", desired);
       System.err.println("[PERSISTENT] native_auxiliary_features_hidden=" + hiddenAuxiliaryFeatures
           + " models=" + auxiliaryModels.size()
           + " seconds=" + ((System.nanoTime() - auxiliaryStarted) / 1.0e9));
-
+      System.err.println("[PERSISTENT] inherited_exploded_display="+assembly.GetIsExploded());
+      try {
+        com.ptc.pfc.pfcXSection.XSections sections=assembly.ListCrossSections();
+        System.err.println("[DEBUG-physical-stage] root_cross_sections="+(sections==null?0:sections.getarraysize()));
+        for(int s=0;sections!=null&&s<sections.getarraysize();s++)System.err.println("[DEBUG-physical-stage] cross_section="+sections.get(s).GetName());
+      }catch(Throwable unavailableSections) { System.err.println("[DEBUG-physical-stage] cross_sections_status="+unavailableSections.getClass().getSimpleName()); }
       if (!assembly.GetDynamicPositioning()) assembly.SetDynamicPositioning(true);
       if (!assembly.GetDynamicPositioning()) throw new IllegalStateException("Creo DynamicPositioning was not enabled");
+      {
+        session.SetCurrentWindow(window);window.Activate();
+        if(session.UIGetCommand("ProCmdViewShowAll")==null)throw new IllegalStateException("Native unhide-all command unavailable");
+        normalizeSourceVisibility(session,window,assembly,desired);
+        session.RunMacro("~ Command `ProCmdViewShowAll`");window.Repaint();session.FlushCurrentWindow();
+        System.err.println("[PERSISTENT] manually_hidden_non_layer_items_shown=true stage_exclusions="+items.getarraysize());
+      }
+      savedPoses=captureDynamicPoses(session,assembly,requestedOccurrences);
 
       java.util.Map<String,double[]> preferredAnchors = parsePlannedAnchors(plannedAnchors);
       java.util.List<ArrowProjection.MovingOccurrence> arrowMoving = new java.util.ArrayList<ArrowProjection.MovingOccurrence>();
-      for (intseq ids : requestedOccurrences) {
+      if(!completedStageOnly)for (intseq ids : requestedOccurrences) {
         String occurrenceId = occurrencePathId(ids);
         double[] preferred = preferredAnchors.get(occurrenceId);
         arrowMoving.add(ArrowProjection.prepare(session, assembly, ids, preferred));
       }
       java.util.Map<String,double[]> occurrenceTranslations =
           parseOccurrenceTranslations(encodedTranslations);
+      if(completedStageOnly){
+        if(!torqueLabels.isEmpty())throw new IllegalArgumentException("Completed overview cannot carry installation torque annotations");
+        for(double[] vector:occurrenceTranslations.values())for(double value:vector)
+          if(value!=0)throw new IllegalArgumentException("Completed overview requires unchanged assembly positions");
+      }
       for (intseq ids : requestedOccurrences) {
         String occurrenceId = occurrencePathId(ids);
         double[] vector = occurrenceTranslations.get(occurrenceId);
@@ -926,15 +1410,119 @@ public final class RenderAssemblyImage {
         throw new IllegalArgumentException("Formal render requires native selected fit");
       java.util.List<ReceiverInterfaceSelection> receiverInterfaces =
           parseReceiverInterfaceSelections(receiverSelections);
-      if (receiverInterfaces.isEmpty())
+      if (receiverInterfaces.isEmpty()&&!completedStageOnly)
         throw new IllegalArgumentException("Formal render requires receiver surface selections");
       double squareSafeFitLevel = squareCropSafeFitLevel(window, selectedFitLevel);
-      applyNativeSelectedFit(session, window, assembly, requestedOccurrences,
-          receiverInterfaces, squareSafeFitLevel);
-      ArrowProjection.Result arrowResult = ArrowProjection.layout(
+      ArrowProjection.Result arrowResult = completedStageOnly ? null : ArrowProjection.layout(
           assembly, arrowMoving, occurrenceTranslations);
-      ArrowProjection.writeAudit(arrowResult, arrowAuditJson);
+      if(!completedStageOnly && (cameraSpec.contains("FIT_SCOPE:anchor_surfaces")||cameraSpec.contains("FIT_SCOPE:balanced_surfaces")||cameraSpec.contains("FIT_SCOPE:protected_surfaces")||cameraSpec.contains("FIT_SCOPE:protected_groups"))) {
+        String nativeFaces=null;
+        try{nativeFaces=ArrowProjection.nearestInterfaceSelections(session,assembly,arrowMoving);}
+        catch(IllegalStateException unavailableFaces){
+          if(!unavailableFaces.getMessage().startsWith("Native installation face unavailable:"))throw unavailableFaces;
+          System.err.println("[PERSISTENT] installation_focus_fallback=moving_component reason=native_face_unavailable");
+        }
+        if(nativeFaces!=null){
+          java.util.List<ReceiverInterfaceSelection> faceSelections=parseReceiverInterfaceSelections(nativeFaces);
+          boolean groupFit=cameraSpec.contains("FIT_SCOPE:protected_groups");
+          boolean protectedFit=groupFit||cameraSpec.contains("FIT_SCOPE:protected_surfaces");
+          double margin=(cameraSpec.contains("FIT_SCOPE:balanced_surfaces")||protectedFit)&&torqueLabels.isEmpty()?balancedFaceMargin(assembly,requestedOccurrences,groupFit?java.util.Collections.<ReceiverInterfaceSelection>emptyList():faceSelections,protectedFit?arrowResult:null):1.;
+          applyNativeSelectedFit(session,window,assembly,groupFit?requestedOccurrences:java.util.Collections.<intseq>emptyList(),
+              groupFit?java.util.Collections.<ReceiverInterfaceSelection>emptyList():faceSelections,Math.max(.001,squareSafeFitLevel/margin));
+          if(cameraSpec.contains("ROI_SPAN:")&&!cameraSpec.contains("ROI_ROLE:location")){
+            double span=0;for(String term:cameraSpec.split(","))if(term.startsWith("ROI_SPAN:"))span=Double.parseDouble(term.substring(9));
+            applyCadRoiFit(session,window,assembly,arrowResult,span,outputJpeg,null,nativeDetailFrameFraction(cameraSpec));
+          }
+        }else{
+          applyNativeSelectedFit(session,window,assembly,requestedOccurrences,
+              java.util.Collections.<ReceiverInterfaceSelection>emptyList(),squareCropSafeFitLevel(window,1.35));
+        }
+        Files.writeString(Path.of(outputJpeg+".focus.json"),"{\"schema_version\":\"native-installation-focus/v1\",\"strategy\":\""+(nativeFaces==null?"component_fallback":"nearest_anchor_faces")+"\",\"selections\":\""+(nativeFaces==null?"":nativeFaces)+"\"}",java.nio.charset.StandardCharsets.UTF_8);
+      } else if(!completedStageOnly && cameraSpec.contains("FIT_SCOPE:moving_interfaces")) {
+        applyNativeSelectedFit(session,window,assembly,java.util.Collections.<intseq>emptyList(),
+            parseReceiverInterfaceSelections(ArrowProjection.interfaceSelections(arrowResult)),squareSafeFitLevel);
+      } else if(!completedStageOnly && cameraSpec.contains("FIT_SCOPE:moving_only")) {
+        applyNativeSelectedFit(session,window,assembly,requestedOccurrences,
+            java.util.Collections.<ReceiverInterfaceSelection>emptyList(),squareSafeFitLevel);
+      } else {
+        applyNativeSelectedFit(session, window, assembly, completedStageOnly ? visibleOccurrencePaths : requestedOccurrences,
+            receiverInterfaces, squareSafeFitLevel);
+      }
+      if(completedStageOnly&&cameraSpec.contains("STAGE_BOUNDS:")){
+        java.util.List<double[]> boxes=new java.util.ArrayList<>();
+        for(String term:cameraSpec.split(","))if(term.startsWith("STAGE_BOUNDS:"))for(String encoded:term.substring(13).split(";")){
+          String[] values=encoded.split(":");if(values.length!=6)throw new IllegalArgumentException("Invalid completed stage bounds");
+          double[] b=new double[6];for(int a=0;a<6;a++)b[a]=Double.parseDouble(values[a]);boxes.add(b);
+        }
+        double[] center=new double[3];for(double[] b:boxes)for(int a=0;a<3;a++)center[a]+=(b[a]+b[a+3])*.5/boxes.size();
+        ArrowProjection.Result projection=ArrowProjection.completedProjection(assembly,center);
+        double[] plane={Double.POSITIVE_INFINITY,Double.POSITIVE_INFINITY,Double.NEGATIVE_INFINITY,Double.NEGATIVE_INFINITY};
+        for(double[] b:boxes)for(int mask=0;mask<8;mask++){
+          double x=0,y=0;for(int a=0;a<3;a++){double v=b[(mask&(1<<a))==0?a:a+3];x+=v*projection.right[a];y+=v*projection.up[a];}
+          plane[0]=Math.min(plane[0],x);plane[1]=Math.min(plane[1],y);plane[2]=Math.max(plane[2],x);plane[3]=Math.max(plane[3],y);
+        }
+        double feature=.02*Math.max(plane[2]-plane[0],plane[3]-plane[1]);
+        applyCadRoiFit(session,window,assembly,projection,feature,outputJpeg,plane,.82);
+      }
+      // Freeze native annotation anchors before diagnostic visibility toggles.
+      // Fit and drawing must use the same solid-surface selections; re-querying
+      // after simplified-representation regeneration can select another point.
+      java.util.Map<String,double[]> frozenAnnotationTargets=null;
+      if(!completedStageOnly&&!torqueLabels.isEmpty())frozenAnnotationTargets=
+          cameraSpec.contains("NOTE_LAYOUT:spatial_perimeter")?ArrowProjection.completeAnnotationTargets(arrowMoving):ArrowProjection.annotationTargets(assembly,arrowMoving,arrowResult.back);
+      java.util.List<double[]> frozenAnnotationBounds=new java.util.ArrayList<>();
+      NativeTorqueAnnotations.AnnotationLayout frozenAnnotationLayout=null;
+      if(frozenAnnotationTargets!=null){
+        for(String term:torqueBounds.split(";")){String[] values=term.split(":");if(values.length!=6)throw new IllegalArgumentException("Invalid annotation bounds");double[] box=new double[6];for(int i=0;i<6;i++){box[i]=Double.parseDouble(values[i]);if(!Double.isFinite(box[i]))throw new IllegalArgumentException("Nonfinite annotation bounds");}frozenAnnotationBounds.add(box);}
+        frozenAnnotationLayout=NativeTorqueAnnotations.prepareLayout(arrowResult,frozenAnnotationTargets,frozenAnnotationBounds,torqueLabels,cameraSpec.contains("NOTE_LAYOUT:spatial_perimeter"));
+      }
+      if(!completedStageOnly&&cameraSpec.contains("ROI_ROLE:location")){
+        double feature=0;for(String term:cameraSpec.split(","))if(term.startsWith("ROI_SPAN:"))feature=Double.parseDouble(term.substring(9));
+        java.util.List<double[]> annotationBounds=new java.util.ArrayList<>();
+        for(String term:torqueBounds.split(";")){String[] v=term.split(":");if(v.length!=6)throw new IllegalArgumentException("Invalid locator protected bounds");double[] box=new double[6];for(int i=0;i<6;i++)box[i]=Double.parseDouble(v[i]);annotationBounds.add(box);}
+        double[] plane=NativeTorqueAnnotations.protectedCameraBounds(frozenAnnotationLayout,frozenAnnotationBounds);
+        applyCadRoiFit(session,window,assembly,arrowResult,feature,outputJpeg,plane,nativeDetailFrameFraction(cameraSpec));
+      }
+      if(!completedStageOnly&&!torqueLabels.isEmpty()&&cameraSpec.contains("ROI_SPAN:")&&!cameraSpec.contains("ROI_ROLE:location")){
+        double feature=0;for(String term:cameraSpec.split(","))if(term.startsWith("ROI_SPAN:"))feature=Double.parseDouble(term.substring(9));
+        java.util.List<double[]> annotationBounds=new java.util.ArrayList<>();
+        for(String term:torqueBounds.split(";")){String[] v=term.split(":");if(v.length!=6)throw new IllegalArgumentException("Invalid label bounds");double[] box=new double[6];for(int i=0;i<6;i++)box[i]=Double.parseDouble(v[i]);annotationBounds.add(box);}
+        double[] plane=NativeTorqueAnnotations.labelCameraBounds(frozenAnnotationLayout);
+        applyCadRoiFit(session,window,assembly,arrowResult,feature,outputJpeg,plane,nativeDetailFrameFraction(cameraSpec));
+      }
+      if(!ghostReceivers.isEmpty()){
+        if(completedStageOnly)throw new IllegalArgumentException("Completed locator must remain opaque");
+        receiverAppearance.apply(session,assembly,ghostReceivers);
+        window.Repaint();session.FlushCurrentWindow();
+      }
+      if(!completedStageOnly)ArrowProjection.writeAudit(arrowResult, arrowAuditJson);
+      else {
+        java.util.List<String> paths=new java.util.ArrayList<>();for(String p:desired)if(!p.startsWith("!"))paths.add(p);java.util.Collections.sort(paths);
+        String visibleJson=paths.stream().map(p->"\""+p+"\"").collect(java.util.stream.Collectors.joining(","));
+        Files.writeString(Path.of(arrowAuditJson),"{\"schema_version\":\"creo-completed-stage/v1\",\"position_state\":\"authoritative_complete\",\"rotation_unchanged\":true,\"installation_arrows\":false,\"visible_occurrences\":["+visibleJson+"]}",java.nio.charset.StandardCharsets.UTF_8);
+      }
+      if(cameraSpec.contains("ARROW_EVIDENCE:background_difference")){
+        session.UIClearMessage();window.Repaint();session.FlushCurrentWindow();
+        JPEGImageExportInstructions backgroundInstructions=squareCropSourceExportInstructions(window);
+        backgroundInstructions.SetDotsPerInch(DotsPerInch.RASTERDPI_200);backgroundInstructions.SetImageDepth(RasterDepth.RASTERDEPTH_24);
+        Path backgroundSource=Path.of(outputJpeg+".background-source.jpg");window.ExportRasterImage(backgroundSource.toString(),backgroundInstructions);
+        cropCenterSquare(backgroundSource,Path.of(outputJpeg+".background.jpg"));
+      }
+      if(cameraSpec.contains("MOVING_EVIDENCE:occurrence_difference"))
+        writeMovingVisibilityEvidence(session,window,assembly,jobRep,items,requestedOccurrences,visibleOccurrencePaths,arrowResult,outputJpeg);
       if (drawNativeArrow) arrowDisplay = ArrowProjection.display(session, arrowResult);
+      if (!torqueLabels.isEmpty()) {
+        java.util.List<double[]> bounds = new java.util.ArrayList<>();
+        for (String term : torqueBounds.split(";")) {
+          String[] values = term.split(":");
+          if (values.length != 6) throw new IllegalArgumentException("Invalid torque protected bounds");
+          double[] box = new double[6];
+          for (int i=0;i<6;i++) { box[i]=Double.parseDouble(values[i]); if(!Double.isFinite(box[i]))throw new IllegalArgumentException("Nonfinite torque bounds"); }
+          bounds.add(box);
+        }
+        torqueDisplay = NativeTorqueAnnotations.display(session,frozenAnnotationLayout,
+            torqueContractHash, outputJpeg + (cameraSpec.contains("NOTE_KIND:installation") ? ".note.json" : ".torque.json"),cameraSpec.contains("NOTE_LAYOUT:spatial_perimeter"));
+      }
       session.UIClearMessage(); window.Repaint(); session.FlushCurrentWindow();
       JPEGImageExportInstructions instructions = squareCropSourceExportInstructions(window);
       instructions.SetDotsPerInch(DotsPerInch.RASTERDPI_200);
@@ -943,13 +1531,24 @@ public final class RenderAssemblyImage {
       Files.deleteIfExists(squareCropSource);
       window.ExportRasterImage(squareCropSource.toString(), instructions);
       cropCenterSquare(squareCropSource, Path.of(outputJpeg));
+      Files.writeString(Path.of(outputJpeg+".visibility-reset.json"),"{\"schema_version\":\"native-source-visibility-reset/v1\",\"command\":\"ProCmdViewShowAll\",\"stage_exclusion_count\":"+items.getarraysize()+",\"auxiliary_layer_retained\":true,\"image_sha256\":"+jsonString(fileHash(outputJpeg))+"}");
+      if(cameraSpec.contains("ARROW_EVIDENCE:background_difference")){
+        String backgroundHash=java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(Path.of(outputJpeg+".background.jpg"))));
+        String imageHash=java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(Path.of(outputJpeg))));
+        Files.writeString(Path.of(outputJpeg+".raster-evidence.json"),"{\"schema_version\":\"native-background-difference/v1\",\"camera_and_stage_unchanged\":true,\"background_sha256\":\""+backgroundHash+"\",\"image_sha256\":\""+imageHash+"\"}",java.nio.charset.StandardCharsets.UTF_8);
+      }
       System.err.println("[PERSISTENT] wrote=" + outputJpeg + " audit=" + arrowAuditJson);
+      completed=true;
     }
     finally {
       Throwable arrowCleanupFailure = null;
+      if (torqueDisplay != null) {
+        try { torqueDisplay.Delete(); NativeTorqueAnnotations.restoreColors(session); } catch (Throwable error) { arrowCleanupFailure=error; }
+      }
       if (arrowDisplay != null) {
         try {
           arrowDisplay.Delete();
+          ArrowProjection.restoreColors(session);
           if (window != null) {
             window.Repaint();
             session.FlushCurrentWindow();
@@ -959,12 +1558,44 @@ public final class RenderAssemblyImage {
           System.err.println("[PERSISTENT] ARROW_DISPLAY_CLEANUP_FAILED " + error);
         }
       }
-      if (window != null) try { window.Close(); } catch (Throwable ignored) {}
-      // This is the state-isolation boundary for the persistent application.
-      // The next job reopens the authoritative assembly from the isolated copy.
-      try { session.EraseUndisplayedModels(); } catch (Throwable ignored) {}
+      try {
+        if(stageAssembly!=null && savedPoses!=null){
+          restoreDynamicPoses(session,stageAssembly,savedPoses,"!none");
+          for(DynamicPose item:savedPoses){
+            Transform3D actual=item.componentPathApi
+                ?pfcAssembly.CreateComponentPath(stageAssembly,item.ids).GetTransform(true)
+                :resolveComponent(session,stageAssembly,item.ids).feature.GetPosition();
+            double[][] expected=matrix(item.pose),restored=matrix(actual);
+            for(int r=0;r<4;r++)for(int c=0;c<4;c++)
+              if(Math.abs(expected[r][c]-restored[r][c])>1e-6)
+                throw new IllegalStateException("POSE_RESTORE_MISMATCH: "+item.occurrenceId);
+          }
+          System.err.println("[PERSISTENT] poses_restored="+savedPoses.size());
+        }
+        if(stageAssembly!=null && jobRep!=null){
+          stageAssembly.ActivateSimpRep(previousRep!=null?previousRep:stageAssembly.GetMasterRep());
+          try{stageAssembly.DeleteSimpRep(jobRep);}
+          catch(com.ptc.pfc.pfcExceptions.XToolkitNotFound alreadyRemoved){
+            // Creo automatically removes a temporary rep when another is
+            // activated. A missing rep here is the desired cleanup state.
+            System.err.println("[PERSISTENT] temporary_stage_auto_removed=true");
+          }
+        }
+        if(completed&&!ghostReceivers.isEmpty()){
+          discardedDisplayModels=discardAssemblyDisplayModels(session);
+          if(!ghostSourceHash.equals(fileHash(assemblyFile)))throw new IllegalStateException("Source assembly changed during disposable display rendering");
+        }
+      }catch(Throwable error){arrowCleanupFailure=error;}
+      if(!completed || arrowCleanupFailure!=null || cameraSpec.contains("PHYSICAL_DISPLAY:explicit_include")){
+        try{discardRetainedAssembly(session);}catch(Throwable error){if(arrowCleanupFailure==null)arrowCleanupFailure=error;}
+      }
       if (arrowCleanupFailure != null)
         throw new IllegalStateException("ARROW_DISPLAY_CLEANUP_FAILED", arrowCleanupFailure);
+      if(completed&&!ghostReceivers.isEmpty()){
+        String pathsJson=java.util.Arrays.stream(ghostReceivers.split(";")).map(s->jsonString(s)).collect(java.util.stream.Collectors.joining(","));
+        String erasedJson=discardedDisplayModels.stream().map(s->jsonString(s)).collect(java.util.stream.Collectors.joining(","));
+        Files.writeString(Path.of(outputJpeg+".ghost.json"),"{\"schema_version\":\"native-receiver-ghost/v1\",\"occurrence_ids\":["+pathsJson+"],\"command\":\"ProCmdViewTranspShaded\",\"reset_strategy\":\"discarded_assembly_display_models/v1\",\"display_state_discarded\":true,\"assembly_count_after\":0,\"discarded_models\":["+erasedJson+"],\"poses_restored\":true,\"source_assembly_file\":"+jsonString(assemblyFile)+",\"source_assembly_sha256_before\":"+jsonString(ghostSourceHash)+",\"source_assembly_sha256_after\":"+jsonString(fileHash(assemblyFile))+",\"image_sha256\":"+jsonString(fileHash(outputJpeg))+"}");
+      }
     }
   }
 

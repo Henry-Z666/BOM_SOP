@@ -41,11 +41,18 @@ class SubprocessDiscoveryRunner:
         )
         run_root = Path(command[command.index("-RunWorkspace") + 1])
         complete = run_root / "discovery.complete"
+        trace = run_root / "discovery.log"
         deadline = time.monotonic() + self.timeout_seconds
         while time.monotonic() < deadline:
             return_code = process.poll()
             if return_code is not None:
                 return subprocess.CompletedProcess(command, return_code)
+            if trace.is_file():
+                detail = trace.read_text(encoding="utf-8", errors="replace")
+                if "pfcExceptions$XToolkitNoLicense" in detail:
+                    process.kill()
+                    process.wait(timeout=10)
+                    return subprocess.CompletedProcess(command, 1)
             if complete.is_file():
                 try:
                     return_code = process.wait(timeout=self.completion_grace_seconds)
@@ -153,6 +160,7 @@ class PowerShellCreoDiscovery:
         after = _tree_hashes(cad_directory)
         if before != after:
             raise RuntimeError("SOURCE_CAD_MUTATED_DURING_DISCOVERY")
+        _resolve_native_constraint_endpoints(payload)
         _validate_graph(payload, Path(final_assembly).name)
         payload["authoritative_assembly"] = {
             "schema_version": "authoritative-assembly/v1",
@@ -261,6 +269,33 @@ def _hash_manifest(items: dict[str, str]) -> str:
         items, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return "sha256:" + sha256(encoded).hexdigest()
+
+
+def _resolve_native_constraint_endpoints(payload: dict[str, Any]) -> None:
+    """Resolve duplicated parent prefixes only from the same native reference.
+
+    Keep every correction explicit; unknown references still fail graph validation.
+    """
+    known = {str(node.get("id", "")) for node in payload.get("occurrences", [])} | {"ROOT"}
+    corrections = []
+    for edge in payload.get("constraints", []):
+        ends = edge.get("occurrences")
+        if not isinstance(ends, list) or len(ends) != 2:
+            continue
+        reference = edge.get("assembly_reference")
+        if not isinstance(reference, dict):
+            continue
+        resolved = str(reference.get("occurrence_id", ""))
+        original = str(ends[1])
+        geometry = reference.get("geometry", {})
+        if (original not in known and resolved in known and resolved != "ROOT"
+                and original.endswith("/" + resolved)
+                and isinstance(geometry, dict) and geometry.get("status") == "available"):
+            ends[1] = resolved
+            corrections.append({"constraint_id": edge.get("id"), "original": original,
+                "resolved": resolved, "source": "native_assembly_reference/v1"})
+    if corrections:
+        payload["constraint_endpoint_corrections"] = corrections
 
 
 def _validate_graph(payload: dict[str, Any], expected_filename: str) -> None:

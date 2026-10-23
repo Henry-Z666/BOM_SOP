@@ -25,15 +25,13 @@ def matching_model_files_for_row(
     ambiguity when a higher-priority tier already matched.
     """
 
-    for raw_identifier in (row.drawing_no, row.model, row.material_code):
-        identifier = normalize_identifier(raw_identifier)
-        if not identifier:
+    # Explicit CAD names may be a list of alternatives, never one concatenated ID.
+    cad_names = tuple(value.strip() for value in row.cad_model_names.splitlines() if value.strip())
+    for tier in ((row.drawing_no,), cad_names, (row.model,), (row.material_code,)):
+        identifiers = {normalize_identifier(value) for value in tier if value.strip()}
+        if not identifiers:
             continue
-        matches = tuple(
-            model
-            for model in files
-            if normalize_identifier(model.base_name) == identifier
-        )
+        matches = tuple(model for model in files if normalize_identifier(model.base_name) in identifiers)
         if matches:
             return matches
     return ()
@@ -108,7 +106,7 @@ def inventory_models(cad_directory: Path, bom: NormalizedBom) -> ModelInventory:
     root = _root_row(bom)
     root_ids = tuple(
         normalize_identifier(value)
-        for value in (root.drawing_no, root.model, root.material_code)
+        for value in (root.drawing_no, *root.cad_model_names.splitlines(), root.model, root.material_code)
         if value.strip()
     )
 

@@ -1,0 +1,2 @@
+# Keep delivered artifacts and their checksum manifests byte-for-byte portable.
+deliverables/** -text

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import asdict
 from typing import Any, Mapping
 
 from .artifacts import ArtifactStore
@@ -152,6 +153,7 @@ class PipelineOrchestrator:
                 "analysis/normalized-bom.json",
                 "analysis/input-manifest.json",
                 f"plans/locked-render-plan-{plan.revision:04d}.json",
+                f"plans/locked-render-jobs-{plan.revision:04d}.json",
                 f"results/validation-{plan.revision:04d}.json",
                 f"results/candidate-set-{plan.revision:04d}.json",
             ),
@@ -258,6 +260,7 @@ class PipelineOrchestrator:
             "analysis/normalized-bom.json",
             "analysis/input-manifest.json",
             f"plans/locked-render-plan-{run.plan_revision:04d}.json",
+            f"plans/locked-render-jobs-{run.plan_revision:04d}.json",
             f"results/validation-{run.plan_revision:04d}.json",
             f"results/candidate-set-{run.plan_revision:04d}.json",
             prior_publication_ref,
@@ -284,6 +287,14 @@ class PipelineOrchestrator:
         parameters: dict[str, Any] | None = None,
     ):
         runtime = self._runtime()
+        if self.adapters.get("process_operations") is not None:
+            from .process_model import fingerprint
+            parameters = {**(parameters or {}), "process_configuration_fingerprint": fingerprint({
+                "operations": [asdict(item) for item in self.adapters["process_operations"]],
+                "bindings": [asdict(item) for item in self.adapters.get("operation_bindings", ())],
+                "sources": list(self.adapters.get("process_sources", ())),
+                "root_bom_row": self.adapters.get("root_bom_row"),
+            })}
         run = runtime.store.get(run_id)
         write_progress(
             run.workspace,

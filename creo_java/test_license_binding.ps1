@@ -20,7 +20,15 @@ $current = [regex]::Match($hostOutput, '([0-9A-Fa-f]{2}(?:[-:][0-9A-Fa-f]{2}){5}
 if (-not $current.Success) { throw 'PTC Host ID 工具未返回可验证的主机 ID。' }
 $currentHost = $current.Groups[1].Value.Replace(':', '').Replace('-', '').ToUpperInvariant()
 if ($currentHost -ne $licensedHost) {
-  throw 'PTC 学生许可证与当前主机 ID 不匹配（Invalid host）。请在 PTC 学生许可渠道重新激活/重新绑定本机；渲染未启动。'
+  # ptchostid can select the first Ethernet adapter although the legitimate
+  # license is bound to another installed adapter. Native Creo remains the
+  # authority for license availability; never change a host ID or license.
+  $installedHosts = @(Get-NetAdapter -IncludeHidden -ErrorAction Stop |
+    Where-Object { $_.Status -ne 'Not Present' -and $_.MacAddress } |
+    ForEach-Object { $_.MacAddress.Replace(':','').Replace('-','').ToUpperInvariant() })
+  if ($licensedHost -notin $installedHosts) {
+    throw 'PTC 学生许可证与当前主机 ID 不匹配（Invalid host）。请在 PTC 学生许可渠道重新激活/重新绑定本机；渲染未启动。'
+  }
 }
 
 [pscustomobject]@{ schema_version = 'creo-license-binding/v1'; status = 'passed'; license_file = $LicenseFile } | ConvertTo-Json

@@ -60,21 +60,26 @@ function Get-CreoRuntime {
 function Start-CreoNameService {
   param(
     [Parameter(Mandatory = $true)]$Runtime,
-    [int]$IdleTimeoutSeconds = 300
+    [int]$IdleTimeoutSeconds = 3600
   )
   $target = [System.IO.Path]::GetFullPath([string]$Runtime.NameService)
   $running = Get-Process -Name 'nmsd' -ErrorAction SilentlyContinue | Where-Object {
     try { [System.IO.Path]::GetFullPath($_.Path) -eq $target } catch { $false }
   } | Select-Object -First 1
-  if ($null -ne $running) { return $running }
-  $process = Start-Process -FilePath $target `
-    -ArgumentList @('-noservice', '-timeout', [string]$IdleTimeoutSeconds) `
-    -WindowStyle Hidden -PassThru
-  Start-Sleep -Milliseconds 500
-  if ($process.HasExited) {
-    throw "Creo name service exited during startup: $target"
+  $process=$running
+  if ($null -eq $process) {
+    $process = Start-Process -FilePath $target `
+      -ArgumentList @('-noservice', '-timeout', [string]$IdleTimeoutSeconds) `
+      -WindowStyle Hidden -PassThru
   }
-  return $process
+  $query=Join-Path (Split-Path -Parent $target) 'nmsq.exe'
+  for($attempt=0;$attempt -lt 20;$attempt++) {
+    if ($process.HasExited) { throw "Creo name service exited during startup: $target" }
+    $reply=(& $query -host '127.0.0.1' -ping 2>&1 | Out-String).Trim()
+    if ($LASTEXITCODE -eq 0 -and $reply -eq 'Ok') { return $process }
+    Start-Sleep -Milliseconds 500
+  }
+  throw "Creo name service process exists but does not answer PTC nmsq: $reply"
 }
 
 function Set-CreoRuntimeEnvironment {

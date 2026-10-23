@@ -40,6 +40,20 @@ def _step(index: int, process: int, image: Path, **changes) -> SopStep:
 
 
 class SopPublisherTests(unittest.TestCase):
+    def test_long_material_specification_and_source_tool_details_are_retained(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            name='球阀 miniQF-Q522F-DN8(G1/4)-304'
+            step=_step(1,1,_image(root,'one.jpg'),materials=(('130407001142',name,1),),
+                tool_details=(('力矩扳手','通用',1),('记号笔','蓝色',1)))
+            path=SopPublisher().publish((step,),root/'delivery')
+            workbook=load_workbook(path);sheet=workbook.active
+            self.assertEqual(sheet['AM21'].value,name)
+            self.assertTrue(sheet['AM21'].alignment.wrap_text)
+            self.assertGreater(sheet.row_dimensions[21].height,15)
+            self.assertEqual((sheet['AM32'].value,sheet['AR32'].value),('通用',1))
+            self.assertEqual((sheet['AM33'].value,sheet['AR33'].value),('蓝色',1))
+            workbook.close()
     def test_interleaved_processes_are_grouped_without_reordering_their_images(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

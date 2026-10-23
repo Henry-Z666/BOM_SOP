@@ -47,6 +47,17 @@ def _policy(
 
 
 _POLICIES = {
+    "MATERIAL_LABEL_EVIDENCE_INVALID": _policy("MATERIAL_LABEL_EVIDENCE_INVALID", GateCategory.HARD_BLOCK,
+        "物料编号与当页物料表或原生证据不一致。", "固定页表并重新绑定编号。", retain_real_image=True),
+    "MATERIAL_LABEL_COVERAGE_MISMATCH": _policy("MATERIAL_LABEL_COVERAGE_MISMATCH", GateCategory.HARD_BLOCK,
+        "物料气泡没有完整覆盖当前待装实例。", "按完整 occurrence 补齐标注并重出当前图。", retain_real_image=True),
+    "MATERIAL_LABEL_CLIPPED": _policy("MATERIAL_LABEL_CLIPPED", GateCategory.AUTO_REPAIR,
+        "物料气泡超出画面。", "将原生标签及引线包络纳入取景。", retain_real_image=True),
+    "MATERIAL_LABEL_TOO_SMALL": _policy("MATERIAL_LABEL_TOO_SMALL", GateCategory.AUTO_REPAIR,
+        "物料气泡字号过小。", "调整通用字号与包络布局并复验。", retain_real_image=True),
+    "TORQUE_VISUAL_REVIEW_REQUIRED": _policy(
+        "TORQUE_VISUAL_REVIEW_REQUIRED", GateCategory.HUMAN_REVIEW,
+        "力矩标注需要核对指向、遮挡和文字清晰度。", "查看原生标注图片并确认。", retain_real_image=True),
     # Assembly truth: output must not imply an assembly state that was not
     # proven by the BOM and Creo occurrence model.
     "ASSEMBLY_HASH_MISMATCH": _policy(

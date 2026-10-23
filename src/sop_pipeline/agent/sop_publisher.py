@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from copy import copy
 from io import BytesIO
-from math import floor
+from math import floor, ceil
+import unicodedata
 from pathlib import Path
 import re
 import shutil
@@ -44,6 +46,9 @@ class SopStep:
     applicable_base: str = "待填写"
     questioned: bool = False
     candidates: tuple[SopImage, ...] = ()
+    parameter_status: str = "confirmed"
+    preserve_process_order: bool = False
+    tool_details: tuple[tuple[str, str, int], ...] = ()
 
 
 class WorkbookVerifier(Protocol):
@@ -88,6 +93,10 @@ class SopPublisher:
     ) -> Path:
         if not steps:
             raise ValueError("SOP publication requires at least one step")
+        if any(step.parameter_status not in {"confirmed", "pending"} for step in steps):
+            raise ValueError("invalid process parameter status")
+        if not pending and any(step.parameter_status == "pending" for step in steps):
+            raise ValueError("工艺参数待确认，禁止发布正式 SOP")
         delivery_directory.mkdir(parents=True, exist_ok=True)
         image_directory = delivery_directory / "步骤图片"
         image_directory.mkdir(parents=True, exist_ok=True)
@@ -157,10 +166,20 @@ class SopPublisher:
             workbook.close()
             raise ValueError("内置SOP模板结构不匹配：缺少装配内容区域")
         pages: list[tuple[SopStep, ...]] = []
-        process_groups: dict[str, list[SopStep]] = {}
-        for step in steps:
-            process_groups.setdefault(step.main_process_id, []).append(step)
-        for process_steps in process_groups.values():
+        process_groups: list[list[SopStep]] = []
+        if any(step.preserve_process_order for step in steps):
+            # Process dependencies may intentionally interleave operations. Only
+            # adjacent steps can share a page; global regrouping changes chronology.
+            for step in steps:
+                if not process_groups or process_groups[-1][-1].main_process_id != step.main_process_id:
+                    process_groups.append([])
+                process_groups[-1].append(step)
+        else:
+            legacy_groups: dict[str, list[SopStep]] = {}
+            for step in steps:
+                legacy_groups.setdefault(step.main_process_id, []).append(step)
+            process_groups = list(legacy_groups.values())
+        for process_steps in process_groups:
             grouped = tuple(process_steps)
             offset = 0
             for page_size in balanced_page_sizes(len(grouped), self.images_per_page):
@@ -229,6 +248,17 @@ class SopPublisher:
             sheet[f"AJ{row}"] = _value_or_pending(code)
             sheet[f"AM{row}"] = _value_or_pending(name)
             sheet[f"AR{row}"] = quantity if quantity not in (None, "") else "待填写"
+            cell = sheet[f"AM{row}"]
+            alignment = copy(cell.alignment)
+            alignment.horizontal = "left"
+            alignment.vertical = "center"
+            alignment.wrap_text = True
+            cell.alignment = alignment
+            font_size = cell.font.sz or 9
+            available_width = sum(_column_width_pixels(sheet, col) for col in range(39, 44)) - 8
+            units = sum(1 if unicodedata.east_asian_width(c) in {"W", "F"} else 0.6 for c in str(cell.value))
+            lines = max(1, ceil(units * font_size * 4 / 3 / available_width))
+            sheet.row_dimensions[row].height = max(sheet.row_dimensions[row].height or 15, lines * font_size * 1.5 + 4)
         if not materials:
             sheet["AJ21"] = "待填写"
             sheet["AM21"] = "待填写"
@@ -247,6 +277,16 @@ class SopPublisher:
             sheet["AJ32"] = "待填写"
             sheet["AM32"] = "待填写"
             sheet["AR32"] = "待填写"
+        detailed_tools = tuple(dict.fromkeys(detail for item in steps for detail in item.tool_details))
+        if detailed_tools:
+            if len(detailed_tools) > 4:
+                raise ValueError("工具明细超过模板容量，需另行分页")
+            for row in range(32, 36):
+                sheet[f"AJ{row}"] = sheet[f"AM{row}"] = sheet[f"AR{row}"] = None
+            for row, (name, specification, quantity) in zip(range(32, 36), detailed_tools):
+                sheet[f"AJ{row}"] = name
+                sheet[f"AM{row}"] = specification
+                sheet[f"AR{row}"] = quantity
 
         worksheet_images: list[WorksheetImage] = []
         for item in steps:

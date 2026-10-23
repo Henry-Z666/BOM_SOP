@@ -25,6 +25,8 @@ datas += [
     (str(root / "scripts" / "fit_creo_image.ps1"), "scripts"),
     (str(root / "creo_java" / "src" / "AutoCadDiscovery.java"), "creo_java/src"),
     (str(root / "creo_java" / "src" / "ArrowProjection.java"), "creo_java/src"),
+    (str(root / "creo_java" / "src" / "TorqueLabelLayout.java"), "creo_java/src"),
+    (str(root / "creo_java" / "src" / "NativeTorqueAnnotations.java"), "creo_java/src"),
     (str(root / "creo_java" / "src" / "RenderAssemblyImage.java"), "creo_java/src"),
     (str(root / "creo_java" / "src" / "NativeArrowBatch.java"), "creo_java/src"),
     (str(root / "creo_java" / "src" / "NativeArrowWorker.java"), "creo_java/src"),

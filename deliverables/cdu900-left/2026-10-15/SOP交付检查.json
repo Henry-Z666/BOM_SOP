@@ -1,0 +1,42 @@
+{
+  "operations": 327,
+  "pages": 51,
+  "native_images": 139,
+  "source_diagram_pages": 0,
+  "images_in_workbook": 203,
+  "material_occurrences": 1016,
+  "printing": "A4 landscape, one worksheet per printed page",
+  "source_bom": "[project_root]\\AI生成SOP外发资料\\生产用BOM表-通用_541103000170-2000--温控单元_CDU900-1250L-S-D7L - 副本.xlsx",
+  "source_assembly": "[project_root]\\AI生成SOP外发资料\\cdu900模型cad资料\\cdu900-1250l-s-d7l.asm.3",
+  "source_assembly_sha256": "bf68d45a1813a5c802ddcbe71fdccdfbc8eb0e5bfdbe561f3b29f6ba5323b7c1",
+  "workbook_sha256": "47c2f5ed68dad916db10cdc551c09160da9f6f833f57485ae52df93dea8c9eb6",
+  "publication_scope": "main_cad_assembly_only",
+  "component_work_packages": 40,
+  "atomic_operations_in_this_edition": 327,
+  "supplier_internal_material_rows_published": 0,
+  "main_cad_assembly": true,
+  "source_atomic_operations": 366,
+  "visual_review": {
+    "all_page_layouts_reviewed": true,
+    "pages": 51,
+    "method": "All seven page contact sheets plus full-size representative component cards",
+    "representative_pages": [
+      1,
+      9,
+      10,
+      11,
+      13,
+      15,
+      19,
+      25,
+      28,
+      30,
+      35,
+      39,
+      40,
+      44,
+      50
+    ]
+  },
+  "status": "published"
+}

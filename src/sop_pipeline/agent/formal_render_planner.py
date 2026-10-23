@@ -16,7 +16,7 @@ from sop_pipeline.camera_planner import (
 from sop_pipeline.explosion_planner import select_display_translation
 
 from .bom_cad_mapper import BomCadMap, BomOccurrenceMapping
-from .bom_normalizer import NormalizedBom, NormalizedBomRow
+from .bom_normalizer import NormalizedBom, NormalizedBomRow, assembly_scope_frontier, color_boundary_contract
 from .draft_planner import DraftPlan
 from .physical_sequence import (
     PHYSICAL_SEQUENCE_POLICY,
@@ -72,6 +72,23 @@ class FormalRenderStep:
     ] = field(default_factory=dict)
 
 
+class PlanningDependencyCycle(ValueError):
+    """A reviewable blocked draft, never a publishable render plan."""
+
+    def __init__(self, steps: list[FormalRenderStep], blocked_ids: list[str]) -> None:
+        self.steps = tuple(steps)
+        self.blocked_ids = tuple(blocked_ids)
+        self.scope_requests: tuple[PlanningDiagnostic, ...] = ()
+        super().__init__("正式规划依赖图存在循环：" + ", ".join(blocked_ids[:20]))
+
+    def diagnostic_payload(self) -> dict[str, Any]:
+        return {"schema_version": "planning-blockers/v1", "status": "blocked",
+            "production_eligible": False, "code": "DEPENDENCY_CYCLE",
+            "blocked_step_ids": list(self.blocked_ids),
+            "scope_requests": [asdict(item) for item in self.scope_requests],
+            "steps": [asdict(step) for step in self.steps]}
+
+
 @dataclass(frozen=True)
 class FormalRenderPlan:
     schema_version: str
@@ -87,6 +104,7 @@ class FormalRenderPlan:
     checkpoint_interval: int
     scope_decisions: dict[str, str]
     fingerprint: str
+    color_boundaries: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -167,6 +185,14 @@ def compile_formal_render_plan(
     geometry remains questioned and is never replaced by a centre-vector guess.
     """
 
+    color_boundaries = color_boundary_contract(bom)
+    bom = assembly_scope_frontier(bom)
+    active_rows = {r.row for r in bom.rows}
+    mapping = replace(mapping, rows=tuple(r for r in mapping.rows if r.bom_row in active_rows),
+        matched_rows=sum(r.status=='matched' and r.bom_row in active_rows for r in mapping.rows),
+        ambiguous_rows=tuple(r for r in mapping.ambiguous_rows if r in active_rows),
+        missing_rows=tuple(r for r in mapping.missing_rows if r in active_rows),
+        quantity_mismatch_rows=tuple(r for r in mapping.quantity_mismatch_rows if r in active_rows))
     _validate_inputs(bom, draft_plan, mapping, graph)
     nodes = {str(node["occurrence_id"]): node for node in graph["occurrences"]}
     constraints = tuple(graph.get("constraints", ()))
@@ -201,10 +227,25 @@ def compile_formal_render_plan(
         if row.parent_bom_row == root_mapping.bom_row and row.status == "matched"
     ]
     root_foundation = min(root_children, key=lambda row: row.bom_row) if root_children else None
+    foundation_containers: set[int] = set()
+    if root_foundation is not None and not bom_rows[root_foundation.bom_row].assembly_boundary:
+        prefix=bom_rows[root_foundation.bom_row].level.split('.')
+        issued=[m for m in mapping.rows if m.status=='matched' and bom_rows[m.bom_row].assembly_boundary
+                and bom_rows[m.bom_row].level.split('.')[:len(prefix)]==prefix]
+        if issued:
+            # The frame is a construction scope. Starting with its complete
+            # ASM would expose future columns/beams before their operations.
+            chosen=min(issued,key=lambda m:m.bom_row)
+            foundation_containers={m.bom_row for m in mapping.rows if m.bom_row!=root_mapping.bom_row
+                and any(o!=p and p.startswith(o+'/') for o in m.occurrence_ids for p in chosen.occurrence_ids)}
+            root_foundation=chosen
 
     for mapped in sorted(mapping.rows, key=lambda row: row.bom_row):
         row = bom_rows[mapped.bom_row]
         if mapped.bom_row == root_mapping.bom_row or mapped.status == "non_renderable":
+            continue
+        if mapped.bom_row in foundation_containers:
+            context_only_bom_rows.add(mapped.bom_row)
             continue
         if mapped.status != "matched":
             unresolved_bom_rows.add(mapped.bom_row)
@@ -396,7 +437,11 @@ def compile_formal_render_plan(
         if not split_ids:
             # A real occurrence/assembly precedence conflict needs repair or
             # a process decision. Keep the existing fail-closed diagnostic.
-            _topologically_order(ordered)
+            try:
+                _topologically_order(ordered)
+            except PlanningDependencyCycle as blocked:
+                blocked.scope_requests = tuple(_subassembly_scope_diagnostics(ordered, nodes, bom_rows))
+                raise
             raise AssertionError("cycle detector and ordering disagree")
         rebuilt: list[FormalRenderStep] = []
         for step in ordered:
@@ -454,6 +499,7 @@ def compile_formal_render_plan(
         "questioned_steps": questioned_steps,
         "checkpoint_interval": draft_plan.checkpoint_interval,
         "scope_decisions": {},
+        "color_boundaries": color_boundaries,
     }
     return FormalRenderPlan(
         schema_version="formal-render-plan/v2",
@@ -471,6 +517,7 @@ def compile_formal_render_plan(
         questioned_steps=questioned_steps,
         checkpoint_interval=draft_plan.checkpoint_interval,
         scope_decisions={},
+        color_boundaries=color_boundaries,
         fingerprint=_canonical_hash(payload),
     )
 
@@ -549,6 +596,7 @@ def lock_formal_render_plan(
         "questioned_steps": questioned_steps,
         "checkpoint_interval": plan.checkpoint_interval,
         "scope_decisions": decisions,
+        "color_boundaries": plan.color_boundaries,
     }
     return FormalRenderPlan(
         schema_version=plan.schema_version,
@@ -563,6 +611,7 @@ def lock_formal_render_plan(
         questioned_steps=questioned_steps,
         checkpoint_interval=plan.checkpoint_interval,
         scope_decisions=decisions,
+        color_boundaries=plan.color_boundaries,
         fingerprint=_canonical_hash(payload),
     )
 
@@ -685,6 +734,7 @@ def formal_render_plan_from_dict(
             str(key): str(value) for key, value in payload.get("scope_decisions", {}).items()
         },
         fingerprint=str(payload["fingerprint"]),
+        color_boundaries=dict(payload.get("color_boundaries", {})),
     )
 
 
@@ -733,7 +783,7 @@ def _fixed_to_parent(
     parent_occurrences = set(parent.occurrence_ids)
     for occurrence in mapped.occurrence_ids:
         if not any(
-            edge.get("type") == "FIX"
+            edge.get("type") in {"FIX", "DEFAULT_PLACEMENT"}
             and edge.get("occurrences", [None, None])[0] == occurrence
             and edge.get("occurrences", [None, None])[1] in parent_occurrences
             for edge in constraints
@@ -752,7 +802,7 @@ def _fixed_scope_parent(
         matches = [
             str(edge["occurrences"][1])
             for edge in constraints
-            if edge.get("type") == "FIX"
+            if edge.get("type") in {"FIX", "DEFAULT_PLACEMENT"}
             and len(edge.get("occurrences", ())) == 2
             and str(edge["occurrences"][0]) == occurrence
         ]
@@ -906,6 +956,16 @@ def _proven_step(
     nodes: dict[str, dict[str, Any]],
     display_distance: float,
 ) -> FormalRenderStep:
+    # Bound local presentation by actual moving-solid dimensions. A small
+    # fastener must not inherit the diagonal of the entire product.
+    spans = [max(float(bounds["max"][axis]) - float(bounds["min"][axis])
+                 for axis in range(3))
+             for member in members
+             if isinstance((bounds := nodes.get(member.occurrence_id, {}).get("bounds_root")), dict)
+             and bounds.get("status") == "available"]
+    local_span = max(spans, default=0.0)
+    if local_span > 1e-9:
+        display_distance = min(display_distance, 1.5 * local_span)
     normal = _unit(
         tuple(
             sum(item.outward_normal[index] for item in members)
@@ -1150,7 +1210,7 @@ def _topologically_order(steps: list[FormalRenderStep]) -> list[FormalRenderStep
         ready.sort(key=priority)
     if len(ordered) != len(steps):
         cycle = sorted(step_id for step_id, dependencies in remaining.items() if dependencies)
-        raise ValueError("正式规划依赖图存在循环：" + ", ".join(cycle[:20]))
+        raise PlanningDependencyCycle(steps, cycle)
     return ordered
 
 

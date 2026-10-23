@@ -1,5 +1,28 @@
 # Creo SOP Agent
 
+## 最新成果（2026-10-23 整理入仓）
+
+已按用户提供的总装工艺卡，完成 **40 个部件工作包、51 页主要 CAD 装配工艺卡**。紧固件及密封件归入对应部件，黄色 BOM 来料边界保持完整；本版按用户要求省略标签、现场照片、检查和包装页。
+
+- [Excel 成品及逐页预览](deliverables/cdu900-left/2026-10-15/README.md)
+- [本次版本说明、验证与复现条件](docs/component-sop-delivery-20261015.md)
+- [按部件出版规则](rules/component-based-publication.md)
+- [已整理的出版脚本](scripts/cdu900/README.md)
+
+下方记录保留各阶段的历史范围；最新出品以本节链接为准。
+
+2026-10-13 已完成100步阶段装配SOP：61页、228张原生图，覆盖框架安装、门锁拉杆及管路分装。新版BOM颜色边界已固化到正式计划、任务编译与出版入口；无颜色证据的旧计划拒绝编译，内部制造件和重复领料在出版时再次阻止。见 [100步阶段出品](docs/stage-100-step-delivery-20261013.md) 与 [通用颜色边界规则](rules/bom-color-assembly-boundaries.md)。
+
+2026-10-12 已完成新版颜色与层级规则下的32步框架装配阶段性SOP：28页、110张原生图、一页多图。独立核对原始BOM底色与实际Excel页表，内部制造行没有新增工序或重复计料，嵌套黄色子件也随外层完整发料组件排除。见 [32步出品与颜色自检](docs/frame-32-step-delivery-20261012.md)。
+
+2026-10-12 已按新版 BOM 黄色发料组件重构装配边界，排除完整组件内部的制造步骤，避免提前显示整个未装框架。四根立柱安装阶段已完成 17 张实机图和 4 页多图 SOP。见 [完整发料组件规则与阶段成果](docs/supplied-assembly-boundaries-20261012.md)。
+
+物料气泡默认直接显示新版报表中的中文名称；位置编号仍关联局部组，统一使用力矩气泡样式，并可与完整力矩文字共同布局。见 [气泡融合验证及名称规则](docs/material-number-callouts-20261010.md)。
+
+2026-10-10 通用取景默认规则已升级为 v15：按 CAD 安装特征尺寸选择单图或定位＋全部局部组，原生视口标定，定位编号绑定安装完成点，逐件排除对照检查遮挡。规则与验证范围见 [通用取景规则](rules/adaptive-installation-framing.md) 和 [实机验证记录](docs/通用取景验证记录-20261010.md)。这是小批量诊断出图能力；正式多图编译、含力矩标签重新绑定及全组出版仍需接通验收。
+
+2026-10-08 材料基线已更新：新版原件保留在 `AI生成SOP外发资料/`，桌面 `左机材料/` 已同步。旧材料、历史运行与交付输出已归档，不能作为新版验证结果复用。整理范围与待核实差异见 [材料更新记录](docs/materials-refresh-20261008.md)。工艺操作与力矩标注的第一阶段入口、验证范围及最新实机结果见 [重构阶段成果](docs/process-mvp-20261008.md)。
+
 Windows 桌面工具：使用 Excel BOM、Creo ASM/PRT 模型、本地确定性规则和可选的 Qwen-VL 图片审核，生成安装步骤图片与可编辑 SOP。CAD 真值始终由本地 Creo 硬门控制；AI 只判断渲染图片是否清楚可用。
 
 正式调用链：
@@ -179,3 +202,10 @@ $env:CREO_SOP_AI_REVIEW = '0'
 - [合同与硬门](rules/contracts.md)
 - [原生箭头与可迁移推导](docs/arrow-generation-and-portability.md)
 - [SOP 出版规则](docs/spreadsheet-sop-publication.md)
+
+
+## 新版资料全量重建
+
+`python -m sop_pipeline.agent.process_cli rebuild --product data/products/cdu900-left/product.json --graph work/process-mvp-20261008/cad-graph.json --output outputs/重构阶段成果-20261008`
+
+省略 `--graph` 执行新扫描。复用图谱前校验全部 CAD 哈希，重新解析工艺卡和标准；生成独立分析目录、全量绑定候选、阻断记录和可搜索评审页面。当前评审入口：`outputs/重构阶段成果-20261008/阶段评审.html`。
