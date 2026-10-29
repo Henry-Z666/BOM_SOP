@@ -6,7 +6,7 @@
 
 输入由本地 `CREO_SOP_PUBLICATION_INPUT` 指定，默认 `project-data/cdu900-left/`（已忽略）。目录中的 `analysis/` 放排序、出图检查、工具和工艺解析 JSON；可选 `bundle-manifest.json` 提供旧路径到本地文件的映射。没有映射时保留输入中的原路径。
 
-原料、图片、项目专属解析数据和最终 SOP 均由使用者在本地准备，不随仓库上传。`出版排序内容.json` 是某次运行的数据，不是通用工艺规则；通用逻辑由这些脚本及 `rules/` 维护。
+关键解析、排序及检查数据已纳入 `project-data/cdu900-left/analysis/`。原料、图片和最终 SOP 在本地保留，不上传。`出版排序内容.json` 是某次运行的数据，不是通用工艺规则；通用逻辑由这些脚本及 `rules/` 维护。
 
 ## 顺序
 

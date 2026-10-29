@@ -1,0 +1,16 @@
+{
+  "schema_version": "process-product/v1",
+  "product_id": "cdu900-left",
+  "source_root": "sources",
+  "bom": "生产用BOM表-通用_541103000170-2000--温控单元_CDU900-1250L-S-D7L - 副本.xlsx",
+  "process_cards": [
+    "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx"
+  ],
+  "standards": [
+    "ESOP通用模板及工艺参数标准.xlsx"
+  ],
+  "cad_directory": "cdu900模型cad资料",
+  "root_assembly": "cdu900-1250l-s-d7l.asm.3",
+  "root_bom_row": 2
+}

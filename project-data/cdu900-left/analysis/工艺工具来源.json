@@ -1,0 +1,766 @@
+{
+  "op-9683d65c22b56cf42988": [],
+  "op-16c007b58da880928d7d": [],
+  "op-11d13ac22cc8e0eb4a64": [],
+  "op-dd1eaaaeed5230b88515": [],
+  "op-ab3594d1b2ef1a5b0d53": [],
+  "op-d4385740f10de4a1922a": [],
+  "op-e33655df20d259a12909": [],
+  "op-30a87a9b1c40c35b501d": [],
+  "op-1b250b346f7f93de3fa3": [],
+  "op-f032bce1f11945d9eebd": [],
+  "op-bbe74dbc3a1212f9bcb2": [],
+  "op-59622df2c330ac5544b9": [],
+  "op-88678c008a9f197dfe77": [],
+  "op-5b7798daaa0547c3cc11": [],
+  "op-fcb948682499948e3337": [],
+  "op-3b95a44d502c56fe1464": [],
+  "op-09ffcec3b0d4cfd3e8d8": [],
+  "op-a2955d6998113d58ca24": [],
+  "op-693f18a0cf1434ea6e6f": [],
+  "op-4dfccf36034795cdb48c": [],
+  "op-e7d28fd1445cc0ec2c48": [],
+  "op-0f167b653da17c6d1933": [],
+  "op-79b85a10f21e002c7973": [],
+  "op-86a2e8517888050df236": [],
+  "op-dea914f5d58be6576819": [],
+  "op-2d7b79b1c83f204bf724": [],
+  "op-1f4f97b1b3af0ebb377b": [],
+  "op-4574aa1120ff03c77484": [],
+  "op-52b8f44a14663ca48447": [],
+  "op-80c688a939eb62b84625": [],
+  "op-e5252ae642ce05a49d6a": [],
+  "op-af7254c882dc2e592e6d": [
+    {
+      "name": "力矩扳手",
+      "spec": "通用",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "水泵安装-1"
+    }
+  ],
+  "op-032a1e3eeb19b8012de1": [
+    {
+      "name": "扭力扳手",
+      "spec": "45N.m",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "水泵安装-2"
+    }
+  ],
+  "op-999fdec8110018c36066": [],
+  "op-9f3593831eb88fdba93f": [],
+  "op-cd11aa5c0ad64269ef74": [],
+  "op-5aaf55076f3e8b89b1fa": [],
+  "op-07e44c9e94559db8516c": [],
+  "op-be8d0fded58226d6ca3b": [],
+  "op-8fd9daea69475700f5c8": [],
+  "op-38761f2b663039e0d80d": [],
+  "op-a810d3c651c7fc82b1de": [],
+  "op-62904b6c650f4bc72d1c": [],
+  "op-05429caaeba3945c5cad": [],
+  "op-d58cd6db21774dda00b8": [],
+  "op-fd06c301bd65c14ee68a": [],
+  "op-02370ce0873e1a5c8779": [],
+  "op-79467acec89cd44a615e": [],
+  "op-60126ff46a39eb8e438d": [],
+  "op-97d403a6864ffb15b07e": [],
+  "op-2cd9057ade5d9274c498": [],
+  "op-c4e031ea2ca37cf9c29f": [],
+  "op-7dcc345d0037b86d4681": [],
+  "op-30dfabf661244efaf604": [],
+  "op-115533613b6335ab1dc7": [],
+  "op-43b6aff687079e42293c": [],
+  "op-565e63504aac88ab901d": [],
+  "op-13b1ff54bd74d9c971da": [],
+  "op-f691bfebf8c981007031": [],
+  "op-6e6fa5d7f7801a5a6e93": [],
+  "op-2b8c0422a1c2b7a16ec9": [],
+  "op-9cf69e1e52b04cfb3cfb": [],
+  "op-425e379da305318df886": [],
+  "op-f2e13c545e2a504d1a24": [],
+  "op-68ddea681c7afa5e51d6": [],
+  "op-8cb021564204582b3034": [],
+  "op-394c9c7b91bb2309f136": [],
+  "op-d3112c4a37da080b1705": [
+    {
+      "name": "力矩电批",
+      "spec": "0.6N.m",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "电器件分装-2"
+    }
+  ],
+  "op-5b4e42f3f14866f0b79d": [
+    {
+      "name": "力矩电批",
+      "spec": "1.2N.m",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "电器件分装-3"
+    },
+    {
+      "name": "力矩电批",
+      "spec": "1.7N.m",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "电器件分装-3"
+    },
+    {
+      "name": "力矩扳手",
+      "spec": "6.0N.m",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "电器件分装-3"
+    }
+  ],
+  "op-9957e96eb8f459b32de5": [
+    {
+      "name": "力矩电批",
+      "spec": "0.6N.m",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "电器件分装-4"
+    }
+  ],
+  "op-06855ce0235c167c5af2": [
+    {
+      "name": "斜口钳",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-1(G) "
+    },
+    {
+      "name": "记号笔",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-1(G) "
+    },
+    {
+      "name": "力矩电批",
+      "spec": "4.0N.m",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-1(G) "
+    },
+    {
+      "name": "力矩扳手",
+      "spec": "3.75N.m",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-1(G) "
+    }
+  ],
+  "op-0ce559df4b10b0ba5f8b": [
+    {
+      "name": "斜口钳",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-2 (G)"
+    },
+    {
+      "name": "记号笔",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-2 (G)"
+    },
+    {
+      "name": "力矩电批",
+      "spec": "1.7N.m",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-2 (G)"
+    },
+    {
+      "name": "力矩电批",
+      "spec": "4.0N.m",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-2 (G)"
+    }
+  ],
+  "op-a1a66ac0c6ce12089198": [
+    {
+      "name": "斜口钳",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-3 (G) "
+    },
+    {
+      "name": "记号笔",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-3 (G) "
+    }
+  ],
+  "op-8bfdfeba57dce8ba03d0": [
+    {
+      "name": "斜口钳",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-4 (G) "
+    },
+    {
+      "name": "记号笔",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-4 (G) "
+    }
+  ],
+  "op-0767e470770edae364e9": [
+    {
+      "name": "斜口钳",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-5 (G) "
+    },
+    {
+      "name": "记号笔",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-5 (G) "
+    }
+  ],
+  "op-32dd27042799bdf887e1": [
+    {
+      "name": "斜口钳",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-6 (G)"
+    },
+    {
+      "name": "记号笔",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-6 (G)"
+    }
+  ],
+  "op-381554e01843dce59509": [
+    {
+      "name": "斜口钳",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-7 (G)"
+    },
+    {
+      "name": "记号笔",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-7 (G)"
+    }
+  ],
+  "op-8a6af0bc4611951fb86d": [
+    {
+      "name": "斜口钳",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-8 (G) "
+    },
+    {
+      "name": "记号笔",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-8 (G) "
+    }
+  ],
+  "op-cfaf725d75853cc2a80b": [
+    {
+      "name": "斜口钳",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-9 (G)"
+    },
+    {
+      "name": "记号笔",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-9 (G)"
+    }
+  ],
+  "op-2e99aa23680e4097e859": [
+    {
+      "name": "斜口钳",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-10 (G)"
+    },
+    {
+      "name": "记号笔",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-10 (G)"
+    }
+  ],
+  "op-1c2354f6eaadd04cffc2": [
+    {
+      "name": "斜口钳",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-11 (G)"
+    },
+    {
+      "name": "记号笔",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-11 (G)"
+    },
+    {
+      "name": "螺丝刀",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-11 (G)"
+    }
+  ],
+  "op-389f28cd2453642b8274": [
+    {
+      "name": "斜口钳",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-12  (G) "
+    },
+    {
+      "name": "记号笔",
+      "spec": "",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-12  (G) "
+    },
+    {
+      "name": "力矩电批",
+      "spec": "4.0N.m",
+      "quantity": 1,
+      "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+      "sheet": "走线布线-12  (G) "
+    }
+  ],
+  "op-86cad85cdfb6dcd300b7": [],
+  "op-95bae78b1994a704759f": [],
+  "op-af4ea274166b385a97c4": [],
+  "op-4055b93ae53dd183f4ea": [],
+  "op-4c5e3bac49aee80abfa8": [],
+  "op-292482236b3e6c7c18b6": [],
+  "op-38e5446b5770500116ea": [],
+  "op-ebe781053eceb8fa6119": [],
+  "op-d4b72dd38590a2eafe3e": [],
+  "op-cba06e1ccd762bf88425": [],
+  "op-c255cfe63eb13044b70b": [],
+  "op-fe0a4fe1b250ac57b607": [
+    {
+      "name": "电批",
+      "spec": "4N.m",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "循环泵分装-1"
+    }
+  ],
+  "op-8740008828e03b08e974": [
+    {
+      "name": "力矩扳手",
+      "spec": "45N.m",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "循环泵分装-2"
+    },
+    {
+      "name": "记号笔",
+      "spec": "蓝色",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "循环泵分装-2"
+    }
+  ],
+  "op-4070af757116d407ca6e": [],
+  "op-bf9f0e8211e184cfc64f": [
+    {
+      "name": "裁剪机",
+      "spec": "/",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "补液箱分装-2"
+    }
+  ],
+  "op-e4eb710ebc30fb60dbfd": [
+    {
+      "name": "扭力扳手",
+      "spec": "通用",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "补液箱分装-3"
+    }
+  ],
+  "op-1a88afd9a4f58725c124": [
+    {
+      "name": "电批",
+      "spec": "通用",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "补液箱分装-4"
+    }
+  ],
+  "op-bbc109422bd58f3024c9": [],
+  "op-577e3ae79d77d31e1285": [
+    {
+      "name": "气枪",
+      "spec": "/",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "水箱检漏 2"
+    },
+    {
+      "name": "干净布",
+      "spec": "无纺抹布",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "水箱检漏 2"
+    },
+    {
+      "name": "酒精",
+      "spec": "90%工业酒精",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "水箱检漏 2"
+    }
+  ],
+  "op-ef9b4e4402bb5c73ba72": [
+    {
+      "name": "力矩扳手",
+      "spec": "45N.m",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "膨胀罐分装-1"
+    },
+    {
+      "name": "记号笔",
+      "spec": "蓝色",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "膨胀罐分装-1"
+    }
+  ],
+  "op-b9da44b9e68e7ac9507a": [
+    {
+      "name": "电批",
+      "spec": "通用",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "膨胀罐分装-2"
+    }
+  ],
+  "op-de22e4eb20ed8ff3bf0b": [
+    {
+      "name": "数显压力表",
+      "spec": "YS-100",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "膨胀罐分装-3"
+    },
+    {
+      "name": "压力表",
+      "spec": "开关可调",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "膨胀罐分装-3"
+    },
+    {
+      "name": "充气软管",
+      "spec": "/",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "膨胀罐分装-3"
+    }
+  ],
+  "op-9b9420b74fda38a9d179": [
+    {
+      "name": "力矩扳手",
+      "spec": "通用",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "膨胀罐分装-4"
+    },
+    {
+      "name": "记号笔",
+      "spec": "蓝色",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "膨胀罐分装-4"
+    }
+  ],
+  "op-96384186937a2e15008b": [
+    {
+      "name": "记号笔",
+      "spec": "蓝色",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "板换分装-1"
+    }
+  ],
+  "op-482cafe46e74c858dad4": [
+    {
+      "name": "美工刀",
+      "spec": "/",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "板换分装-2"
+    },
+    {
+      "name": "力矩扳手",
+      "spec": "通用",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "板换分装-2"
+    },
+    {
+      "name": "记号笔",
+      "spec": "蓝色",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "板换分装-2"
+    }
+  ],
+  "op-8a46fd9b9bc7bfbcc372": [],
+  "op-6bc81b7bd78c7d0357b8": [
+    {
+      "name": "电批",
+      "spec": "通用",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "前门板分装2"
+    }
+  ],
+  "op-b9ba281c90c7d6beffbe": [
+    {
+      "name": "电批",
+      "spec": "通用",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "前门板分装3"
+    }
+  ],
+  "op-819f9de662ede16e1036": [],
+  "op-9373393404587e318906": [
+    {
+      "name": "力矩扳手",
+      "spec": "通用",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "管路1分装-1"
+    }
+  ],
+  "op-a0802ebfc43767be2637": [
+    {
+      "name": "力矩扳手",
+      "spec": "通用",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "管路1分装2"
+    }
+  ],
+  "op-d70f8aa2388889ec33cb": [
+    {
+      "name": "力矩扳手",
+      "spec": "通用",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "管路1分装3"
+    },
+    {
+      "name": "记号笔",
+      "spec": "蓝色",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "管路1分装3"
+    }
+  ],
+  "op-5984b03e3feed7874a66": [
+    {
+      "name": "力矩扳手",
+      "spec": "通用",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "管路1分装4"
+    },
+    {
+      "name": "记号笔",
+      "spec": "蓝色",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "管路1分装4"
+    }
+  ],
+  "op-9e06810a027816f12473": [
+    {
+      "name": "力矩扳手",
+      "spec": "通用",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "管路2分装-1"
+    },
+    {
+      "name": "记号笔",
+      "spec": "蓝色",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "管路2分装-1"
+    }
+  ],
+  "op-acea7e1d5e523e47dc5d": [
+    {
+      "name": "力矩扳手",
+      "spec": "通用",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "管路2分装-2"
+    },
+    {
+      "name": "记号笔",
+      "spec": "蓝色",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "管路2分装-2"
+    }
+  ],
+  "op-b602b8ea21d6703ace8a": [
+    {
+      "name": "力矩扳手",
+      "spec": "通用",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "管路3分装-1"
+    }
+  ],
+  "op-da45862f5c1882c6a1bc": [
+    {
+      "name": "力矩扳手",
+      "spec": "通用",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "管路3分装-2"
+    },
+    {
+      "name": "记号笔",
+      "spec": "蓝色",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "管路3分装-2"
+    }
+  ],
+  "op-8f5be180f12442a3ffa2": [
+    {
+      "name": "力矩扳手",
+      "spec": "通用",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "管路3分装-3"
+    },
+    {
+      "name": "记号笔",
+      "spec": "蓝色",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "管路3分装-3"
+    }
+  ],
+  "op-eccc6c0fa9c1d53c26ae": [
+    {
+      "name": "记号笔",
+      "spec": "蓝色",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "管路4分装-1"
+    }
+  ],
+  "op-185c00823191df85b7d8": [
+    {
+      "name": "记号笔",
+      "spec": "蓝色",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "管路4分装-2"
+    }
+  ],
+  "op-2664de7563f366f2743f": [
+    {
+      "name": "记号笔",
+      "spec": "蓝色",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "管路5分装-1"
+    }
+  ],
+  "op-1db2d5c34bfe0a5aecae": [
+    {
+      "name": "记号笔",
+      "spec": "蓝色",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "管路5分装-2"
+    }
+  ],
+  "op-67b9a111e1aec7a6356e": [
+    {
+      "name": "记号笔",
+      "spec": "蓝色",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "管路5分装-3"
+    }
+  ],
+  "op-f232061527da38519ceb": [
+    {
+      "name": "记号笔",
+      "spec": "蓝色",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "管路5分装-4"
+    }
+  ],
+  "op-3fae6ecfc9fe25e3de95": [
+    {
+      "name": "记号笔",
+      "spec": "蓝色",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "管路5分装-6"
+    }
+  ],
+  "op-9f34c4c28e6ee79bd6fa": [
+    {
+      "name": "记号笔",
+      "spec": "蓝色",
+      "quantity": 1,
+      "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+      "sheet": "管路6分装1"
+    }
+  ],
+  "op-9f5a00c089d70a9985b5": [],
+  "op-61aaca61092eaa263f3f": [],
+  "op-11ebe4cd6375f3e54aa4": [],
+  "op-d83e2eb8d4b0daf570bf": [],
+  "op-b91c13c1ccd2a4e16735": [],
+  "op-3e4361aa8bbfc479dac9": [],
+  "op-44d5efac2d7572082023": []
+}

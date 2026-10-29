@@ -1,2 +1,4 @@
 # Keep delivered artifacts and their checksum manifests byte-for-byte portable.
 deliverables/** -text
+
+project-data/cdu900-left/analysis/*.json -text

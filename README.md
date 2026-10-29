@@ -193,4 +193,4 @@ powershell -NoProfile -File .\packaging\build.ps1 `
 
 开发进度和历史验证数据保存在 `docs/`；README 重整前的记录归档于[历史快照](docs/history/readme-before-product-guide-20261023.md)。
 
-仓库仅维护通用流程代码、规则、配置示例、空白模板及使用文档。产品原料、原生图片、项目专属解析/排序数据和成品 SOP 保存在本地，不纳入上传范围。
+仓库维护流程代码、规则、配置示例、空白模板、使用文档，以及[本次项目关键中间数据](project-data/cdu900-left/README.md)。产品原料、原生图片和成品 SOP 保存在本地，不纳入上传范围。

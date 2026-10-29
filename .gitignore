@@ -43,6 +43,12 @@ Thumbs.db
 /实习证明_可编辑模板.docx
 /项目交接文档.docx
 
-# Product inputs, intermediate evidence and finished publications stay local.
-/project-data/
+# Keep originals, images and final publications local; track selected intermediate data.
+/project-data/*
+!/project-data/cdu900-left/
+/project-data/cdu900-left/*
+!/project-data/cdu900-left/analysis/
+!/project-data/cdu900-left/bundle-manifest.json
+!/project-data/cdu900-left/product.json
+!/project-data/cdu900-left/README.md
 /deliverables/

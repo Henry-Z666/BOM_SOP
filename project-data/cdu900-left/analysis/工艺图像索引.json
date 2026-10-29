@@ -1,0 +1,740 @@
+[
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 327,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "走线布线-1(G) ",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-327.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-327.png",
+    "image_sha256": "f66a8b3c7713b558e14400f9caec886ed245ca29d86f891fe0294d45ace7c927",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 328,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "走线布线-2 (G)",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-328.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-328.png",
+    "image_sha256": "c3cd0a66bbcddea8e548c60df081fbb9984833373e59d79537a2d52890f4dac7",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 329,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "走线布线-3 (G) ",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-329.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-329.png",
+    "image_sha256": "cd865e1274d3db404d3f75e2d4647afd02c4559ab9901eca48e9897daf3d13ed",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 330,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "走线布线-4 (G) ",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-330.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-330.png",
+    "image_sha256": "3d37252564430c521c0f03a5e49b955e3d998cc5700acc0b004609e173d2c351",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 331,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "走线布线-5 (G) ",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-331.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-331.png",
+    "image_sha256": "1e7417c0ad3c29246e67001a94519eb0e0999ca335527b64e5689672a42a91b2",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 332,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "走线布线-6 (G)",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-332.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-332.png",
+    "image_sha256": "91fe1ba14f75dfa8f1aa2219c0d50249480d131d4519dac537c043eb0a8095c9",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 333,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "走线布线-7 (G)",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-333.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-333.png",
+    "image_sha256": "136f469d29bf2f3ffb61a4dc52126627ed1aec0e2bc0e62741022a0ef805afab",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 334,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "走线布线-8 (G) ",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-334.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-334.png",
+    "image_sha256": "ac94c169328eef65258cd0b471506aa6bcc06fc12603c1bf8cd407b9e4574021",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 335,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "走线布线-9 (G)",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-335.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-335.png",
+    "image_sha256": "1438d42cc36a370e1a0ca481e4c1f0fe9fdc62b55fdc4f5efbcf9654ef1e8485",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 336,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "走线布线-10 (G)",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-336.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-336.png",
+    "image_sha256": "5fda535b732eb01e1e516e5f01acac1942412684fea8c912eb9644248722fb62",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 337,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "走线布线-11 (G)",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-337.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-337.png",
+    "image_sha256": "54f8978bf557223329909534f79d3aaa384e11f34a431c5ac13838f964534393",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 338,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "走线布线-12  (G) ",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-338.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-338.png",
+    "image_sha256": "e813c18543d6e9f597ec3a6e3d171bbdf2a65ecc51048d5b904c1484138921e9",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:2f042b76c396117008ce4063ade2fc284711f35b48cc18ee20692ba72cf497ab",
+    "operation": 341,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+    "sheet": "氦检-1",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-341.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-341.png",
+    "image_sha256": "2d46fd35bfffc211c981c29a5e1f86175dc74f366be438a2411ac7a8e094fc96",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:2f042b76c396117008ce4063ade2fc284711f35b48cc18ee20692ba72cf497ab",
+    "operation": 342,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+    "sheet": "氦检-2",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-342.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-342.png",
+    "image_sha256": "4c0ce7086eb56ab3ba7f04190eba5fddff3d2c9d4cb12b5bce604ecdd19e2361",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:2f042b76c396117008ce4063ade2fc284711f35b48cc18ee20692ba72cf497ab",
+    "operation": 343,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+    "sheet": "氦检-3",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-343.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-343.png",
+    "image_sha256": "adb12de44f8b2deb19fe78561045512978a2afd1f65ae86dc52e61f6950efba9",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:2f042b76c396117008ce4063ade2fc284711f35b48cc18ee20692ba72cf497ab",
+    "operation": 344,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+    "sheet": "氦检-4",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-344.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-344.png",
+    "image_sha256": "5520a62ec5e71364b65159ff52302a1af5ba66afeacaf9264ef186a78847adab",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:2f042b76c396117008ce4063ade2fc284711f35b48cc18ee20692ba72cf497ab",
+    "operation": 345,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+    "sheet": "氦检-5",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-345.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-345.png",
+    "image_sha256": "172fe2c06afbea9368bd482580d0c7d137554a6e0778a68df5ba929f607694ee",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:2f042b76c396117008ce4063ade2fc284711f35b48cc18ee20692ba72cf497ab",
+    "operation": 346,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+    "sheet": "氦检-6",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-346.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-346.png",
+    "image_sha256": "b7baa22d124bbc86d65ea69b93b423e84f87c17fac9f09fcfb9c3808e2160544",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:2f042b76c396117008ce4063ade2fc284711f35b48cc18ee20692ba72cf497ab",
+    "operation": 347,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+    "sheet": "氦检-7",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-347.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-347.png",
+    "image_sha256": "4baea8f01164008e7f32c4dcae6211d1e349d51c41afca2f179bc05359d490e0",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 348,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "检漏-1（G）",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-348.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-348.png",
+    "image_sha256": "5f930438634bbfc691c4d685209a83187d4b80f5c7299dff4ef2ee9d07c6fa35",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 349,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "检漏-2（G）",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-349.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-349.png",
+    "image_sha256": "adfcd0257906bfdc7c1db247ef6cbad818f04d54046c969043c97fe13849a25c",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 350,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "检漏-3（G）",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-350.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-350.png",
+    "image_sha256": "f99eed3620aabd4ed328b9382ba18e5b931a0b3588128a39bfd5f79ddf8242c1",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 351,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "检漏-4（G）",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-351.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-351.png",
+    "image_sha256": "a6a3b1b2b133c0dc369fe529e4da3c6a1b07180e1b49995529308ec2a3917bb9",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 352,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "一次侧管路贴标-1",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-352.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-352.png",
+    "image_sha256": "f37bcf068af280965ae9a4b74f7e7c023a3cec8a972722c630603c98fd9f32e2",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 353,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "一次侧管路贴标-4",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-353.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-353.png",
+    "image_sha256": "45be9f5b95aeeb5ac9d1f21c69b22397f4f910679bde8069bf79e8fcb58a14ee",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 354,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "打包-1",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-354.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-354.png",
+    "image_sha256": "03556d9121d9723529f1ae0c55e80f186718c5b19654960dfef220fdb7363e7b",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 355,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "打包-2",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-355.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-355.png",
+    "image_sha256": "a57468d99ca9c05fb8a015bd1b6cbcbbac94e624b3544f3464e26f693f736549",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 356,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "打包-3",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-356.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-356.png",
+    "image_sha256": "e15bfbb3ab68c7f9447eb38ec8ddeed3d2479301e813e19f324a56528bcbffcd",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 357,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "打包-4",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-357.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-357.png",
+    "image_sha256": "57010f01a7abd7f36b7c1b07b7a832bc98aaa53e4770724840bbc4c9cc7505c3",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:2f042b76c396117008ce4063ade2fc284711f35b48cc18ee20692ba72cf497ab",
+    "operation": 358,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+    "sheet": "水箱检漏1",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-358.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-358.png",
+    "image_sha256": "78d2eb7118234d0e4b9c5d3d509c57121e3ddaaefc176de06e6685b75906d30a",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:2f042b76c396117008ce4063ade2fc284711f35b48cc18ee20692ba72cf497ab",
+    "operation": 359,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+    "sheet": "水箱检漏 2",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-359.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-359.png",
+    "image_sha256": "bc5176279ca8626ba85b356edd9920ea9036246fb79995c711c547733d733d11",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 360,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "走线布线-3 (G) ",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-360.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-360.png",
+    "image_sha256": "cd865e1274d3db404d3f75e2d4647afd02c4559ab9901eca48e9897daf3d13ed",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 361,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "走线布线-2 (G)",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-361.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-361.png",
+    "image_sha256": "c3cd0a66bbcddea8e548c60df081fbb9984833373e59d79537a2d52890f4dac7",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 362,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "软管安装-1",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-362.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-362.png",
+    "image_sha256": "7018d47f26337c242bbcd7ef2ecf1470e4792a56f6e62d6f42278c20fc72278f",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:2f042b76c396117008ce4063ade2fc284711f35b48cc18ee20692ba72cf497ab",
+    "operation": 363,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+    "sheet": "膨胀罐分装-1",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-363.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-363.png",
+    "image_sha256": "85179b7e0a3990332f44c486552f49b331604ef2abe60decc409cb33a80eca10",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:2f042b76c396117008ce4063ade2fc284711f35b48cc18ee20692ba72cf497ab",
+    "operation": 364,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376878-2026 中金乌兰察布CDU900分装工艺卡（左机）.xlsx",
+    "sheet": "膨胀罐分装-4",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-364.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-364.png",
+    "image_sha256": "3b66feaaf6d19649d5592d2bc7d7fa4c18c940b197ba4c3a4bf8b21acc8bde09",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 365,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "电器件分装-3",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-365.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-365.png",
+    "image_sha256": "751ef9ccee2cc3c0868fed264ceaa9aef78bd3b854f62df1c6dc769f7c56e0be",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 366,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "走线布线-8 (G) ",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-366.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-366.png",
+    "image_sha256": "ac94c169328eef65258cd0b471506aa6bcc06fc12603c1bf8cd407b9e4574021",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 367,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "走线布线-3 (G) ",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-367.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-367.png",
+    "image_sha256": "cd865e1274d3db404d3f75e2d4647afd02c4559ab9901eca48e9897daf3d13ed",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 368,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "打包-4",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-368.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-368.png",
+    "image_sha256": "57010f01a7abd7f36b7c1b07b7a832bc98aaa53e4770724840bbc4c9cc7505c3",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  },
+  {
+    "source_sha256": "sha256:0c02560a7e7da72b70a85b52393131ecce9f3cc10c0273262e43ae2f4de176ce",
+    "operation": 369,
+    "source_opened_read_only": true,
+    "kind": "supplied_process_diagram",
+    "source_file": "QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx",
+    "sheet": "管路安装-11",
+    "pdf_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\source-369.pdf",
+    "image_path": "C:\\Users\\10602\\Desktop\\AI_assembly\\outputs\\全量最终SOP-20261013\\工艺原图\\diagram-369.png",
+    "image_sha256": "a7b70b6b2493a716cb8eb3219095a3b674918f15c8dd46ec8e10ca03f9f6659f",
+    "crop_pdf_points": [
+      26.099519470214844,
+      38.10048046875,
+      260.9951947021484,
+      150.02064184570312
+    ],
+    "source_diagram_only": true
+  }
+]
