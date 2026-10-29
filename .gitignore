@@ -42,3 +42,7 @@ Thumbs.db
 # Personal document and superseded local handover draft
 /实习证明_可编辑模板.docx
 /项目交接文档.docx
+
+# Product inputs, intermediate evidence and finished publications stay local.
+/project-data/
+/deliverables/

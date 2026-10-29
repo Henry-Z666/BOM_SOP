@@ -3,15 +3,15 @@ import copy,json,re,math,hashlib
 from collections import Counter
 from decimal import Decimal
 from pathlib import Path
+from publication_inputs import load_input,output_directory
 ROOT=Path(__file__).resolve().parents[2]
-OLD=ROOT/'outputs/全量最终SOP-20261013'
-OUT=ROOT/'outputs/部件式装配SOP-20261015'
-OUT.mkdir(exist_ok=True)
-d=json.loads((OLD/'出版排序内容.json').read_text(encoding='utf8'))
+OUT=output_directory()
+OUT.mkdir(parents=True,exist_ok=True)
+d=load_input('出版排序内容.json')
 ops={o['number']:o for o in d['operations']}; images={i['task_id']:i for i in d['images']}
-refs={r['operation']:r for r in json.loads((OLD/'工艺原图/图像索引.json').read_text(encoding='utf8'))}
-tools=json.loads((OLD/'工艺工具来源.json').read_text(encoding='utf8'))
-process=json.loads((ROOT/'work/process-mvp-20261008/rebuild/two-images/analysis/process-package.json').read_text(encoding='utf8'))
+refs={r['operation']:r for r in load_input('工艺图像索引.json')}
+tools=load_input('工艺工具来源.json')
+process=load_input('process-package.json')
 process_by_id={o['operation_id']:o for o in process['operations']}
 packages=[]; assigned=set()
 def add(title,nums,actions,hero=None,chapter=None):
@@ -227,7 +227,7 @@ used={k for p in pages for k in p['images']}
 d['images']=[e for e in d['images'] if e['task_id'] in used]
 d.update(pages=pages,component_packages=packages,publication_mode='component_cards/v1',publication_scope='main_cad_assembly_only',excluded_non_cad_operations=excluded,publication_title='CDU900左机部件装配工艺卡',publication_code='SOP-CDU900-LEFT-C',publication_file='CDU900左机部件式装配SOP.xlsx',publication_date='2026-10-15',branding={'image_path':str(ROOT/'assets/publication/shenling-logo.png'),'source_file':'QSL 10303376877-2026 中金乌兰察布CDU900总装工艺卡（左机）.xlsx','source_media':'xl/media/image6.png'})
 (OUT/'出版内容.json').write_text(json.dumps(d,ensure_ascii=False,indent=2),encoding='utf8')
-gates=json.loads((OLD/'出图检查.json').read_text(encoding='utf8'));gates=[g for g in gates if g['task_id'] in used]
+gates=load_input('出图检查.json');gates=[g for g in gates if g['task_id'] in used]
 assert len(gates)==len(used) and all(g['passed'] for g in gates)
 (OUT/'出图检查.json').write_text(json.dumps(gates,ensure_ascii=False,indent=2),encoding='utf8')
 audit=dict(component_packages=len(packages),pages=len(pages),selected_native_images=len(used),atomic_operations_retained_internally=len(ops),excluded_non_cad_operations=excluded,excluded_accessory_packaging_occurrences=len(excluded_occurrences),material_occurrences=len(charged),in_scope_material_quantities_exact=True,all_in_scope_cad_occurrences_preserved=True,color_boundary_rule_preserved=True)

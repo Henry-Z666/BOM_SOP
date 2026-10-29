@@ -4,14 +4,9 @@
 
 ## 输入
 
-默认读取本地：
+输入由本地 `CREO_SOP_PUBLICATION_INPUT` 指定，默认 `project-data/cdu900-left/`（已忽略）。目录中的 `analysis/` 放排序、出图检查、工具和工艺解析 JSON；可选 `bundle-manifest.json` 提供旧路径到本地文件的映射。没有映射时保留输入中的原路径。
 
-- `outputs/全量最终SOP-20261013/出版排序内容.json`
-- 同目录的原生图片、`出图检查.json`、工具和工艺图索引
-- `work/process-mvp-20261008/rebuild/two-images/analysis/process-package.json`
-- 新版原始 BOM/CAD（最终校验会核对源文件哈希）
-
-这些机器上的输入和原生缓存没有提交到 Git。可直接查看已入仓的 [Excel 成品和预览](../../deliverables/cdu900-left/2026-10-15/README.md)。
+原料、图片、项目专属解析数据和最终 SOP 均由使用者在本地准备，不随仓库上传。`出版排序内容.json` 是某次运行的数据，不是通用工艺规则；通用逻辑由这些脚本及 `rules/` 维护。
 
 ## 顺序
 
@@ -23,6 +18,8 @@ node scripts/cdu900/build-component-sop.mjs outputs/部件式装配SOP-20261015
 python scripts/cdu900/finish-workbook.py outputs/部件式装配SOP-20261015
 python scripts/cdu900/check_component_cards.py
 ```
+
+可设置 `CREO_SOP_PUBLICATION_OUT` 环境变量，将规划及核对输出放到另一目录；调用 Node 构建器和收尾脚本时传入同一目录。
 
 先由规划器保留本版物料数量并生成部件页；构建器使用仓库内实际模板出版 Excel；保存后核对原图字节、表格和打印范围；最后核对颜色边界及范围。
 

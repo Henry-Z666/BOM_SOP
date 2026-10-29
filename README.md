@@ -120,7 +120,6 @@ AI 审核是可选功能。在界面填写“DashScope Key（AI审核）”即�
 
 部件式工艺卡以框架、泵、换热器、管路、电控箱、膨胀罐、水箱、门板等部件组织内容，在部件内部说明安装顺序和连接方法。
 
-- [查看 Excel 示例与逐页预览](deliverables/cdu900-left/2026-10-15/README.md)
 - [专项出版脚本、输入要求与运行方法](scripts/cdu900/README.md)
 - [部件编排规则](rules/component-based-publication.md)
 - [BOM 颜色与装配边界](rules/bom-color-assembly-boundaries.md)
@@ -175,9 +174,7 @@ powershell -NoProfile -File .\packaging\build.ps1 `
 | `rules/` | 装配边界、取景、标注和出版规则 |
 | `docs/` | 技术说明、设计决策、版本与验证记录 |
 | `tests/` | 自动化测试 |
-| `deliverables/` | 明确选入仓库的成品示例、预览及校验清单 |
 
-原始 BOM/CAD、本机许可证、API Key、运行数据库、历史出图缓存和构建产物保存在本地，由 `.gitignore` 排除。
 
 ## 开发与技术文档
 
@@ -195,3 +192,5 @@ powershell -NoProfile -File .\packaging\build.ps1 `
 - [版本记录](docs/releases/)
 
 开发进度和历史验证数据保存在 `docs/`；README 重整前的记录归档于[历史快照](docs/history/readme-before-product-guide-20261023.md)。
+
+仓库仅维护通用流程代码、规则、配置示例、空白模板及使用文档。产品原料、原生图片、项目专属解析/排序数据和成品 SOP 保存在本地，不纳入上传范围。

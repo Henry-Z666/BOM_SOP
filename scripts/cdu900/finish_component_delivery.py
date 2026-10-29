@@ -1,6 +1,7 @@
 import json,html,hashlib,sys
 from pathlib import Path
-ROOT=Path(__file__).resolve().parents[2];OUT=ROOT/'outputs/部件式装配SOP-20261015'
+from publication_inputs import output_directory
+ROOT=Path(__file__).resolve().parents[2];OUT=output_directory()
 d=json.loads((OUT/'出版内容.json').read_text(encoding='utf8'))
 check=json.loads((OUT/'SOP交付检查.json').read_text(encoding='utf8'))
 scope=json.loads((OUT/'颜色与范围自检.json').read_text(encoding='utf8'))

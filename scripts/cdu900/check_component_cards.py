@@ -3,7 +3,8 @@ import json,hashlib,math,re
 from pathlib import Path
 from collections import Counter
 from PIL import Image,ImageDraw,ImageFont
-ROOT=Path(__file__).resolve().parents[2];OUT=ROOT/'outputs/部件式装配SOP-20261015'
+from publication_inputs import output_directory
+ROOT=Path(__file__).resolve().parents[2];OUT=output_directory()
 d=json.loads((OUT/'出版内容.json').read_text(encoding='utf8'))
 assert hashlib.sha256(Path(d['source_bom']).read_bytes()).hexdigest()==d['source_bom_sha256'].removeprefix('sha256:')
 colors=d['color_boundaries']['rows'];used=[m for p in d['pages'] for m in p['materials']]
