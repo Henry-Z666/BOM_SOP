@@ -14,6 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 build = ["pyinstaller>=6.10"]
+preview = ["PyMuPDF>=1.26"]
 
 [project.scripts]
 creo-sop-agent = "sop_pipeline.desktop.app:main"

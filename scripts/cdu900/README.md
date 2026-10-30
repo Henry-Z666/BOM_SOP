@@ -1,30 +1,54 @@
-# CDU900 部件式出版配方
+# CDU900 部件式出版
 
-这些文件是 2026-10-15 部件版交付时实际使用的出版逻辑，已从本地 `work/` 整理到可跟踪目录。它们是 CDU900 左机的产品配方，包含该机型的分组和选图；通用规则见 [按部件出版](../../rules/component-based-publication.md)。
+同事已拉好仓库后，请直接阅读[复现操作说明](../../docs/colleague-reproduction.md)。本入口复用已整理好的工序和实例分配，不重新分析 CAD。
 
-## 输入
+## 入口
 
-输入由本地 `CREO_SOP_PUBLICATION_INPUT` 指定，默认 `project-data/cdu900-left/`（已忽略）。目录中的 `analysis/` 放排序、出图检查、工具和工艺解析 JSON；可选 `bundle-manifest.json` 提供旧路径到本地文件的映射。没有映射时保留输入中的原路径。
-
-关键解析、排序及检查数据已纳入 `project-data/cdu900-left/analysis/`。原料、图片和最终 SOP 在本地保留，不上传。`出版排序内容.json` 是某次运行的数据，不是通用工艺规则；通用逻辑由这些脚本及 `rules/` 维护。
-
-## 顺序
-
-在仓库根目录运行，Python 需要项目依赖；Node 需要 Codex 提供的 `@oai/artifact-tool` 运行时。不要提交本机依赖目录或许可证配置。
+只复现编排（标准 Python，无需图片）：
 
 ```powershell
-python scripts/cdu900/plan_component_publication.py
-node scripts/cdu900/build-component-sop.mjs outputs/部件式装配SOP-20261015
-python scripts/cdu900/finish-workbook.py outputs/部件式装配SOP-20261015
-python scripts/cdu900/check_component_cards.py
+python scripts/cdu900/run_component_publication.py --plan-only
 ```
 
-可设置 `CREO_SOP_PUBLICATION_OUT` 环境变量，将规划及核对输出放到另一目录；调用 Node 构建器和收尾脚本时传入同一目录。
+补齐本地图片后出版（需要 openpyxl、Pillow）：
 
-先由规划器保留本版物料数量并生成部件页；构建器使用仓库内实际模板出版 Excel；保存后核对原图字节、表格和打印范围；最后核对颜色边界及范围。
+```powershell
+python scripts/cdu900/run_component_publication.py
+```
 
-只调整少数页面时，可用同一构建器的 `--update-pages=43,44` 更新已有工作簿，避免重建所有工作表。`--preview=1,9` 只出预览，不导出成品。
+默认输入为 `project-data/cdu900-left/`，输出为 `outputs/复现测试/`。可用 `--input`、`--output` 修改。读取配套中间 JSON 和路径映射；原料、图片、成品均不上传 Git。
 
-`finish_component_delivery.py` 用于整理交付记录和预览 HTML。仅在实际看完全部页面后使用 `--reviewed` 写入人工版式检查记录；脚本不会代替读图。
+## 独立步骤
 
-资源位于 `assets/publication/`：实际模板、尺寸与合并单元格元数据、来自用户参考工艺卡的品牌图片。构建器只用 artifact-tool 写入工作簿，收尾脚本仅补充其缺少的打印 OOXML 并用 openpyxl 读取校验。
+```powershell
+$env:CREO_SOP_PUBLICATION_OUT="$PWD\outputs\复现测试"
+python scripts/cdu900/plan_component_publication.py
+python scripts/cdu900/build_component_sop.py outputs/复现测试
+python scripts/cdu900/finish-workbook.py outputs/复现测试
+```
+
+`finish-workbook.py --verify-sources` 额外要求本地原始 BOM 和根总装，按记录哈希核对；默认只核对出版结果、图片与物料，不假装已完成原料核验。
+
+只更新已生成工作簿的指定页：
+
+```powershell
+python scripts/cdu900/build_component_sop.py outputs/复现测试 --update-pages=43,44
+```
+
+可选实际打印预览，需安装 PyMuPDF 及本机 Excel 或 LibreOffice：
+
+```powershell
+python scripts/cdu900/build_component_sop.py outputs/复现测试 --preview=1,9,31
+```
+
+默认优先使用可用的 LibreOffice，否则使用 Excel。可用 `--preview-backend=excel` 或 `--preview-backend=libreoffice` 指定。预览不是 Excel 出版的前置条件。
+
+## 实现与范围
+
+`src/sop_pipeline/component_workbook.py` 使用 openpyxl 复制仓库模板，保留每部件多图、中文物料、黄色来料标识、动作说明及 A4 横向单页打印。图片按原字节嵌入，保存到临时工作簿并核对通过后才替换目标文件。`build-component-sop.mjs` 仅为旧命令提供转发到 Python 的兼容入口，新流程不需要 Node。
+
+规划器仍是这台 CDU900 的既有出版配方，不宣称可以给其他机型直接使用。新资料重建入口属于独立的实验性 V0，见[说明](../../docs/publication-input-rebuild.md)。
+
+`check_component_cards.py` 另做 BOM 颜色和物料范围核对，要求本地 BOM。`finish_component_delivery.py` 整理已有检查及预览；未实际完成全部页面人工检查时不要使用 `--reviewed`。
+
+维护者可用 `export_publication_images.py <输出目录> --zip <本地zip路径>` 导出选用的图片供离线交接，该脚本不上传文件。

@@ -29,7 +29,7 @@ BOM 提供物料、层级、数量和工艺要求，Creo 提供真实几何与�
 
 Python 依赖由 `pip install -e .` 安装，包括 PySide6、openpyxl、NumPy、Pillow、pywin32 和 DashScope SDK。
 
-使用专项部件出版脚本时，还需要 Node.js 和 Codex 提供的 `@oai/artifact-tool` 运行时。普通桌面入口不需要这套 Node 出版环境。
+部件式 Excel 出版使用普通 Python 的 `openpyxl` 和 Pillow，不需要 Node.js、Codex、OpenAI 工具或 API Key。已拉取仓库的同事请从[复现操作说明](docs/colleague-reproduction.md)开始；实际打印预览可选本机 Excel 或 LibreOffice。
 
 ## 安装与配置
 
@@ -122,6 +122,7 @@ AI 审核是可选功能。在界面填写“DashScope Key（AI审核）”即�
 
 - [专项出版脚本、输入要求与运行方法](scripts/cdu900/README.md)
 - [部件编排规则](rules/component-based-publication.md)
+- [从 BOM、CAD 和 QSL 重建出版输入（V0）](docs/publication-input-rebuild.md)
 - [BOM 颜色与装配边界](rules/bom-color-assembly-boundaries.md)
 - [力矩来源与适用范围](rules/torque-source-matching.md)
 

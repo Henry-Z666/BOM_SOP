@@ -8,6 +8,8 @@ ROOT=Path(__file__).resolve().parents[2]
 OUT=output_directory()
 OUT.mkdir(parents=True,exist_ok=True)
 d=load_input('出版排序内容.json')
+if d.get('status') == 'draft_not_rendered':
+ raise ValueError('重建草案尚未出图，不能套用历史工序号配方出版；请先完成范围、顺序与渲染绑定。')
 ops={o['number']:o for o in d['operations']}; images={i['task_id']:i for i in d['images']}
 refs={r['operation']:r for r in load_input('工艺图像索引.json')}
 tools=load_input('工艺工具来源.json')

@@ -36,4 +36,4 @@ CAD 出图仍依赖本地 Creo、许可证、新 BOM/CAD 以及本地锁定的�
 - Java `SpatialNumberLayoutTest`、`TorqueLabelLayoutTest`、`UnicodeVectorTextTest`：通过。
 - 最新 Excel 的 SHA-256 为 `47c2f5ed68dad916db10cdc551c09160da9f6f833f57485ae52df93dea8c9eb6`，入仓副本与已交付文件完全一致。
 
-当前上传边界：仅保留流程实现和规则；原料、原生图、项目中间数据及成品不再跟踪。本地历史成品文件保留。
+当前上传边界：跟踪流程实现、规则及关键项目中间 JSON/模型绑定；原料、原生图和成品不跟踪。本地历史成品文件保留。最新运行方法见[同事复现操作说明](colleague-reproduction.md)。
